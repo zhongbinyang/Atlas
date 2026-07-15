@@ -196,6 +196,10 @@ tr.clickable:hover {
   background: var(--surface);
 }
 
+tr.row-selected {
+  background: color-mix(in srgb, var(--accent) 12%, #fff);
+}
+
 .empty {
   text-align: center;
   color: var(--muted);
@@ -233,19 +237,6 @@ tr.clickable:hover {
 .form-grid select:disabled {
   background: var(--surface);
   color: var(--muted);
-}
-
-.status-online {
-  color: var(--ok);
-  font-weight: 600;
-}
-
-.status-offline {
-  color: var(--muted);
-}
-
-.status-busy {
-  color: var(--busy);
 }
 
 .mono {
@@ -399,6 +390,7 @@ pre {
 .files-crumb {
   margin-bottom: 0.75rem;
   font-size: 0.9rem;
+  font-family: var(--font-mono);
 }
 
 .files-crumb a {

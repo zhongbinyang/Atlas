@@ -531,7 +531,7 @@ function renderTasks() {
   for (const t of tasks) {
     const row = document.createElement('tr');
     row.className = 'clickable';
-    if (t.id === selectedTaskId) row.style.background = '#eef4ff';
+    if (t.id === selectedTaskId) row.classList.add('row-selected');
     const agent = agents.find(a => a.id === t.agent_id);
     const agentName = agent ? agent.name : t.agent_id.slice(0, 8);
     const exitCode = t.exit_code != null ? String(t.exit_code) : '—';
