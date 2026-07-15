@@ -43,6 +43,7 @@ async fn main() {
         slot: TaskSlot::new(),
         metrics: Arc::new(Mutex::new(MetricsSampler::new())),
         center_url: cfg.center_url.clone(),
+        files_root: cfg.files_root.clone(),
     };
 
     let client = register::http_client();
