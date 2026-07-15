@@ -603,6 +603,24 @@ document.getElementById('shot-history-next').addEventListener('click', () => {
   }
 });
 
+function showView(name) {
+  const machines = document.getElementById('view-machines');
+  const jobs = document.getElementById('view-jobs');
+  const navM = document.getElementById('nav-machines');
+  const navJ = document.getElementById('nav-jobs');
+  const isMachines = name === 'machines';
+  machines.hidden = !isMachines;
+  jobs.hidden = isMachines;
+  machines.classList.toggle('view-active', isMachines);
+  jobs.classList.toggle('view-active', !isMachines);
+  navM.classList.toggle('active', isMachines);
+  navJ.classList.toggle('active', !isMachines);
+}
+
+document.getElementById('nav-machines').addEventListener('click', () => showView('machines'));
+document.getElementById('nav-jobs').addEventListener('click', () => showView('jobs'));
+showView('machines');
+
 async function refreshAll() {
   await Promise.all([fetchAgents(), fetchTemplates(), fetchTasks()]);
 }

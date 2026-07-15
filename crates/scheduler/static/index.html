@@ -4,141 +4,156 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>调度中心</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>调度中心</h1>
-    <button id="refresh-btn" type="button">刷新</button>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <h1 class="brand">调度中心</h1>
+      <nav class="view-tabs" aria-label="主分区">
+        <button type="button" id="nav-machines" class="tab active" data-view="machines">机台</button>
+        <button type="button" id="nav-jobs" class="tab" data-view="jobs">作业</button>
+      </nav>
+    </div>
+    <button id="refresh-btn" type="button" class="btn-primary">刷新</button>
   </header>
 
-  <section id="agents-section">
-    <h2>Agent 列表</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>电脑名</th>
-          <th>IP</th>
-          <th>状态</th>
-          <th>CPU</th>
-          <th>内存</th>
-          <th>忙碌</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="agents-body">
-        <tr><td colspan="7" class="empty">暂无 Agent</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="templates-section">
-    <h2>任务模板</h2>
-    <form id="template-form" class="form-grid">
-      <label for="tpl-name">名称</label>
-      <input id="tpl-name" name="name" required placeholder="模板名称">
-
-      <label for="tpl-shell">Shell</label>
-      <select id="tpl-shell" name="shell">
-        <option value="cmd">cmd</option>
-        <option value="powershell">powershell</option>
-      </select>
-
-      <label for="tpl-command">命令</label>
-      <input id="tpl-command" name="command" required placeholder="要执行的命令">
-
-      <label for="tpl-workdir">工作目录</label>
-      <input id="tpl-workdir" name="workdir" placeholder="可选">
-
-      <label for="tpl-timeout">超时（秒）</label>
-      <input id="tpl-timeout" name="timeout_secs" type="number" value="300" min="1">
-
-      <span></span>
-      <button type="submit">创建模板</button>
-    </form>
-    <p id="template-msg" class="msg" hidden></p>
-    <table class="mt">
-      <thead>
-        <tr>
-          <th>名称</th>
-          <th>Shell</th>
-          <th>命令</th>
-          <th>超时</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="templates-body">
-        <tr><td colspan="5" class="empty">暂无模板</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="tasks-section">
-    <h2>任务</h2>
-    <form id="task-form" class="form-grid">
-      <label for="task-agent">Agent</label>
-      <select id="task-agent" name="agent_id" required>
-        <option value="">— 选择 Agent —</option>
-      </select>
-
-      <label for="task-source">来源</label>
-      <select id="task-source" name="source">
-        <option value="template">模板</option>
-        <option value="adhoc">临时命令</option>
-      </select>
-
-      <label for="task-template">模板</label>
-      <select id="task-template" name="template_id">
-        <option value="">— 选择模板 —</option>
-      </select>
-
-      <label for="task-shell">Shell</label>
-      <select id="task-shell" name="shell" disabled>
-        <option value="cmd">cmd</option>
-        <option value="powershell">powershell</option>
-      </select>
-
-      <label for="task-command">命令</label>
-      <input id="task-command" name="command" disabled placeholder="临时命令">
-
-      <label for="task-workdir">工作目录</label>
-      <input id="task-workdir" name="workdir" disabled placeholder="可选">
-
-      <label for="task-timeout">超时（秒）</label>
-      <input id="task-timeout" name="timeout_secs" type="number" value="300" min="1" disabled>
-
-      <span></span>
-      <button type="submit">提交任务</button>
-    </form>
-    <p id="task-msg" class="msg" hidden></p>
-    <table class="mt">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Agent</th>
-          <th>命令</th>
-          <th>状态</th>
-          <th>退出码</th>
-        </tr>
-      </thead>
-      <tbody id="tasks-body">
-        <tr><td colspan="5" class="empty">暂无任务</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="task-detail-section" hidden>
-    <h2>任务详情 <button id="close-detail" type="button" class="btn-sm">关闭</button></h2>
-    <dl class="detail-grid" id="task-detail-meta"></dl>
-    <div class="output-block">
-      <h3>stdout</h3>
-      <pre id="task-stdout"></pre>
+  <main class="page">
+    <div id="view-machines" class="view view-active">
+      <section id="agents-section">
+        <h2>机台</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>电脑名</th>
+              <th>IP</th>
+              <th>状态</th>
+              <th>CPU</th>
+              <th>内存</th>
+              <th>忙碌</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="agents-body">
+            <tr><td colspan="7" class="empty">暂无 Agent</td></tr>
+          </tbody>
+        </table>
+      </section>
     </div>
-    <div class="output-block">
-      <h3>stderr</h3>
-      <pre id="task-stderr"></pre>
+
+    <div id="view-jobs" class="view" hidden>
+      <section id="templates-section">
+        <h2>任务模板</h2>
+        <form id="template-form" class="form-grid">
+          <label for="tpl-name">名称</label>
+          <input id="tpl-name" name="name" required placeholder="模板名称">
+
+          <label for="tpl-shell">Shell</label>
+          <select id="tpl-shell" name="shell">
+            <option value="cmd">cmd</option>
+            <option value="powershell">powershell</option>
+          </select>
+
+          <label for="tpl-command">命令</label>
+          <input id="tpl-command" name="command" required placeholder="要执行的命令">
+
+          <label for="tpl-workdir">工作目录</label>
+          <input id="tpl-workdir" name="workdir" placeholder="可选">
+
+          <label for="tpl-timeout">超时（秒）</label>
+          <input id="tpl-timeout" name="timeout_secs" type="number" value="300" min="1">
+
+          <span></span>
+          <button type="submit">创建模板</button>
+        </form>
+        <p id="template-msg" class="msg" hidden></p>
+        <table class="mt">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>Shell</th>
+              <th>命令</th>
+              <th>超时</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="templates-body">
+            <tr><td colspan="5" class="empty">暂无模板</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="tasks-section">
+        <h2>任务</h2>
+        <form id="task-form" class="form-grid">
+          <label for="task-agent">Agent</label>
+          <select id="task-agent" name="agent_id" required>
+            <option value="">— 选择 Agent —</option>
+          </select>
+
+          <label for="task-source">来源</label>
+          <select id="task-source" name="source">
+            <option value="template">模板</option>
+            <option value="adhoc">临时命令</option>
+          </select>
+
+          <label for="task-template">模板</label>
+          <select id="task-template" name="template_id">
+            <option value="">— 选择模板 —</option>
+          </select>
+
+          <label for="task-shell">Shell</label>
+          <select id="task-shell" name="shell" disabled>
+            <option value="cmd">cmd</option>
+            <option value="powershell">powershell</option>
+          </select>
+
+          <label for="task-command">命令</label>
+          <input id="task-command" name="command" disabled placeholder="临时命令">
+
+          <label for="task-workdir">工作目录</label>
+          <input id="task-workdir" name="workdir" disabled placeholder="可选">
+
+          <label for="task-timeout">超时（秒）</label>
+          <input id="task-timeout" name="timeout_secs" type="number" value="300" min="1" disabled>
+
+          <span></span>
+          <button type="submit">提交任务</button>
+        </form>
+        <p id="task-msg" class="msg" hidden></p>
+        <table class="mt">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Agent</th>
+              <th>命令</th>
+              <th>状态</th>
+              <th>退出码</th>
+            </tr>
+          </thead>
+          <tbody id="tasks-body">
+            <tr><td colspan="5" class="empty">暂无任务</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="task-detail-section" hidden>
+        <h2>任务详情 <button id="close-detail" type="button" class="btn-sm">关闭</button></h2>
+        <dl class="detail-grid" id="task-detail-meta"></dl>
+        <div class="output-block">
+          <h3>stdout</h3>
+          <pre id="task-stdout"></pre>
+        </div>
+        <div class="output-block">
+          <h3>stderr</h3>
+          <pre id="task-stderr"></pre>
+        </div>
+      </section>
     </div>
-  </section>
+  </main>
 
   <div id="shot-modal" class="modal" hidden>
     <div class="modal-backdrop" data-close="shot-modal"></div>
