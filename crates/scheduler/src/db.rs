@@ -11,7 +11,11 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     }
     let opts = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
     let pool = SqlitePoolOptions::new().connect_with(opts).await?;
-    let sql = include_str!("../migrations/001_init.sql");
-    sqlx::raw_sql(sql).execute(&pool).await?;
+    for sql in [
+        include_str!("../migrations/001_init.sql"),
+        include_str!("../migrations/002_screenshots.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&pool).await?;
+    }
     Ok(pool)
 }

@@ -78,6 +78,18 @@ pub struct TaskUpdate {
     pub finished_at: Option<Option<String>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Screenshot {
+    pub id: String,
+    pub agent_id: String,
+    pub file_path: String,
+    pub content_type: String,
+    pub byte_size: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub created_at: String,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -392,6 +404,107 @@ impl Store {
         .await?;
         self.get_task(id).await
     }
+
+    pub async fn insert_screenshot_with_id(
+        &self,
+        id: &str,
+        agent_id: &str,
+        file_path: &str,
+        content_type: &str,
+        byte_size: i64,
+        width: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<Screenshot, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, ScreenshotRow>(
+            r#"
+            INSERT INTO screenshots (
+                id, agent_id, file_path, content_type, byte_size, width, height, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id, agent_id, file_path, content_type, byte_size, width, height, created_at
+            "#,
+        )
+        .bind(id)
+        .bind(agent_id)
+        .bind(file_path)
+        .bind(content_type)
+        .bind(byte_size)
+        .bind(width)
+        .bind(height)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_screenshot())
+    }
+
+    pub async fn insert_screenshot(
+        &self,
+        agent_id: &str,
+        file_path: &str,
+        content_type: &str,
+        byte_size: i64,
+        width: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<Screenshot, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        self.insert_screenshot_with_id(
+            &id,
+            agent_id,
+            file_path,
+            content_type,
+            byte_size,
+            width,
+            height,
+        )
+        .await
+    }
+
+    pub async fn count_screenshots(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM screenshots WHERE agent_id = ?")
+                .bind(agent_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0)
+    }
+
+    pub async fn list_screenshots(
+        &self,
+        agent_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Screenshot>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ScreenshotRow>(
+            r#"
+            SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
+            FROM screenshots
+            WHERE agent_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(agent_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_screenshot()).collect())
+    }
+
+    pub async fn get_screenshot(&self, id: &str) -> Result<Option<Screenshot>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ScreenshotRow>(
+            r#"
+            SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
+            FROM screenshots
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_screenshot()))
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -493,6 +606,33 @@ impl TaskRow {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct ScreenshotRow {
+    id: String,
+    agent_id: String,
+    file_path: String,
+    content_type: String,
+    byte_size: i64,
+    width: Option<i32>,
+    height: Option<i32>,
+    created_at: String,
+}
+
+impl ScreenshotRow {
+    fn into_screenshot(self) -> Screenshot {
+        Screenshot {
+            id: self.id,
+            agent_id: self.agent_id,
+            file_path: self.file_path,
+            content_type: self.content_type,
+            byte_size: self.byte_size,
+            width: self.width,
+            height: self.height,
+            created_at: self.created_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,5 +706,51 @@ mod tests {
         assert_eq!(got.exit_code, Some(0));
         assert_eq!(got.stdout, "hi");
         assert_eq!(got.finished_at, Some(finished_at));
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_screenshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("t.db").display());
+        let pool = crate::db::connect(&url).await.unwrap();
+        let store = Store::new(pool);
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let meta = store
+            .insert_screenshot(
+                &agent.id,
+                "data/screenshots/x/y.png",
+                "image/png",
+                12,
+                Some(1),
+                Some(1),
+            )
+            .await
+            .unwrap();
+        let total = store.count_screenshots(&agent.id).await.unwrap();
+        assert_eq!(total, 1);
+        let page = store.list_screenshots(&agent.id, 50, 0).await.unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, meta.id);
+        assert!(store.get_screenshot(&meta.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn insert_screenshot_with_id_uses_given_id() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let id = Uuid::new_v4().to_string();
+        let meta = store
+            .insert_screenshot_with_id(
+                &id,
+                &agent.id,
+                "data/screenshots/x/y.png",
+                "image/png",
+                12,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta.id, id);
     }
 }
