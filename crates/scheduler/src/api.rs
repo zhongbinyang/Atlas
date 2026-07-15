@@ -777,10 +777,18 @@ mod tests {
     }
 
     async fn start_mock_agent() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        start_mock_agent_responding(StatusCode::OK, "image/png", MINIMAL_PNG).await
+    }
+
+    async fn start_mock_agent_responding(
+        status: StatusCode,
+        content_type: &'static str,
+        body: &'static [u8],
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let mock = Router::new().route(
             "/api/screenshot",
-            get(|| async {
-                ([(header::CONTENT_TYPE, "image/png")], MINIMAL_PNG)
+            get(move || async move {
+                (status, [(header::CONTENT_TYPE, content_type)], body)
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -789,6 +797,45 @@ mod tests {
             axum::serve(listener, mock).await.unwrap();
         });
         (addr, handle)
+    }
+
+    async fn post_capture_screenshot(app: &Router, agent_id: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn assert_no_screenshot_artifacts(app: &Router, test: &TestApp, agent_id: &str) {
+        let shot_root = std::path::Path::new(&test.screenshot_dir);
+        if shot_root.exists() {
+            let count: usize = std::fs::read_dir(shot_root)
+                .map(|rd| rd.count())
+                .unwrap_or(0);
+            assert_eq!(count, 0);
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: ScreenshotListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list.total, 0);
+        assert!(list.items.is_empty());
     }
 
     fn register_request(name: &str, ip: &str, port: u16) -> Request<Body> {
@@ -908,27 +955,73 @@ mod tests {
         let test = test_app().await;
         let agent_id = register_agent_at(&test.router, "127.0.0.1", 1).await;
 
+        let resp = post_capture_screenshot(&test.router, &agent_id).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        assert_no_screenshot_artifacts(&test.router, &test, &agent_id).await;
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_agent_returns_500() {
+        let test = test_app().await;
+        let (addr, _mock) =
+            start_mock_agent_responding(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", b"error")
+                .await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = post_capture_screenshot(&test.router, &agent_id).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+        assert_no_screenshot_artifacts(&test.router, &test, &agent_id).await;
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_agent_returns_non_png() {
+        let test = test_app().await;
+        let (addr, _mock) =
+            start_mock_agent_responding(StatusCode::OK, "image/png", b"not-a-png-body").await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = post_capture_screenshot(&test.router, &agent_id).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+        assert_no_screenshot_artifacts(&test.router, &test, &agent_id).await;
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_unknown_agent_returns_404() {
+        let test = test_app().await;
+        let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+        let resp = post_capture_screenshot(&test.router, unknown_id).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
+    }
+
+    #[tokio::test]
+    async fn get_screenshot_image_unknown_returns_404() {
+        let test = test_app().await;
+        let unknown_id = "00000000-0000-0000-0000-000000000099";
+
         let resp = test
             .router
             .clone()
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .uri(format!("/api/screenshots/{unknown_id}/image"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-
-        let shot_root = std::path::Path::new(&test.screenshot_dir);
-        if shot_root.exists() {
-            let count: usize = std::fs::read_dir(shot_root)
-                .map(|rd| rd.count())
-                .unwrap_or(0);
-            assert_eq!(count, 0);
-        }
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "screenshot not found");
     }
 
     #[tokio::test]

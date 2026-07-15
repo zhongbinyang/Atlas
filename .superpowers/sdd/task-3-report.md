@@ -1,4 +1,4 @@
-# Task 3 Report: Agent executor (serial process runner)
+# Task 3 Report: Scheduler capture service + REST API
 
 ## Status
 
@@ -6,95 +6,89 @@ DONE
 
 ## What Was Implemented
 
-### `crates/agent/src/executor.rs`
+### `crates/scheduler/src/screenshot.rs` (created)
 
-- `ExecuteResult` struct with `status`, `exit_code`, `stdout`, `stderr`.
-- `run_command(shell, command, workdir, timeout_secs)` spawns `cmd` or `powershell` via `tokio::process::Command`.
-- `kill_on_drop(true)` on the command builder; on `tokio::time::timeout` expiry the dropped `Child` kills the process (final brief pattern, not the broken `start_kill` sketch).
-- Spawn failure → `TaskStatus::Failed`; non-zero exit → `Failed`; success → `Succeeded`; timeout → `Timeout` with stderr `"timeout"`.
-- Three `#[cfg(test)]` async tests: `echo_succeeds`, `nonzero_fails`, `timeout_kills`.
+- `MAX_SCREENSHOT_BYTES` = 20 MiB
+- `CaptureError` variants: `AgentNotFound`, `Unreachable`, `BadImage`, `Io`
+- `capture_and_archive` — proxies `GET http://{ip}:{port}/api/screenshot`, validates PNG magic, size cap, writes `{screenshot_root}/{agent_id}/{id}.png`, inserts via `insert_screenshot_with_id`; rolls back file on DB failure
 
-### `crates/agent/src/main.rs`
+### `crates/scheduler/src/api.rs` (modified)
 
-- Added `mod executor;` alongside existing `config` and `metrics` modules. Stub `main` unchanged.
+- `AppState { store, client, screenshot_dir }`
+- Routes: `POST/GET /api/agents/{id}/screenshots`, `GET /api/screenshots/{id}`, `GET /api/screenshots/{id}/image`
+- `ScreenshotView`, paginated list `{ items, total }` with `limit` clamped 1..=200 (default 50)
+- Error mapping: 404 agent, 503 unreachable, 502 bad image, 500 IO
+- Tests: `capture_screenshot_happy_path`, `capture_screenshot_agent_unreachable`; all existing tests updated for extended `AppState`
+
+### `crates/scheduler/src/main.rs` (modified)
+
+- `mod screenshot`
+- Wires `client` and `cfg.screenshot_dir` into `AppState`
 
 ## Tests and Results
 
-### Command
-
 ```text
-cargo test -p agent executor::
+cargo test -p scheduler
 ```
 
-### Output
-
 ```text
-running 3 tests
-test executor::tests::echo_succeeds ... ok
-test executor::tests::nonzero_fails ... ok
-test executor::tests::timeout_kills ... ok
+running 15 tests
+test api::tests::capture_screenshot_happy_path ... ok
+test api::tests::capture_screenshot_agent_unreachable ... ok
+(... 13 other tests) ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 9.10s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-Build emitted dead-code warnings for unused `ExecuteResult.stderr`, `MetricsSampler`, and config fields — expected until later tasks wire them in.
+## TDD Evidence
 
-## TDD Evidence (RED → GREEN)
-
-### RED
-
-Executor tests and `run_command` signature added per brief. Without `executor.rs` and `mod executor` in `main.rs`, the crate would not compile.
-
-### GREEN
-
-After implementing the `kill_on_drop` version verbatim, all three executor tests pass on Windows.
+1. Extended `AppState` + updated test constructors with temp dir + `reqwest::Client`
+2. Added failing integration tests (mock Axum agent with minimal 1×1 PNG constant)
+3. Implemented `screenshot.rs` capture service
+4. Implemented REST handlers and routes
+5. All scheduler tests GREEN
 
 ## Files Changed
 
 | File | Action |
 |------|--------|
-| `crates/agent/src/executor.rs` | Created |
-| `crates/agent/src/main.rs` | Modified — `mod executor` |
+| `crates/scheduler/src/screenshot.rs` | Created |
+| `crates/scheduler/src/api.rs` | Modified — routes, handlers, tests |
+| `crates/scheduler/src/main.rs` | Modified — wire AppState |
 
-**Commit:** `ecab580` — `feat(agent): add Windows command executor with timeout`
+**Commit:** `2564c91` — `feat(scheduler): proxy and archive agent screenshots`
 
 ## Self-Review
 
-- Implementation matches the final `kill_on_drop` code block from the brief; earlier `start_kill` timeout sketch intentionally omitted.
-- Scope limited to executor module and module wiring; no HTTP API, serial queue, or task dispatch.
-- Tests cover success, non-zero exit code, and timeout on Windows `cmd`.
-- `ShellKind::Powershell` branch implemented but not yet covered by tests.
-- Commit includes only the two files specified in the brief.
+- Brief interfaces delivered; id/file alignment via single UUID + `insert_screenshot_with_id`
+- Mock agent uses well-known minimal 1×1 PNG bytes
+- Unreachable test asserts 503 and no files under `screenshot_dir`
+- Atomic write: file first, DB insert, remove file on insert failure
 
 ## Concerns
 
-1. **Timeout kill mechanism:** Relies on `kill_on_drop(true)` when the `wait_with_output` future is dropped on timeout. Correct per brief; no explicit `start_kill`/`wait` cleanup. If tokio behavior changes, timeout tests would catch regressions.
-2. **Windows-only tests:** Tests invoke `cmd` and `ping`; no `#[cfg(windows)]` guard — they will fail on non-Windows CI unless gated later.
-3. **No PowerShell test:** `ShellKind::Powershell` path is untested; deferred unless brief expands coverage.
-4. **`Cargo.lock` untracked:** Same as prior tasks; reproducible builds may want a follow-up commit.
-5. **Slow `timeout_kills`:** `ping -n 10` with 1s timeout takes ~9s wall time due to process teardown; acceptable but noisy in test runs.
+1. **No BadImage integration test** — 502 path (non-PNG, oversize, agent 5xx) covered by unit logic only; mock could be extended later.
+2. **Width/height always `None`** — per spec; dimension parsing deferred.
+3. **`Store::pool()` dead-code warning** — pre-existing; unrelated to this task.
+4. **File paths use forward slashes in string** — works on Windows; consistent with Task 2 store tests.
 
----
+## Test Gap Follow-up (2026-07-15)
 
-## Fix: Gate executor tests to Windows
+Added integration tests for previously uncovered error paths:
 
-### Change
+| Test | Asserts |
+|------|---------|
+| `capture_screenshot_agent_returns_500` | Mock agent 500 → POST 502, no files, DB count 0 |
+| `capture_screenshot_agent_returns_non_png` | Mock agent non-PNG body → POST 502, no files, DB count 0 |
+| `capture_screenshot_unknown_agent_returns_404` | POST unknown agent → 404 |
+| `get_screenshot_image_unknown_returns_404` | GET unknown screenshot image → 404 |
 
-- `#[cfg(test)]` → `#[cfg(all(test, windows))]` on the `tests` module in `crates/agent/src/executor.rs`.
-
-### Re-run
-
-```text
-cargo test -p agent executor::
-```
+Shared helpers extracted from `capture_screenshot_happy_path`: `start_mock_agent_responding`, `post_capture_screenshot`, `assert_no_screenshot_artifacts`. `capture_screenshot_agent_unreachable` updated to use `assert_no_screenshot_artifacts` (now also asserts DB count 0).
 
 ```text
-running 3 tests
-test executor::tests::nonzero_fails ... ok
-test executor::tests::echo_succeeds ... ok
-test executor::tests::timeout_kills ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 9.09s
+cargo test -p scheduler
+running 19 tests
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-**Commit:** `fix(agent): gate executor tests to Windows`
+**Commit:** `67451e8` — `test(scheduler): cover screenshot 502 and 404 paths`
