@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/status", get(status))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
+        .route("/api/screenshot", get(screenshot))
         .route("/api/register-now", post(register_now))
         .with_state(state)
 }
@@ -105,6 +106,29 @@ async fn get_task(
             StatusCode::NOT_FOUND,
             Json(ErrorBody {
                 error: "task not found".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn screenshot() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(crate::capture::capture_primary_png).await {
+        Ok(Ok(bytes)) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "image/png")],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("capture join: {e}"),
             }),
         )
             .into_response(),

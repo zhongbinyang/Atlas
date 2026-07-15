@@ -1,4 +1,5 @@
 mod api;
+mod capture;
 mod config;
 mod executor;
 mod metrics;
