@@ -108,8 +108,15 @@ async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
         ip: s.ip.clone(),
         port: s.port,
     };
-    let _ = body;
-    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+    let client = reqwest::Client::new();
+    match crate::register::register_with_center(&client, &s.center_url, &body).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(all(test, windows))]

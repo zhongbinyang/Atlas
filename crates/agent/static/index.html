@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>产线 Agent</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>产线 Agent</h1>
+    <button id="register-btn" type="button">重新注册</button>
+  </header>
+
+  <section id="status-section">
+    <h2>状态</h2>
+    <dl class="status-grid">
+      <dt>主机名</dt>
+      <dd id="hostname">—</dd>
+      <dt>IP</dt>
+      <dd id="ip">—</dd>
+      <dt>CPU</dt>
+      <dd id="cpu">—</dd>
+      <dt>内存</dt>
+      <dd id="memory">—</dd>
+      <dt>忙碌</dt>
+      <dd id="busy">—</dd>
+      <dt>运行时间</dt>
+      <dd id="uptime">—</dd>
+    </dl>
+    <p id="register-msg" class="msg" hidden></p>
+  </section>
+
+  <section id="tasks-section">
+    <h2>任务</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>命令</th>
+          <th>状态</th>
+          <th>退出码</th>
+        </tr>
+      </thead>
+      <tbody id="tasks-body">
+        <tr><td colspan="4" class="empty">暂无任务</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
