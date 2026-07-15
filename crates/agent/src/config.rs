@@ -32,9 +32,13 @@ impl AgentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_port_is_26631() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("AGENT_PORT");
         std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:26630");
         let cfg = AgentConfig::load_from_env().unwrap();
@@ -44,6 +48,7 @@ mod tests {
 
     #[test]
     fn missing_center_url_errors() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("AGENT_CENTER_URL");
         assert!(AgentConfig::load_from_env().is_err());
     }
