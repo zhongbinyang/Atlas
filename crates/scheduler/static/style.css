@@ -138,6 +138,11 @@ button:hover {
   background: var(--border);
 }
 
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .btn-sm {
   padding: 0.2rem 0.5rem;
   font-size: 0.8rem;
@@ -229,6 +234,25 @@ tr.clickable:hover {
 .status-busy {
   color: var(--busy);
 }
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  transition: background-color 160ms ease;
+}
+
+.status-dot.status-ok { background: var(--ok); }
+.status-dot.status-busy { background: var(--busy); }
+.status-dot.status-offline { background: var(--err); }
 
 .msg {
   margin-top: 0.75rem;

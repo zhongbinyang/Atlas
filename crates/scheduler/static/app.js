@@ -18,10 +18,10 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-function statusClass(status) {
-  if (status === 'online') return 'status-online';
-  if (status === 'offline') return 'status-offline';
-  return '';
+function agentStatusKind(a) {
+  if (a.status === 'offline') return 'offline';
+  if (a.busy) return 'busy';
+  return 'ok';
 }
 
 function showMsg(el, text, ok) {
@@ -330,22 +330,28 @@ function renderAgents() {
   }
   for (const a of agents) {
     const row = document.createElement('tr');
-    const busy = a.busy ? '<span class="status-busy">是</span>' : '否';
+    const kind = agentStatusKind(a);
+    const label =
+      kind === 'offline' ? '离线' : kind === 'busy' ? '在线 · 执行中' : '在线 · 空闲';
+    const offline = kind === 'offline';
+    const dis = offline ? ' disabled' : '';
     row.innerHTML =
-      '<td>' + escapeHtml(a.name) + '</td>' +
-      '<td>' + escapeHtml(a.ip) + ':' + a.port + '</td>' +
-      '<td class="' + statusClass(a.status) + '">' + escapeHtml(a.status) + '</td>' +
-      '<td>' + a.cpu_percent.toFixed(1) + '%</td>' +
-      '<td>' + a.memory_percent.toFixed(1) + '%</td>' +
-      '<td>' + busy + '</td>' +
-      '<td>' +
-        '<button type="button" class="btn-sm btn-shot" data-id="' + escapeHtml(a.id) + '">截图</button>' +
-        '<button type="button" class="btn-sm btn-history" data-id="' + escapeHtml(a.id) + '">历史</button>' +
-        '<button type="button" class="btn-sm btn-files" data-id="' + escapeHtml(a.id) + '">文件</button>' +
+      '<td class="mono">' + escapeHtml(a.name) + '</td>' +
+      '<td class="mono">' + escapeHtml(a.ip) + ':' + a.port + '</td>' +
+      '<td><span class="status-dot status-' + kind + '"></span>' + label + '</td>' +
+      '<td class="mono">' + a.cpu_percent.toFixed(1) + '%</td>' +
+      '<td class="mono">' + a.memory_percent.toFixed(1) + '%</td>' +
+      '<td>' + (a.busy ? '是' : '否') + '</td>' +
+      '<td class="row-actions">' +
+        '<button type="button" class="btn-sm btn-shot" data-id="' + escapeHtml(a.id) + '"' + dis + '>截图</button>' +
+        '<button type="button" class="btn-sm btn-history" data-id="' + escapeHtml(a.id) + '"' + dis + '>历史</button>' +
+        '<button type="button" class="btn-sm btn-files" data-id="' + escapeHtml(a.id) + '"' + dis + '>文件</button>' +
       '</td>';
-    row.querySelector('.btn-shot').addEventListener('click', () => takeScreenshot(a.id));
-    row.querySelector('.btn-history').addEventListener('click', () => openHistory(a.id));
-    row.querySelector('.btn-files').addEventListener('click', () => openFiles(a.id));
+    if (!offline) {
+      row.querySelector('.btn-shot').addEventListener('click', () => takeScreenshot(a.id));
+      row.querySelector('.btn-history').addEventListener('click', () => openHistory(a.id));
+      row.querySelector('.btn-files').addEventListener('click', () => openFiles(a.id));
+    }
     tbody.appendChild(row);
   }
 }
