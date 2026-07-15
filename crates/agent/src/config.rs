@@ -5,6 +5,7 @@ pub struct AgentConfig {
     pub center_url: String,
     pub advertise_ip: Option<String>,
     pub hostname: Option<String>,
+    pub files_root: Option<std::path::PathBuf>,
 }
 
 impl AgentConfig {
@@ -19,12 +20,16 @@ impl AgentConfig {
             .unwrap_or(26631);
         let advertise_ip = std::env::var("AGENT_ADVERTISE_IP").ok();
         let hostname = std::env::var("AGENT_HOSTNAME").ok();
+        let files_root = std::env::var("AGENT_FILES_ROOT")
+            .ok()
+            .map(std::path::PathBuf::from);
         Ok(Self {
             bind,
             port,
             center_url,
             advertise_ip,
             hostname,
+            files_root,
         })
     }
 }

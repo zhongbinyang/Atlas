@@ -1,6 +1,7 @@
 mod api;
 mod capture;
 mod config;
+mod files;
 mod executor;
 mod metrics;
 mod register;
