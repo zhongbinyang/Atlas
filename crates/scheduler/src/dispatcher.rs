@@ -200,9 +200,30 @@ pub async fn dispatcher_tick(store: &Store, client: &reqwest::Client) -> Result<
     }
 
     let tasks = store.list_tasks().await.map_err(|e| e.to_string())?;
-    for task in tasks.iter().filter(|t| t.status == "queued") {
+    let mut queued: Vec<&Task> = tasks.iter().filter(|t| t.status == "queued").collect();
+    queued.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    let mut dispatched_agents = std::collections::HashSet::new();
+    for task in queued {
+        if dispatched_agents.contains(&task.agent_id) {
+            continue;
+        }
+        let before = task.status.clone();
         if let Err(e) = dispatch_queued(store, client, task).await {
             tracing::warn!("dispatch task {}: {e}", task.id);
+            continue;
+        }
+        let after = store
+            .get_task(&task.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if before == "queued"
+            && after
+                .as_ref()
+                .map(|t| t.status != "queued")
+                .unwrap_or(false)
+        {
+            dispatched_agents.insert(task.agent_id.clone());
         }
     }
 
