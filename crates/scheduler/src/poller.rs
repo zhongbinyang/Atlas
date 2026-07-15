@@ -16,7 +16,7 @@ pub async fn run_status_poller(store: Store, client: reqwest::Client, interval_s
             match client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(st) = resp.json::<common::AgentStatusResponse>().await {
-                        let _ = store
+                        if let Err(e) = store
                             .update_agent_metrics(
                                 &agent.id,
                                 "online",
@@ -24,11 +24,16 @@ pub async fn run_status_poller(store: Store, client: reqwest::Client, interval_s
                                 st.memory_percent,
                                 st.busy,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("update agent metrics {}: {e}", agent.id);
+                        }
                     }
                 }
                 _ => {
-                    let _ = store.mark_agent_offline(&agent.id).await;
+                    if let Err(e) = store.mark_agent_offline(&agent.id).await {
+                        tracing::warn!("mark agent offline {}: {e}", agent.id);
+                    }
                 }
             }
         }
