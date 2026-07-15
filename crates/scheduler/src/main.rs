@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod dispatcher;
 mod poller;
+mod screenshot;
 mod store;
 mod web;
 
@@ -49,7 +50,12 @@ async fn main() {
         dispatcher::run_dispatcher(dispatch_store, dispatch_client, dispatch_interval).await;
     });
 
-    let app = api::router(AppState { store }).merge(web::static_router());
+    let app = api::router(AppState {
+        store,
+        client,
+        screenshot_dir: cfg.screenshot_dir,
+    })
+    .merge(web::static_router());
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse().unwrap();
     tracing::info!("scheduler listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

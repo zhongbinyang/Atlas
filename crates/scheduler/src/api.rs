@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
-    http::{Request, StatusCode},
+    extract::{Path, Query, State},
+    http::{header, Request, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -9,11 +9,14 @@ use axum::{
 use common::{ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Agent, CreateTaskParams, Store, Task, TaskTemplate, UpdateTemplateParams};
+use crate::screenshot::{capture_and_archive, CaptureError};
+use crate::store::{Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams};
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    pub client: reqwest::Client,
+    pub screenshot_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +156,72 @@ fn default_timeout() -> i64 {
     300
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenshotView {
+    pub id: String,
+    pub agent_id: String,
+    pub file_path: String,
+    pub content_type: String,
+    pub byte_size: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub created_at: String,
+}
+
+impl From<Screenshot> for ScreenshotView {
+    fn from(s: Screenshot) -> Self {
+        Self {
+            id: s.id,
+            agent_id: s.agent_id,
+            file_path: s.file_path,
+            content_type: s.content_type,
+            byte_size: s.byte_size,
+            width: s.width,
+            height: s.height,
+            created_at: s.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListScreenshotsQuery {
+    #[serde(default = "default_list_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_list_limit() -> i64 {
+    50
+}
+
+fn clamp_list_limit(limit: i64) -> i64 {
+    limit.clamp(1, 200)
+}
+
+fn capture_error_response(err: CaptureError) -> (StatusCode, Json<ErrorBody>) {
+    match err {
+        CaptureError::AgentNotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        ),
+        CaptureError::Unreachable(msg) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody { error: msg }),
+        ),
+        CaptureError::BadImage(msg) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: msg }),
+        ),
+        CaptureError::Io(msg) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody { error: msg }),
+        ),
+    }
+}
+
 fn db_error() -> (StatusCode, Json<ErrorBody>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -180,6 +249,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
+        .route(
+            "/api/agents/{id}/screenshots",
+            get(list_agent_screenshots).post(capture_agent_screenshot),
+        )
+        .route("/api/screenshots/{id}", get(get_screenshot))
+        .route("/api/screenshots/{id}/image", get(get_screenshot_image))
         .with_state(state)
 }
 
@@ -530,19 +605,190 @@ async fn get_task(State(s): State<AppState>, Path(id): Path<String>) -> impl Int
     }
 }
 
+async fn capture_agent_screenshot(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match capture_and_archive(&s.store, &s.client, &s.screenshot_dir, &id).await {
+        Ok(meta) => (StatusCode::OK, Json(ScreenshotView::from(meta))).into_response(),
+        Err(e) => {
+            tracing::error!("capture screenshot for agent {id}: {e:?}");
+            capture_error_response(e).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScreenshotListResponse {
+    items: Vec<ScreenshotView>,
+    total: i64,
+}
+
+async fn list_agent_screenshots(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ListScreenshotsQuery>,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for screenshot list: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    let limit = clamp_list_limit(q.limit);
+    let offset = q.offset.max(0);
+
+    match s.store.count_screenshots(&id).await {
+        Ok(total) => match s.store.list_screenshots(&id, limit, offset).await {
+            Ok(items) => {
+                let views: Vec<ScreenshotView> =
+                    items.into_iter().map(ScreenshotView::from).collect();
+                (
+                    StatusCode::OK,
+                    Json(ScreenshotListResponse { items: views, total }),
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                tracing::error!("list screenshots: {e}");
+                db_error().into_response()
+            }
+        },
+        Err(e) => {
+            tracing::error!("count screenshots: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_screenshot(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.store.get_screenshot(&id).await {
+        Ok(Some(meta)) => (StatusCode::OK, Json(ScreenshotView::from(meta))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "screenshot not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get screenshot: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_screenshot_image(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let meta = match s.store.get_screenshot(&id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "screenshot not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get screenshot for image: {e}");
+            return db_error().into_response();
+        }
+    };
+
+    match tokio::fs::read(&meta.file_path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "screenshot file not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("read screenshot file {}: {e}", meta.file_path);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorBody {
+                    error: "failed to read screenshot file".into(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+    use std::net::SocketAddr;
     use tower::ServiceExt;
 
-    async fn test_app() -> Router {
+    /// Minimal valid 1x1 PNG (well-known constant).
+    pub const MINIMAL_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    struct TestApp {
+        router: Router,
+        _db_dir: tempfile::TempDir,
+        screenshot_dir: String,
+    }
+
+    async fn test_app() -> TestApp {
         let dir = tempfile::tempdir().unwrap();
         let url = format!("sqlite:{}", dir.path().join("t.db").display());
         let pool = crate::db::connect(&url).await.unwrap();
-        router(AppState {
-            store: Store::new(pool),
-        })
+        let screenshot_dir = dir.path().join("shots");
+        let screenshot_dir_str = screenshot_dir.to_string_lossy().to_string();
+        TestApp {
+            router: router(AppState {
+                store: Store::new(pool),
+                client: reqwest::Client::new(),
+                screenshot_dir: screenshot_dir_str.clone(),
+            }),
+            _db_dir: dir,
+            screenshot_dir: screenshot_dir_str,
+        }
+    }
+
+    async fn start_mock_agent() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let mock = Router::new().route(
+            "/api/screenshot",
+            get(|| async {
+                ([(header::CONTENT_TYPE, "image/png")], MINIMAL_PNG)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        (addr, handle)
     }
 
     fn register_request(name: &str, ip: &str, port: u16) -> Request<Body> {
@@ -580,9 +826,115 @@ mod tests {
         agent.id
     }
 
+    async fn register_agent_at(app: &Router, ip: &str, port: u16) -> String {
+        let resp = app
+            .clone()
+            .oneshot(register_request("mock-agent", ip, port))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let agent: AgentView = serde_json::from_slice(&bytes).unwrap();
+        agent.id
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_happy_path() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent().await;
+        let agent_id = register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let meta: ScreenshotView = serde_json::from_slice(&bytes).unwrap();
+        assert!(!meta.id.is_empty());
+        assert_eq!(meta.agent_id, agent_id);
+        assert_eq!(meta.content_type, "image/png");
+        assert_eq!(meta.byte_size, MINIMAL_PNG.len() as i64);
+
+        let file_path = std::path::Path::new(&test.screenshot_dir)
+            .join(&agent_id)
+            .join(format!("{}.png", meta.id));
+        assert!(file_path.exists());
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/screenshots/{}/image", meta.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let image_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(image_bytes.as_ref(), MINIMAL_PNG);
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: ScreenshotListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(list.total >= 1);
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].id, meta.id);
+    }
+
+    #[tokio::test]
+    async fn capture_screenshot_agent_unreachable() {
+        let test = test_app().await;
+        let agent_id = register_agent_at(&test.router, "127.0.0.1", 1).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/screenshots"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let shot_root = std::path::Path::new(&test.screenshot_dir);
+        if shot_root.exists() {
+            let count: usize = std::fs::read_dir(shot_root)
+                .map(|rd| rd.count())
+                .unwrap_or(0);
+            assert_eq!(count, 0);
+        }
+    }
+
     #[tokio::test]
     async fn template_crud_via_http() {
-        let app = test_app().await;
+        let test = test_app().await;
+        let app = &test.router;
 
         let create_body = serde_json::json!({
             "name": "echo-test",
@@ -671,8 +1023,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_from_template_via_http() {
-        let app = test_app().await;
-        let agent_id = register_agent_id(&app).await;
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
 
         let template_body = serde_json::json!({
             "name": "ping",
@@ -730,8 +1083,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_ad_hoc_task_via_http() {
-        let app = test_app().await;
-        let agent_id = register_agent_id(&app).await;
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
 
         let task_body = serde_json::json!({
             "agent_id": agent_id,
@@ -767,7 +1121,8 @@ mod tests {
 
     #[tokio::test]
     async fn register_upsert_via_http() {
-        let app = test_app().await;
+        let test = test_app().await;
+        let app = &test.router;
         let resp = app
             .clone()
             .oneshot(register_request("LINE-01", "192.168.1.20", 26631))
@@ -782,6 +1137,7 @@ mod tests {
         assert_eq!(first.status, "offline");
 
         let resp = app
+            .clone()
             .oneshot(register_request("LINE-01", "192.168.1.20", 26631))
             .await
             .unwrap();
@@ -793,7 +1149,8 @@ mod tests {
 
     #[tokio::test]
     async fn register_rejects_invalid_fields() {
-        let app = test_app().await;
+        let test = test_app().await;
+        let app = &test.router;
         for (name, ip, port) in [
             ("", "1.2.3.4", 26631),
             ("n", "", 26631),
