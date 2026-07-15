@@ -553,6 +553,7 @@ async function showTaskDetail(id) {
   const t = await resp.json();
   renderTaskDetail(t);
   renderTasks();
+  document.getElementById('task-detail-section').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function renderTaskDetail(t) {
