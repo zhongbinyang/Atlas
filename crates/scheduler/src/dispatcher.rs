@@ -345,6 +345,13 @@ mod tests {
         store.get_agent(&agent.id).await.unwrap().unwrap()
     }
 
+    async fn unused_local_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
     #[tokio::test]
     async fn dispatcher_tick_success_path_reaches_succeeded() {
         let store = test_store().await;
@@ -369,6 +376,10 @@ mod tests {
         assert_eq!(dispatched.status, "dispatched");
         assert_eq!(dispatched.agent_task_id.as_deref(), Some("agent-task-1"));
 
+        dispatcher_tick(&store, &client).await.unwrap();
+        let running = store.get_task(&task.id).await.unwrap().unwrap();
+        assert_eq!(running.status, "running");
+
         tokio::time::sleep(Duration::from_millis(150)).await;
         dispatcher_tick(&store, &client).await.unwrap();
         let finished = store.get_task(&task.id).await.unwrap().unwrap();
@@ -384,6 +395,31 @@ mod tests {
         let client = reqwest::Client::new();
         let (ip, port, _handle) = start_mock_agent(true).await;
         let agent = seed_online_agent(&store, &ip, port).await;
+        let task = store
+            .create_task(CreateTaskParams {
+                agent_id: agent.id,
+                source: "ad_hoc".into(),
+                template_id: None,
+                shell: "cmd".into(),
+                command: "echo ok".into(),
+                workdir: None,
+                timeout_secs: 300,
+            })
+            .await
+            .unwrap();
+
+        dispatcher_tick(&store, &client).await.unwrap();
+        let got = store.get_task(&task.id).await.unwrap().unwrap();
+        assert_eq!(got.status, "queued");
+        assert!(got.agent_task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_tick_network_error_requeues_task() {
+        let store = test_store().await;
+        let client = reqwest::Client::new();
+        let port = unused_local_port().await;
+        let agent = seed_online_agent(&store, "127.0.0.1", port).await;
         let task = store
             .create_task(CreateTaskParams {
                 agent_id: agent.id,
