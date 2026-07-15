@@ -182,6 +182,46 @@
     </div>
   </div>
 
+  <div id="files-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="files-modal"></div>
+    <div class="modal-panel modal-panel-wide">
+      <div class="modal-header">
+        <h2 id="files-title">文件</h2>
+        <button id="files-close" type="button" class="btn-sm">关闭</button>
+      </div>
+      <div class="modal-body">
+        <nav id="files-crumb" class="files-crumb"></nav>
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>大小</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="files-body">
+            <tr><td colspan="4" class="empty">暂无文件</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="file-preview-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="file-preview-modal"></div>
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="file-preview-title">预览</h2>
+        <button id="file-preview-close" type="button" class="btn-sm">关闭</button>
+      </div>
+      <div class="modal-body">
+        <pre id="file-preview-pre" hidden></pre>
+        <img id="file-preview-img" alt="预览" hidden>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

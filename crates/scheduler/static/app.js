@@ -7,6 +7,8 @@ let selectedTaskId = null;
 let historyAgentId = null;
 let historyOffset = 0;
 const HISTORY_LIMIT = 50;
+let filesAgentId = null;
+let filesPath = '';
 
 function escapeHtml(str) {
   return String(str)
@@ -59,6 +61,189 @@ function closeShotHistoryModal() {
   document.getElementById('shot-history-modal').hidden = true;
   historyAgentId = null;
   historyOffset = 0;
+}
+
+function openFilesModal() {
+  document.getElementById('files-modal').hidden = false;
+}
+
+function closeFilesModal() {
+  document.getElementById('files-modal').hidden = true;
+  filesAgentId = null;
+  filesPath = '';
+}
+
+function openFilePreviewModal() {
+  document.getElementById('file-preview-modal').hidden = false;
+}
+
+function closeFilePreviewModal() {
+  document.getElementById('file-preview-modal').hidden = true;
+  document.getElementById('file-preview-pre').hidden = true;
+  document.getElementById('file-preview-pre').textContent = '';
+  document.getElementById('file-preview-img').hidden = true;
+  document.getElementById('file-preview-img').removeAttribute('src');
+}
+
+function joinFilesPath(base, name) {
+  return base ? base + '/' + name : name;
+}
+
+function fileContentUrl(relPath, download) {
+  let url = '/api/agents/' + encodeURIComponent(filesAgentId) +
+    '/files/content?path=' + encodeURIComponent(relPath);
+  if (download) url += '&download=1';
+  return url;
+}
+
+async function openFiles(agentId) {
+  filesAgentId = agentId;
+  filesPath = '';
+  const agent = agents.find(a => a.id === agentId);
+  const title = document.getElementById('files-title');
+  title.textContent = '文件' + (agent ? ' — ' + agent.name : '');
+  await loadFiles();
+  openFilesModal();
+}
+
+async function loadFiles() {
+  const q = filesPath ? ('?path=' + encodeURIComponent(filesPath)) : '';
+  const resp = await fetch('/api/agents/' + encodeURIComponent(filesAgentId) + '/files' + q);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.error || ('加载文件失败: ' + resp.status));
+    return;
+  }
+  const data = await resp.json();
+  renderFilesCrumb(data.path || filesPath);
+  renderFiles(data.entries || []);
+}
+
+function renderFilesCrumb(path) {
+  const crumb = document.getElementById('files-crumb');
+  crumb.innerHTML = '';
+  const root = document.createElement('a');
+  root.textContent = '根目录';
+  root.addEventListener('click', () => {
+    filesPath = '';
+    loadFiles();
+  });
+  crumb.appendChild(root);
+
+  if (!path) return;
+  const parts = path.split('/').filter(Boolean);
+  let acc = '';
+  for (const part of parts) {
+    const sep = document.createElement('span');
+    sep.className = 'crumb-sep';
+    sep.textContent = '/';
+    crumb.appendChild(sep);
+
+    acc = joinFilesPath(acc, part);
+    const link = document.createElement('a');
+    link.textContent = part;
+    const target = acc;
+    link.addEventListener('click', () => {
+      filesPath = target;
+      loadFiles();
+    });
+    crumb.appendChild(link);
+  }
+}
+
+function renderFiles(entries) {
+  const tbody = document.getElementById('files-body');
+  tbody.innerHTML = '';
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无文件</td></tr>';
+    return;
+  }
+
+  const sorted = entries.slice().sort((a, b) => {
+    if (a.kind === 'dir' && b.kind !== 'dir') return -1;
+    if (a.kind !== 'dir' && b.kind === 'dir') return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const entry of sorted) {
+    const row = document.createElement('tr');
+    const isDir = entry.kind === 'dir';
+    const ext = entry.ext || '';
+    const relPath = joinFilesPath(filesPath, entry.name);
+    const size = isDir ? '—' : formatByteSize(entry.size || 0);
+    const kindLabel = isDir ? '目录' : (ext || '文件');
+
+    let actions = '';
+    if (isDir) {
+      actions = '<button type="button" class="btn-sm btn-files-open">打开</button>';
+    } else if (ext === 'txt' || ext === 'gif') {
+      actions =
+        '<button type="button" class="btn-sm btn-files-preview">预览</button>' +
+        '<button type="button" class="btn-sm btn-files-download">下载</button>';
+    } else {
+      actions = '<button type="button" class="btn-sm btn-files-download">下载</button>';
+    }
+
+    row.innerHTML =
+      '<td>' + escapeHtml(entry.name) + '</td>' +
+      '<td>' + escapeHtml(kindLabel) + '</td>' +
+      '<td>' + escapeHtml(size) + '</td>' +
+      '<td>' + actions + '</td>';
+
+    const openBtn = row.querySelector('.btn-files-open');
+    if (openBtn) {
+      openBtn.addEventListener('click', () => {
+        filesPath = relPath;
+        loadFiles();
+      });
+    }
+
+    const previewBtn = row.querySelector('.btn-files-preview');
+    if (previewBtn) {
+      previewBtn.addEventListener('click', () => previewFile(relPath, ext, entry.name));
+    }
+
+    const downloadBtn = row.querySelector('.btn-files-download');
+    if (downloadBtn) {
+      downloadBtn.addEventListener('click', () => downloadFile(relPath));
+    }
+
+    tbody.appendChild(row);
+  }
+}
+
+function previewFile(relPath, ext, name) {
+  const pre = document.getElementById('file-preview-pre');
+  const img = document.getElementById('file-preview-img');
+  document.getElementById('file-preview-title').textContent = '预览 — ' + name;
+  const url = fileContentUrl(relPath, false);
+
+  if (ext === 'gif') {
+    pre.hidden = true;
+    pre.textContent = '';
+    img.hidden = false;
+    img.src = url;
+    openFilePreviewModal();
+    return;
+  }
+
+  img.hidden = true;
+  img.removeAttribute('src');
+  pre.hidden = false;
+  pre.textContent = '加载中…';
+  openFilePreviewModal();
+
+  fetch(url)
+    .then(r => {
+      if (!r.ok) throw new Error('加载失败: ' + r.status);
+      return r.text();
+    })
+    .then(t => { pre.textContent = t; })
+    .catch(err => { pre.textContent = err.message; });
+}
+
+function downloadFile(relPath) {
+  window.open(fileContentUrl(relPath, true), '_blank');
 }
 
 function showScreenshotImage(id) {
@@ -158,9 +343,11 @@ function renderAgents() {
       '<td>' +
         '<button type="button" class="btn-sm btn-shot" data-id="' + escapeHtml(a.id) + '">截图</button>' +
         '<button type="button" class="btn-sm btn-history" data-id="' + escapeHtml(a.id) + '">历史</button>' +
+        '<button type="button" class="btn-sm btn-files" data-id="' + escapeHtml(a.id) + '">文件</button>' +
       '</td>';
     row.querySelector('.btn-shot').addEventListener('click', () => takeScreenshot(a.id));
     row.querySelector('.btn-history').addEventListener('click', () => openHistory(a.id));
+    row.querySelector('.btn-files').addEventListener('click', () => openFiles(a.id));
     tbody.appendChild(row);
   }
 }
@@ -393,12 +580,16 @@ document.getElementById('refresh-btn').addEventListener('click', refreshAll);
 
 document.getElementById('shot-close').addEventListener('click', closeShotModal);
 document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);
+document.getElementById('files-close').addEventListener('click', closeFilesModal);
+document.getElementById('file-preview-close').addEventListener('click', closeFilePreviewModal);
 
 document.querySelectorAll('.modal-backdrop').forEach(el => {
   el.addEventListener('click', () => {
     const id = el.getAttribute('data-close');
     if (id === 'shot-modal') closeShotModal();
     else if (id === 'shot-history-modal') closeShotHistoryModal();
+    else if (id === 'files-modal') closeFilesModal();
+    else if (id === 'file-preview-modal') closeFilePreviewModal();
   });
 });
 

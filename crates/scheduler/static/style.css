@@ -258,3 +258,27 @@ pre {
   margin-top: 0.75rem;
   font-size: 0.9rem;
 }
+
+.files-crumb {
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.files-crumb a {
+  color: #1a5fb4;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.files-crumb a:hover {
+  text-decoration: underline;
+}
+
+.files-crumb .crumb-sep {
+  color: #888;
+  margin: 0 0.25rem;
+}
+
+#file-preview-pre {
+  max-height: 70vh;
+}
