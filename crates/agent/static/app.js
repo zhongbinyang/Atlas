@@ -6,9 +6,11 @@ async function fetchStatus() {
   const data = await resp.json();
   document.getElementById('hostname').textContent = data.hostname;
   document.getElementById('ip').textContent = data.ip;
-  document.getElementById('cpu').textContent = data.cpu_percent.toFixed(1) + '%';
-  document.getElementById('memory').textContent = data.memory_percent.toFixed(1) + '%';
-  document.getElementById('busy').textContent = data.busy ? '是' : '否';
+  document.getElementById('metric-cpu').textContent = data.cpu_percent.toFixed(1) + '%';
+  document.getElementById('metric-memory').textContent = data.memory_percent.toFixed(1) + '%';
+  const busyEl = document.getElementById('metric-busy');
+  busyEl.textContent = data.busy ? '● 执行中' : '● 空闲';
+  busyEl.className = 'metric-busy ' + (data.busy ? 'is-busy' : 'is-idle');
   document.getElementById('uptime').textContent = formatUptime(data.uptime_secs);
 }
 

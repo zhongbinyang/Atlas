@@ -4,49 +4,67 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>产线 Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>产线 Agent</h1>
-    <button id="register-btn" type="button">重新注册</button>
+  <header class="topbar">
+    <h1 class="brand">产线 Agent</h1>
+    <button id="register-btn" type="button" class="btn-primary">重新注册</button>
   </header>
 
-  <section id="status-section">
-    <h2>状态</h2>
-    <dl class="status-grid">
-      <dt>主机名</dt>
-      <dd id="hostname">—</dd>
-      <dt>IP</dt>
-      <dd id="ip">—</dd>
-      <dt>CPU</dt>
-      <dd id="cpu">—</dd>
-      <dt>内存</dt>
-      <dd id="memory">—</dd>
-      <dt>忙碌</dt>
-      <dd id="busy">—</dd>
-      <dt>运行时间</dt>
-      <dd id="uptime">—</dd>
-    </dl>
-    <p id="register-msg" class="msg" hidden></p>
-  </section>
+  <main class="page">
+    <section id="status-section" class="hero">
+      <div class="hero-meta">
+        <div>
+          <div class="label">主机名</div>
+          <div id="hostname" class="mono">—</div>
+        </div>
+        <div>
+          <div class="label">IP</div>
+          <div id="ip" class="mono">—</div>
+        </div>
+        <div>
+          <div class="label">运行时间</div>
+          <div id="uptime">—</div>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <div class="label">CPU</div>
+          <div id="metric-cpu" class="metric-value mono">—</div>
+        </div>
+        <div class="metric">
+          <div class="label">内存</div>
+          <div id="metric-memory" class="metric-value mono">—</div>
+        </div>
+        <div class="metric">
+          <div class="label">忙碌</div>
+          <div id="metric-busy" class="metric-busy">—</div>
+        </div>
+      </div>
+      <p id="register-msg" class="msg" hidden></p>
+    </section>
 
-  <section id="tasks-section">
-    <h2>任务</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>命令</th>
-          <th>状态</th>
-          <th>退出码</th>
-        </tr>
-      </thead>
-      <tbody id="tasks-body">
-        <tr><td colspan="4" class="empty">暂无任务</td></tr>
-      </tbody>
-    </table>
-  </section>
+    <section id="tasks-section">
+      <h2>近期任务</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>命令</th>
+            <th>状态</th>
+            <th>退出码</th>
+          </tr>
+        </thead>
+        <tbody id="tasks-body">
+          <tr><td colspan="4" class="empty">暂无任务</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
 
   <script src="/app.js"></script>
 </body>
