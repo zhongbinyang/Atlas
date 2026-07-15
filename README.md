@@ -74,6 +74,8 @@ Open `http://127.0.0.1:26631` for the agent WebUI.
 
 The scheduler dispatches **at most one queued task per agent per tick**. Queued tasks are ordered **FIFO** (`created_at ASC`). While an agent is busy, additional tasks stay `queued` until the current task finishes (agent returns HTTP 409 if a second task is submitted directly).
 
+**Agent restart during execution:** If an agent restarts while a task is `dispatched` or `running`, the scheduler’s recovery logic may not find the in-flight task on the agent (e.g. HTTP 404 or other non-success). The center task is requeued and may run again after redispatch. Treat long or side-effecting commands accordingly.
+
 ## Manual E2E checklist
 
 1. **Scheduler starts** on `:26630`; `GET http://127.0.0.1:26630/` returns the WebUI (200).

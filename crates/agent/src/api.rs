@@ -63,6 +63,15 @@ async fn create_task(
         )
             .into_response();
     }
+    if req.timeout_secs == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "timeout_secs must be greater than 0".into(),
+            }),
+        )
+            .into_response();
+    }
     match s.slot.submit(req).await {
         Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
         Err("busy") => (
@@ -108,7 +117,7 @@ async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
         ip: s.ip.clone(),
         port: s.port,
     };
-    let client = reqwest::Client::new();
+    let client = crate::register::http_client();
     match crate::register::register_with_center(&client, &s.center_url, &body).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(e) => (

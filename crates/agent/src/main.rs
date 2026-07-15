@@ -43,7 +43,7 @@ async fn main() {
         center_url: cfg.center_url.clone(),
     };
 
-    let client = reqwest::Client::new();
+    let client = register::http_client();
     let reg = common::RegisterAgentRequest {
         name: hostname,
         ip,

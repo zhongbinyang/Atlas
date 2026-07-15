@@ -56,9 +56,7 @@ async fn recover_in_flight(store: &Store, client: &reqwest::Client, task: &Task)
             task.id,
             resp.status()
         );
-        if resp.status().as_u16() == 404 {
-            requeue_task(store, &task.id, &agent.id).await?;
-        }
+        requeue_task(store, &task.id, &agent.id).await?;
         return Ok(());
     }
 
@@ -285,6 +283,7 @@ mod tests {
             StatusCode::CREATED,
             Json(AgentTaskView {
                 id: state.task_id.clone(),
+                command: String::new(),
                 status: TaskStatus::Running,
                 exit_code: None,
                 stdout: String::new(),
@@ -307,21 +306,23 @@ mod tests {
         if elapsed < Duration::from_millis(100) {
             return (
                 StatusCode::OK,
-                Json(AgentTaskView {
-                    id: state.task_id.clone(),
-                    status: TaskStatus::Running,
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                }),
-            )
-                .into_response();
+            Json(AgentTaskView {
+                id: state.task_id.clone(),
+                command: String::new(),
+                status: TaskStatus::Running,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+        )
+            .into_response();
         }
 
         (
             StatusCode::OK,
             Json(AgentTaskView {
                 id: state.task_id.clone(),
+                command: String::new(),
                 status: TaskStatus::Succeeded,
                 exit_code: Some(0),
                 stdout: "ok".into(),

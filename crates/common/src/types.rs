@@ -53,6 +53,7 @@ pub struct CreateAgentTaskRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTaskView {
     pub id: String,
+    pub command: String,
     pub status: TaskStatus,
     pub exit_code: Option<i32>,
     pub stdout: String,

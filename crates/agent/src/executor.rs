@@ -4,6 +4,20 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+const OUTPUT_CAP: usize = 256 * 1024;
+const TRUNCATED_SUFFIX: &str = "...[truncated]";
+
+pub fn truncate_output(s: String) -> String {
+    if s.len() <= OUTPUT_CAP {
+        return s;
+    }
+    let keep = OUTPUT_CAP.saturating_sub(TRUNCATED_SUFFIX.len());
+    let mut out = s;
+    out.truncate(keep);
+    out.push_str(TRUNCATED_SUFFIX);
+    out
+}
+
 #[derive(Debug)]
 pub struct ExecuteResult {
     pub status: TaskStatus,
@@ -61,8 +75,8 @@ pub async fn run_command(
             ExecuteResult {
                 status,
                 exit_code: code,
-                stdout,
-                stderr,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(stderr),
             }
         }
         Ok(Err(e)) => ExecuteResult {

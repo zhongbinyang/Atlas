@@ -11,7 +11,16 @@ use std::net::SocketAddr;
 use api::AppState;
 use config::SchedulerConfig;
 use store::Store;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("http client")
+}
 
 #[tokio::main]
 async fn main() {
@@ -24,7 +33,7 @@ async fn main() {
         .await
         .expect("database connection failed");
     let store = Store::new(pool);
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let poll_store = store.clone();
     let poll_client = client.clone();

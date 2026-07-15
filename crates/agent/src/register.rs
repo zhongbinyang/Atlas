@@ -1,4 +1,14 @@
+use std::time::Duration;
+
 use common::RegisterAgentRequest;
+
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("http client")
+}
 
 pub async fn register_with_center(
     client: &reqwest::Client,

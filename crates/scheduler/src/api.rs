@@ -272,6 +272,9 @@ fn validate_template_create(req: &CreateTemplateRequest) -> Option<&'static str>
     if req.shell.trim().is_empty() {
         return Some("shell is required");
     }
+    if req.timeout_secs == 0 {
+        return Some("timeout_secs must be greater than 0");
+    }
     None
 }
 
@@ -481,6 +484,15 @@ async fn create_task(
                     .into_response();
             }
         };
+        if req.timeout_secs == Some(0) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: "timeout_secs must be greater than 0".into(),
+                }),
+            )
+                .into_response();
+        }
         CreateTaskParams {
             agent_id: req.agent_id.trim().into(),
             source: "ad_hoc".into(),

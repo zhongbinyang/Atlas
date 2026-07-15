@@ -51,6 +51,7 @@ impl TaskSlot {
             g.busy = true;
             let view = AgentTaskView {
                 id: id.clone(),
+                command: req.command.clone(),
                 status: TaskStatus::Running,
                 exit_code: None,
                 stdout: String::new(),
