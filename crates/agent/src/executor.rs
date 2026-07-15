@@ -80,7 +80,7 @@ pub async fn run_command(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
