@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, Request, StatusCode},
+    http::{header, Request, StatusCode, Uri},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -253,6 +253,8 @@ pub fn router(state: AppState) -> Router {
             "/api/agents/{id}/screenshots",
             get(list_agent_screenshots).post(capture_agent_screenshot),
         )
+        .route("/api/agents/{id}/files", get(list_agent_files))
+        .route("/api/agents/{id}/files/content", get(get_agent_file_content))
         .route("/api/screenshots/{id}", get(get_screenshot))
         .route("/api/screenshots/{id}/image", get(get_screenshot_image))
         .with_state(state)
@@ -605,6 +607,122 @@ async fn get_task(State(s): State<AppState>, Path(id): Path<String>) -> impl Int
     }
 }
 
+fn agent_path_and_query(base: &str, query: Option<&str>) -> String {
+    match query {
+        Some(q) => format!("{base}?{q}"),
+        None => base.to_string(),
+    }
+}
+
+async fn proxy_agent_get(
+    client: &reqwest::Client,
+    agent: &Agent,
+    path_and_query: &str,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let url = format!("http://{}:{}{}", agent.ip, agent.port, path_and_query);
+    client.get(url).send().await
+}
+
+async fn proxied_agent_response(resp: reqwest::Response) -> axum::response::Response {
+    let status = StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let content_disposition = resp
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    match resp.bytes().await {
+        Ok(bytes) => {
+            let mut builder = axum::response::Response::builder().status(status);
+            if let Some(ct) = content_type {
+                builder = builder.header(header::CONTENT_TYPE, ct);
+            }
+            if let Some(cd) = content_disposition {
+                builder = builder.header(header::CONTENT_DISPOSITION, cd);
+            }
+            builder.body(Body::from(bytes)).unwrap().into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody {
+                error: format!("failed to read agent response: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn proxy_agent_request(
+    client: &reqwest::Client,
+    agent: &Agent,
+    path_and_query: &str,
+) -> axum::response::Response {
+    match proxy_agent_get(client, agent, path_and_query).await {
+        Ok(resp) => proxied_agent_response(resp).await,
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_agent_files(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(Some(agent)) => {
+            let path_and_query = agent_path_and_query("/api/files", uri.query());
+            proxy_agent_request(&s.client, &agent, &path_and_query).await
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent for files list: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_agent_file_content(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(Some(agent)) => {
+            let path_and_query = agent_path_and_query("/api/files/content", uri.query());
+            proxy_agent_request(&s.client, &agent, &path_and_query).await
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent for file content: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
 async fn capture_agent_screenshot(
     State(s): State<AppState>,
     Path(id): Path<String>,
@@ -791,6 +909,69 @@ mod tests {
                 (status, [(header::CONTENT_TYPE, content_type)], body)
             }),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        (addr, handle)
+    }
+
+    const MOCK_FILES_LIST: &str =
+        r#"{"path":"","entries":[{"name":"Log.txt","kind":"file","size":5,"ext":"txt"}]}"#;
+    const MOCK_FILE_BYTES: &[u8] = b"hello";
+
+    async fn start_mock_agent_files() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let list_json = MOCK_FILES_LIST.to_string();
+        let mock = Router::new()
+            .route(
+                "/api/files",
+                get({
+                    let list_json = list_json.clone();
+                    move |Query(q): Query<std::collections::HashMap<String, String>>| {
+                        let list_json = list_json.clone();
+                        async move {
+                            if q.get("path").map(String::as_str) == Some("missing") {
+                                return (
+                                    StatusCode::NOT_FOUND,
+                                    Json(ErrorBody {
+                                        error: "not found".into(),
+                                    }),
+                                )
+                                    .into_response();
+                            }
+                            (
+                                StatusCode::OK,
+                                [(header::CONTENT_TYPE, "application/json")],
+                                list_json,
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/files/content",
+                get(
+                    |Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                        let download = q.get("download").map(String::as_str) == Some("1");
+                        let mut headers = axum::http::HeaderMap::new();
+                        headers.insert(
+                            header::CONTENT_TYPE,
+                            "text/plain".parse().expect("content-type"),
+                        );
+                        if download {
+                            headers.insert(
+                                header::CONTENT_DISPOSITION,
+                                "attachment; filename=\"Log.txt\""
+                                    .parse()
+                                    .expect("content-disposition"),
+                            );
+                        }
+                        (StatusCode::OK, headers, MOCK_FILE_BYTES).into_response()
+                    },
+                ),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
@@ -1238,6 +1419,185 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let second: AgentView = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(first.id, second.id);
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_files_list_forwards_json() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_files().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/files"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_FILES_LIST.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_files_list_forwards_query_string() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_files().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/agents/{agent_id}/files?path=EyeDiagram%2F35"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_FILES_LIST.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_files_list_forwards_agent_status() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_files().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/files?path=missing"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "not found");
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_file_content_forwards_bytes_and_headers() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_files().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/agents/{agent_id}/files/content?path=Log.txt"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain"
+        );
+        assert!(resp.headers().get(header::CONTENT_DISPOSITION).is_none());
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_FILE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_file_content_forwards_download_header() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_files().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/agents/{agent_id}/files/content?path=Log.txt&download=1"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"Log.txt\""
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_FILE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_files_unreachable_returns_503() {
+        let test = test_app().await;
+        let agent_id = register_agent_at(&test.router, "127.0.0.1", 1).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/files"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(!err.error.is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_files_unknown_agent_returns_404() {
+        let test = test_app().await;
+        let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{unknown_id}/files"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
     }
 
     #[tokio::test]
