@@ -4,6 +4,9 @@ let agents = [];
 let templates = [];
 let tasks = [];
 let selectedTaskId = null;
+let historyAgentId = null;
+let historyOffset = 0;
+const HISTORY_LIMIT = 50;
 
 function escapeHtml(str) {
   return String(str)
@@ -33,11 +36,113 @@ async function fetchAgents() {
   updateAgentSelects();
 }
 
+function formatByteSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function openShotModal() {
+  document.getElementById('shot-modal').hidden = false;
+}
+
+function closeShotModal() {
+  document.getElementById('shot-modal').hidden = true;
+  document.getElementById('shot-img').removeAttribute('src');
+}
+
+function openShotHistoryModal() {
+  document.getElementById('shot-history-modal').hidden = false;
+}
+
+function closeShotHistoryModal() {
+  document.getElementById('shot-history-modal').hidden = true;
+  historyAgentId = null;
+  historyOffset = 0;
+}
+
+function showScreenshotImage(id) {
+  document.getElementById('shot-img').src =
+    '/api/screenshots/' + encodeURIComponent(id) + '/image?' + Date.now();
+  openShotModal();
+}
+
+async function takeScreenshot(agentId) {
+  const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/screenshots', {
+    method: 'POST',
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.error || ('截图失败: ' + resp.status));
+    return;
+  }
+  const meta = await resp.json();
+  showScreenshotImage(meta.id);
+}
+
+async function openHistory(agentId, offset = 0) {
+  historyAgentId = agentId;
+  historyOffset = offset;
+  const agent = agents.find(a => a.id === agentId);
+  const title = document.getElementById('shot-history-title');
+  title.textContent = '截图历史' + (agent ? ' — ' + agent.name : '');
+
+  const resp = await fetch(
+    '/api/agents/' + encodeURIComponent(agentId) +
+      '/screenshots?limit=' + HISTORY_LIMIT + '&offset=' + offset
+  );
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.error || ('加载历史失败: ' + resp.status));
+    return;
+  }
+  const data = await resp.json();
+  renderHistory(data.items, data.total, offset);
+  openShotHistoryModal();
+}
+
+function renderHistory(items, total, offset) {
+  const tbody = document.getElementById('shot-history-body');
+  tbody.innerHTML = '';
+  if (items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无截图</td></tr>';
+  } else {
+    for (const item of items) {
+      const row = document.createElement('tr');
+      row.innerHTML =
+        '<td>' + escapeHtml(item.created_at) + '</td>' +
+        '<td>' + escapeHtml(formatByteSize(item.byte_size)) + '</td>' +
+        '<td><button type="button" class="btn-sm btn-view-shot" data-id="' +
+          escapeHtml(item.id) + '">查看</button></td>';
+      row.querySelector('.btn-view-shot').addEventListener('click', () => {
+        showScreenshotImage(item.id);
+      });
+      tbody.appendChild(row);
+    }
+  }
+
+  const pager = document.getElementById('shot-history-pager');
+  const prevBtn = document.getElementById('shot-history-prev');
+  const nextBtn = document.getElementById('shot-history-next');
+  const pageInfo = document.getElementById('shot-history-page-info');
+
+  if (total > items.length || offset > 0) {
+    pager.hidden = false;
+    const start = offset + 1;
+    const end = offset + items.length;
+    pageInfo.textContent = start + '–' + end + ' / ' + total;
+    prevBtn.disabled = offset === 0;
+    nextBtn.disabled = offset + items.length >= total;
+  } else {
+    pager.hidden = true;
+  }
+}
+
 function renderAgents() {
   const tbody = document.getElementById('agents-body');
   tbody.innerHTML = '';
   if (agents.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无 Agent</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无 Agent</td></tr>';
     return;
   }
   for (const a of agents) {
@@ -49,7 +154,13 @@ function renderAgents() {
       '<td class="' + statusClass(a.status) + '">' + escapeHtml(a.status) + '</td>' +
       '<td>' + a.cpu_percent.toFixed(1) + '%</td>' +
       '<td>' + a.memory_percent.toFixed(1) + '%</td>' +
-      '<td>' + busy + '</td>';
+      '<td>' + busy + '</td>' +
+      '<td>' +
+        '<button type="button" class="btn-sm btn-shot" data-id="' + escapeHtml(a.id) + '">截图</button>' +
+        '<button type="button" class="btn-sm btn-history" data-id="' + escapeHtml(a.id) + '">历史</button>' +
+      '</td>';
+    row.querySelector('.btn-shot').addEventListener('click', () => takeScreenshot(a.id));
+    row.querySelector('.btn-history').addEventListener('click', () => openHistory(a.id));
     tbody.appendChild(row);
   }
 }
@@ -279,6 +390,29 @@ document.getElementById('close-detail').addEventListener('click', () => {
 });
 
 document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+
+document.getElementById('shot-close').addEventListener('click', closeShotModal);
+document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);
+
+document.querySelectorAll('.modal-backdrop').forEach(el => {
+  el.addEventListener('click', () => {
+    const id = el.getAttribute('data-close');
+    if (id === 'shot-modal') closeShotModal();
+    else if (id === 'shot-history-modal') closeShotHistoryModal();
+  });
+});
+
+document.getElementById('shot-history-prev').addEventListener('click', () => {
+  if (historyAgentId && historyOffset > 0) {
+    openHistory(historyAgentId, Math.max(0, historyOffset - HISTORY_LIMIT));
+  }
+});
+
+document.getElementById('shot-history-next').addEventListener('click', () => {
+  if (historyAgentId) {
+    openHistory(historyAgentId, historyOffset + HISTORY_LIMIT);
+  }
+});
 
 async function refreshAll() {
   await Promise.all([fetchAgents(), fetchTemplates(), fetchTasks()]);
