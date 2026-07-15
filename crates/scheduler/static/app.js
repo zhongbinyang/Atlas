@@ -180,8 +180,6 @@ function renderFiles(entries) {
       actions =
         '<button type="button" class="btn-sm btn-files-preview">预览</button>' +
         '<button type="button" class="btn-sm btn-files-download">下载</button>';
-    } else {
-      actions = '<button type="button" class="btn-sm btn-files-download">下载</button>';
     }
 
     row.innerHTML =
