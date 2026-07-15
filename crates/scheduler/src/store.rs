@@ -507,24 +507,15 @@ mod tests {
     #[tokio::test]
     async fn upsert_agent_is_idempotent() {
         let store = test_store().await;
-        let a = store
-            .upsert_agent("n", "1.2.3.4", 26631)
-            .await
-            .unwrap();
-        let b = store
-            .upsert_agent("n", "1.2.3.4", 26631)
-            .await
-            .unwrap();
+        let a = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let b = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         assert_eq!(a.id, b.id);
     }
 
     #[tokio::test]
     async fn create_task_starts_as_queued() {
         let store = test_store().await;
-        let agent = store
-            .upsert_agent("n", "1.2.3.4", 26631)
-            .await
-            .unwrap();
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let task = store
             .create_task(CreateTaskParams {
                 agent_id: agent.id,
@@ -543,10 +534,7 @@ mod tests {
     #[tokio::test]
     async fn update_task_can_set_succeeded() {
         let store = test_store().await;
-        let agent = store
-            .upsert_agent("n", "1.2.3.4", 26631)
-            .await
-            .unwrap();
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let task = store
             .create_task(CreateTaskParams {
                 agent_id: agent.id,
