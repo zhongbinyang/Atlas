@@ -143,6 +143,19 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button:disabled:hover {
+  background: var(--surface);
+}
+
+button.btn-primary:disabled:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.btn-danger:disabled:hover {
+  background: var(--surface);
+}
+
 .btn-sm {
   padding: 0.2rem 0.5rem;
   font-size: 0.8rem;
@@ -405,4 +418,14 @@ pre {
 
 #file-preview-pre {
   max-height: 70vh;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .view-tabs {
+    width: 100%;
+  }
 }

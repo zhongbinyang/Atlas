@@ -25,22 +25,24 @@
     <div id="view-machines" class="view view-active">
       <section id="agents-section">
         <h2>机台</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>电脑名</th>
-              <th>IP</th>
-              <th>状态</th>
-              <th>CPU</th>
-              <th>内存</th>
-              <th>忙碌</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="agents-body">
-            <tr><td colspan="7" class="empty">暂无 Agent</td></tr>
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>电脑名</th>
+                <th>IP</th>
+                <th>状态</th>
+                <th>CPU</th>
+                <th>内存</th>
+                <th>忙碌</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="agents-body">
+              <tr><td colspan="7" class="empty">暂无 Agent</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
 
@@ -70,20 +72,22 @@
           <button type="submit">创建模板</button>
         </form>
         <p id="template-msg" class="msg" hidden></p>
-        <table class="mt">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>Shell</th>
-              <th>命令</th>
-              <th>超时</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="templates-body">
-            <tr><td colspan="5" class="empty">暂无模板</td></tr>
-          </tbody>
-        </table>
+        <div class="table-scroll mt">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>Shell</th>
+                <th>命令</th>
+                <th>超时</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="templates-body">
+              <tr><td colspan="5" class="empty">暂无模板</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section id="tasks-section">
@@ -124,20 +128,22 @@
           <button type="submit">提交任务</button>
         </form>
         <p id="task-msg" class="msg" hidden></p>
-        <table class="mt">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Agent</th>
-              <th>命令</th>
-              <th>状态</th>
-              <th>退出码</th>
-            </tr>
-          </thead>
-          <tbody id="tasks-body">
-            <tr><td colspan="5" class="empty">暂无任务</td></tr>
-          </tbody>
-        </table>
+        <div class="table-scroll mt">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Agent</th>
+                <th>命令</th>
+                <th>状态</th>
+                <th>退出码</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-body">
+              <tr><td colspan="5" class="empty">暂无任务</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section id="task-detail-section" hidden>
@@ -176,18 +182,20 @@
         <button id="shot-history-close" type="button" class="btn-sm">关闭</button>
       </div>
       <div class="modal-body">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>大小</th>
-              <th>查看</th>
-            </tr>
-          </thead>
-          <tbody id="shot-history-body">
-            <tr><td colspan="3" class="empty">暂无截图</td></tr>
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>大小</th>
+                <th>查看</th>
+              </tr>
+            </thead>
+            <tbody id="shot-history-body">
+              <tr><td colspan="3" class="empty">暂无截图</td></tr>
+            </tbody>
+          </table>
+        </div>
         <div id="shot-history-pager" class="modal-pager" hidden>
           <button id="shot-history-prev" type="button" class="btn-sm">上一页</button>
           <span id="shot-history-page-info"></span>
@@ -206,19 +214,21 @@
       </div>
       <div class="modal-body">
         <nav id="files-crumb" class="files-crumb"></nav>
-        <table>
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>类型</th>
-              <th>大小</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="files-body">
-            <tr><td colspan="4" class="empty">暂无文件</td></tr>
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>类型</th>
+                <th>大小</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="files-body">
+              <tr><td colspan="4" class="empty">暂无文件</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

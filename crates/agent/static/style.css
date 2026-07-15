@@ -184,6 +184,42 @@ button:hover {
 
 
 
+button:disabled {
+
+  opacity: 0.45;
+
+  cursor: not-allowed;
+
+}
+
+
+
+button:disabled:hover {
+
+  background: var(--surface);
+
+}
+
+
+
+button.btn-primary:disabled:hover {
+
+  background: var(--accent);
+
+  border-color: var(--accent);
+
+}
+
+
+
+.table-scroll {
+
+  overflow-x: auto;
+
+}
+
+
+
 .hero-meta {
 
   display: grid;
