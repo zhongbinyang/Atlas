@@ -1,19 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::labview_cmd::normalize_fs_path;
-use crate::store::{Store, ViTemplate};
+use crate::store::{Store, TransferError, ViTemplate};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DistributeResultItem {
-    pub agent_id: String,
-    pub status: String,
-    pub template_id: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DistributeViTemplateResponse {
-    pub results: Vec<DistributeResultItem>,
+#[derive(Debug)]
+pub enum TransferApiError {
+    NotFound,
+    AgentNotFound,
+    SameAgent,
+    Config(String),
+    Db(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,107 +33,50 @@ async fn fetch_labview_config(
         .map_err(|e| format!("invalid labview config: {e}"))
 }
 
-pub async fn distribute_template(
+pub async fn transfer_template(
     store: &Store,
     labview_client: &reqwest::Client,
     source: &ViTemplate,
-    targets: &[String],
+    target_agent_id: &str,
     vi_path_override: Option<&str>,
-) -> Vec<DistributeResultItem> {
-    let inputs: serde_json::Value =
-        serde_json::from_str(&source.inputs_json).unwrap_or_else(|_| serde_json::json!([]));
-    let final_vi_path = match vi_path_override {
-        Some(p) if !normalize_fs_path(p).is_empty() => normalize_fs_path(p),
-        _ => source.vi_path.clone(),
+) -> Result<ViTemplate, TransferApiError> {
+    if target_agent_id == source.agent_id {
+        return Err(TransferApiError::SameAgent);
+    }
+
+    let agent = match store.get_agent(target_agent_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Err(TransferApiError::AgentNotFound),
+        Err(e) => return Err(TransferApiError::Db(e.to_string())),
     };
 
-    let mut results = Vec::with_capacity(targets.len());
-    for target_id in targets {
-        if target_id == &source.agent_id {
-            results.push(DistributeResultItem {
-                agent_id: target_id.clone(),
-                status: "skipped".into(),
-                template_id: None,
-                error: Some("source agent".into()),
-            });
-            continue;
-        }
+    let config = match fetch_labview_config(labview_client, &agent.ip, agent.port).await {
+        Ok(c) => c,
+        Err(e) => return Err(TransferApiError::Config(e)),
+    };
 
-        let agent = match store.get_agent(target_id).await {
-            Ok(Some(a)) => a,
-            Ok(None) => {
-                results.push(DistributeResultItem {
-                    agent_id: target_id.clone(),
-                    status: "error".into(),
-                    template_id: None,
-                    error: Some("agent not found".into()),
-                });
-                continue;
-            }
-            Err(e) => {
-                results.push(DistributeResultItem {
-                    agent_id: target_id.clone(),
-                    status: "error".into(),
-                    template_id: None,
-                    error: Some(format!("database error: {e}")),
-                });
-                continue;
-            }
-        };
+    let cli_path = normalize_fs_path(&config.cli_path);
+    let getinfo_path = normalize_fs_path(&config.getinfo_path);
+    let vi_path = match vi_path_override {
+        Some(p) if !normalize_fs_path(p).is_empty() => Some(normalize_fs_path(p)),
+        _ => None,
+    };
 
-        let config = match fetch_labview_config(labview_client, &agent.ip, agent.port).await {
-            Ok(c) => c,
-            Err(e) => {
-                results.push(DistributeResultItem {
-                    agent_id: target_id.clone(),
-                    status: "error".into(),
-                    template_id: None,
-                    error: Some(e),
-                });
-                continue;
-            }
-        };
-
-        let cli_path = normalize_fs_path(&config.cli_path);
-        let getinfo_path = normalize_fs_path(&config.getinfo_path);
-
-        match store
-            .upsert_vi_template_distribute(
-                &source.name,
-                target_id,
-                &source.origin_agent_id,
-                &final_vi_path,
-                &cli_path,
-                &getinfo_path,
-                &inputs,
-                source.show_front_panel,
-                source.timeout_secs,
-            )
-            .await
-        {
-            Ok((tpl, created)) => {
-                results.push(DistributeResultItem {
-                    agent_id: target_id.clone(),
-                    status: if created {
-                        "created".into()
-                    } else {
-                        "updated".into()
-                    },
-                    template_id: Some(tpl.id),
-                    error: None,
-                });
-            }
-            Err(e) => {
-                results.push(DistributeResultItem {
-                    agent_id: target_id.clone(),
-                    status: "error".into(),
-                    template_id: None,
-                    error: Some(format!("database error: {e}")),
-                });
-            }
-        }
-    }
-    results
+    store
+        .transfer_vi_template(
+            &source.id,
+            target_agent_id,
+            &cli_path,
+            &getinfo_path,
+            vi_path.as_deref(),
+        )
+        .await
+        .map_err(|e| match e {
+            TransferError::NotFound => TransferApiError::NotFound,
+            TransferError::AgentNotFound => TransferApiError::AgentNotFound,
+            TransferError::SameAgent => TransferApiError::SameAgent,
+            TransferError::Db(e) => TransferApiError::Db(e.to_string()),
+        })
 }
 
 #[cfg(test)]
@@ -179,7 +118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distribute_creates_on_target_with_source_origin() {
+    async fn transfer_moves_template_to_target() {
         let store = test_store().await;
         let (addr, _mock) = start_mock_labview().await;
         let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
@@ -188,8 +127,8 @@ mod tests {
             .await
             .unwrap();
         let inputs = serde_json::json!([{"name":"x","value":1}]);
-        let (source, _) = store
-            .upsert_vi_template(
+        let source = store
+            .insert_vi_template(
                 "Add",
                 &agent_a.id,
                 &agent_a.id,
@@ -204,38 +143,41 @@ mod tests {
             .unwrap();
 
         let labview_client = reqwest::Client::new();
-        let results = distribute_template(
+        let transferred = transfer_template(
             &store,
             &labview_client,
             &source,
-            &[agent_b.id.clone()],
+            &agent_b.id,
             None,
         )
-        .await;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].status, "created");
-        assert!(results[0].template_id.is_some());
+        .await
+        .unwrap();
+        assert_eq!(transferred.id, source.id);
+        assert_eq!(transferred.agent_id, agent_b.id);
+        assert_eq!(transferred.origin_agent_id, agent_a.id);
+        assert_eq!(transferred.cli_path, r"C:\cli\LabVIEWCLI.exe");
 
-        let listed = store
+        let listed_a = store
+            .list_vi_templates(Some(&agent_a.id))
+            .await
+            .unwrap();
+        assert!(listed_a.is_empty());
+
+        let listed_b = store
             .list_vi_templates(Some(&agent_b.id))
             .await
             .unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].agent_id, agent_b.id);
-        assert_eq!(listed[0].origin_agent_id, agent_a.id);
-        assert_eq!(
-            listed[0].cli_path,
-            r"C:\cli\LabVIEWCLI.exe"
-        );
+        assert_eq!(listed_b.len(), 1);
+        assert_eq!(listed_b[0].id, source.id);
     }
 
     #[tokio::test]
-    async fn distribute_skips_source_agent() {
+    async fn transfer_to_self_errors() {
         let store = test_store().await;
         let agent = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
         let inputs = serde_json::json!([]);
-        let (source, _) = store
-            .upsert_vi_template(
+        let source = store
+            .insert_vi_template(
                 "Add",
                 &agent.id,
                 &agent.id,
@@ -249,15 +191,15 @@ mod tests {
             .await
             .unwrap();
 
-        let results = distribute_template(
+        let err = transfer_template(
             &store,
             &reqwest::Client::new(),
             &source,
-            &[agent.id.clone()],
+            &agent.id,
             None,
         )
-        .await;
-        assert_eq!(results[0].status, "skipped");
-        assert_eq!(results[0].error.as_deref(), Some("source agent"));
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TransferApiError::SameAgent));
     }
 }

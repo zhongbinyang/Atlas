@@ -12,11 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
     Agent, CreateTaskParams, QueueReplaceError, Screenshot, Store, Task, TaskTemplate,
-    UpdateTemplateParams, ViRunQueueItem, ViTemplateEnriched,
+    UpdateTemplateParams, ViRunQueueItem, ViTemplateEnriched, ViTemplatePatch,
 };
-use crate::vi_distribute::{distribute_template, DistributeViTemplateResponse};
-
-pub use crate::vi_distribute::DistributeResultItem;
+use crate::vi_distribute::{transfer_template, TransferApiError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -199,8 +197,16 @@ pub struct ListViTemplatesQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DistributeViTemplateRequest {
-    pub target_agent_ids: Vec<String>,
+    pub target_agent_id: String,
     pub vi_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchViTemplateRequest {
+    pub name: Option<String>,
+    pub inputs: Option<serde_json::Value>,
+    pub show_front_panel: Option<bool>,
+    pub timeout_secs: Option<Option<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,7 +216,7 @@ pub struct CreateViTemplateRequest {
     pub cli_path: String,
     pub getinfo_path: String,
     pub inputs: serde_json::Value,
-    pub name: Option<String>,
+    pub name: String,
     #[serde(default)]
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
@@ -400,7 +406,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/vi-templates/{id}",
-            get(get_vi_template).delete(delete_vi_template),
+            get(get_vi_template)
+                .patch(patch_vi_template)
+                .delete(delete_vi_template),
         )
         .route(
             "/api/vi-templates/{id}/distribute",
@@ -760,17 +768,12 @@ async fn create_task(
     }
 }
 
-fn vi_path_stem(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("vi-template")
-        .to_string()
-}
-
 fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static str> {
     if req.agent_id.trim().is_empty() {
         return Some("agent_id is required");
+    }
+    if req.name.trim().is_empty() {
+        return Some("name is required");
     }
     if crate::labview_cmd::normalize_fs_path(&req.vi_path).is_empty() {
         return Some("vi_path is required");
@@ -788,6 +791,47 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
         return Some("timeout_secs must be greater than 0");
     }
     None
+}
+
+fn patch_vi_template_has_fields(req: &PatchViTemplateRequest) -> bool {
+    req.name.is_some()
+        || req.inputs.is_some()
+        || req.show_front_panel.is_some()
+        || req.timeout_secs.is_some()
+}
+
+fn transfer_error_response(err: TransferApiError) -> (StatusCode, Json<ErrorBody>) {
+    match err {
+        TransferApiError::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "vi template not found".into(),
+            }),
+        ),
+        TransferApiError::AgentNotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        ),
+        TransferApiError::SameAgent => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "cannot transfer to source agent".into(),
+            }),
+        ),
+        TransferApiError::Config(msg) => {
+            tracing::error!("labview config for transfer: {msg}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: msg }),
+            )
+        }
+        TransferApiError::Db(msg) => {
+            tracing::error!("transfer vi template db error: {msg}");
+            db_error()
+        }
+    }
 }
 
 async fn list_vi_templates(
@@ -848,19 +892,12 @@ async fn create_vi_template(
     let vi_path = crate::labview_cmd::normalize_fs_path(&req.vi_path);
     let cli_path = crate::labview_cmd::normalize_fs_path(&req.cli_path);
     let getinfo_path = crate::labview_cmd::normalize_fs_path(&req.getinfo_path);
-
-    let name = req
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| vi_path_stem(&vi_path));
+    let name = req.name.trim();
 
     match s
         .store
-        .upsert_vi_template(
-            &name,
+        .insert_vi_template(
+            name,
             req.agent_id.trim(),
             req.agent_id.trim(),
             &vi_path,
@@ -872,16 +909,9 @@ async fn create_vi_template(
         )
         .await
     {
-        Ok((template, created)) => match s.store.get_vi_template_enriched(&template.id).await {
+        Ok(template) => match s.store.get_vi_template_enriched(&template.id).await {
             Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
-                Ok(view) => {
-                    let status = if created {
-                        StatusCode::CREATED
-                    } else {
-                        StatusCode::OK
-                    };
-                    (status, Json(view)).into_response()
-                }
+                Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
                 Err(e) => {
                     tracing::error!("vi template view: {e}");
                     db_error().into_response()
@@ -926,11 +956,83 @@ async fn get_vi_template(
     }
 }
 
+async fn patch_vi_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<PatchViTemplateRequest>,
+) -> impl IntoResponse {
+    if !patch_vi_template_has_fields(&req) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "at least one field is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Some(ref name) = req.name {
+        if name.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: "name must be non-empty".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let patch = ViTemplatePatch {
+        name: req.name.map(|n| n.trim().to_string()),
+        inputs: req.inputs,
+        show_front_panel: req.show_front_panel,
+        timeout_secs: req.timeout_secs,
+    };
+
+    match s.store.patch_vi_template(&id, patch).await {
+        Ok(Some(_)) => match s.store.get_vi_template_enriched(&id).await {
+            Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
+                Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+                Err(e) => {
+                    tracing::error!("vi template view: {e}");
+                    db_error().into_response()
+                }
+            },
+            Ok(None) => db_error().into_response(),
+            Err(e) => {
+                tracing::error!("get vi template enriched after patch: {e}");
+                db_error().into_response()
+            }
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "vi template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("patch vi template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
 async fn distribute_vi_template(
     State(s): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<DistributeViTemplateRequest>,
 ) -> impl IntoResponse {
+    if req.target_agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "target_agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+
     let source = match s.store.get_vi_template(&id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -948,20 +1050,33 @@ async fn distribute_vi_template(
         }
     };
 
-    let results = distribute_template(
+    let transferred = match transfer_template(
         &s.store,
         &s.labview_client,
         &source,
-        &req.target_agent_ids,
+        req.target_agent_id.trim(),
         req.vi_path.as_deref(),
     )
-    .await;
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return transfer_error_response(e).into_response(),
+    };
 
-    (
-        StatusCode::OK,
-        Json(DistributeViTemplateResponse { results }),
-    )
-        .into_response()
+    match s.store.get_vi_template_enriched(&transferred.id).await {
+        Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
+            Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+            Err(e) => {
+                tracing::error!("vi template view: {e}");
+                db_error().into_response()
+            }
+        },
+        Ok(None) => db_error().into_response(),
+        Err(e) => {
+            tracing::error!("get vi template enriched after transfer: {e}");
+            db_error().into_response()
+        }
+    }
 }
 
 async fn delete_vi_template(
@@ -2415,6 +2530,7 @@ mod tests {
 
         let create_body = serde_json::json!({
             "agent_id": agent_id,
+            "name": "Add",
             "vi_path": r"C:\x\Add.vi",
             "cli_path": r"C:\labview-runner-cli\labview-runner-cli.exe",
             "getinfo_path": r"C:\labview-runner-cli\getinfo.vi",
@@ -2502,6 +2618,7 @@ mod tests {
 
         let create_body = serde_json::json!({
             "agent_id": unknown_id,
+            "name": "Add",
             "vi_path": r"C:\x\Add.vi",
             "cli_path": r"C:\cli.exe",
             "getinfo_path": r"C:\getinfo.vi",
@@ -2521,19 +2638,17 @@ mod tests {
     async fn create_vi_template_http(
         app: &Router,
         agent_id: &str,
-        name: Option<&str>,
+        name: &str,
         vi_path: &str,
     ) -> (StatusCode, ViTemplateView) {
-        let mut body = serde_json::json!({
+        let body = serde_json::json!({
             "agent_id": agent_id,
+            "name": name,
             "vi_path": vi_path,
             "cli_path": r"C:\cli.exe",
             "getinfo_path": r"C:\getinfo.vi",
             "inputs": []
         });
-        if let Some(n) = name {
-            body["name"] = serde_json::json!(n);
-        }
         let resp = app
             .clone()
             .oneshot(json_request("POST", "/api/vi-templates", &body))
@@ -2552,8 +2667,8 @@ mod tests {
         let agent_a = register_agent_at(app, "192.168.1.10", 26631).await;
         let agent_b = register_agent_at(app, "192.168.1.11", 26632).await;
 
-        let (_, tpl_a) = create_vi_template_http(app, &agent_a, Some("A"), r"C:\a.vi").await;
-        let (_, tpl_b) = create_vi_template_http(app, &agent_b, Some("B"), r"C:\b.vi").await;
+        let (_, tpl_a) = create_vi_template_http(app, &agent_a, "A", r"C:\a.vi").await;
+        let (_, tpl_b) = create_vi_template_http(app, &agent_b, "B", r"C:\b.vi").await;
         assert_eq!(tpl_a.agent_id, agent_a);
         assert_eq!(tpl_b.agent_id, agent_b);
 
@@ -2576,26 +2691,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_vi_template_upsert_keeps_origin() {
+    async fn create_same_path_twice_two_ids() {
         let test = test_app().await;
         let app = &test.router;
         let agent_id = register_agent_id(app).await;
 
         let (status1, first) =
-            create_vi_template_http(app, &agent_id, Some("First"), r"C:\x\Add.vi").await;
+            create_vi_template_http(app, &agent_id, "First", r"C:\x\Add.vi").await;
         assert_eq!(status1, StatusCode::CREATED);
-        assert_eq!(first.origin_agent_id, agent_id);
-
         let (status2, second) =
-            create_vi_template_http(app, &agent_id, Some("Second"), r"C:\x\Add.vi").await;
-        assert_eq!(status2, StatusCode::OK);
-        assert_eq!(second.id, first.id);
-        assert_eq!(second.name, "Second");
+            create_vi_template_http(app, &agent_id, "Second", r"C:\x\Add.vi").await;
+        assert_eq!(status2, StatusCode::CREATED);
+        assert_ne!(second.id, first.id);
         assert_eq!(second.origin_agent_id, agent_id);
     }
 
     #[tokio::test]
-    async fn distribute_creates_on_target_and_preserves_origin() {
+    async fn create_requires_name() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": []
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "",
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": []
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "name is required");
+    }
+
+    #[tokio::test]
+    async fn patch_vi_template_renames() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let (_, created) =
+            create_vi_template_http(app, &agent_id, "Original", r"C:\x\Add.vi").await;
+
+        let patch_body = serde_json::json!({ "name": "Renamed" });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/api/vi-templates/{}", created.id),
+                &patch_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let updated: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.name, "Renamed");
+    }
+
+    #[tokio::test]
+    async fn distribute_transfers_same_id_to_target() {
         let test = test_app().await;
         let app = &test.router;
         let (addr, _mock) = start_mock_agent_labview().await;
@@ -2603,10 +2780,10 @@ mod tests {
         let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
 
         let (_, source) =
-            create_vi_template_http(app, &agent_a, Some("Add"), r"C:\x\Add.vi").await;
+            create_vi_template_http(app, &agent_a, "Add", r"C:\x\Add.vi").await;
 
         let body = serde_json::json!({
-            "target_agent_ids": [agent_b]
+            "target_agent_id": agent_b
         });
         let resp = app
             .clone()
@@ -2619,10 +2796,24 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(out.results.len(), 1);
-        assert_eq!(out.results[0].status, "created");
-        assert_eq!(out.results[0].agent_id, agent_b);
+        let transferred: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(transferred.id, source.id);
+        assert_eq!(transferred.agent_id, agent_b);
+        assert_eq!(transferred.origin_agent_id, agent_a);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates?agent_id={agent_a}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list_a: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert!(list_a.is_empty());
 
         let resp = app
             .clone()
@@ -2635,71 +2826,21 @@ mod tests {
             .await
             .unwrap();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].agent_id, agent_b);
-        assert_eq!(list[0].origin_agent_id, agent_a);
+        let list_b: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(list_b[0].id, source.id);
     }
 
     #[tokio::test]
-    async fn distribute_updates_same_path_on_target() {
-        let test = test_app().await;
-        let app = &test.router;
-        let (addr, _mock) = start_mock_agent_labview().await;
-        let agent_a = register_agent_id(app).await;
-        let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
-
-        let (_, source) =
-            create_vi_template_http(app, &agent_a, Some("FromA"), r"C:\x\Add.vi").await;
-        let (_, local_b) =
-            create_vi_template_http(app, &agent_b, Some("LocalB"), r"C:\x\Add.vi").await;
-        assert_eq!(local_b.origin_agent_id, agent_b);
-
-        let body = serde_json::json!({
-            "target_agent_ids": [agent_b]
-        });
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                &format!("/api/vi-templates/{}/distribute", source.id),
-                &body,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(out.results[0].status, "updated");
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/vi-templates?agent_id={agent_b}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, local_b.id);
-        assert_eq!(list[0].origin_agent_id, agent_a);
-        assert_eq!(list[0].name, "FromA");
-    }
-
-    #[tokio::test]
-    async fn distribute_skips_source_agent() {
+    async fn distribute_to_self_400() {
         let test = test_app().await;
         let app = &test.router;
         let agent_id = register_agent_id(app).await;
         let (_, source) =
-            create_vi_template_http(app, &agent_id, Some("Add"), r"C:\x\Add.vi").await;
+            create_vi_template_http(app, &agent_id, "Add", r"C:\x\Add.vi").await;
 
         let body = serde_json::json!({
-            "target_agent_ids": [agent_id]
+            "target_agent_id": agent_id
         });
         let resp = app
             .clone()
@@ -2710,28 +2851,24 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(out.results.len(), 1);
-        assert_eq!(out.results[0].status, "skipped");
-        assert_eq!(out.results[0].error.as_deref(), Some("source agent"));
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "cannot transfer to source agent");
     }
 
     #[tokio::test]
-    async fn distribute_partial_failure_unknown_agent() {
+    async fn distribute_unknown_target_404() {
         let test = test_app().await;
         let app = &test.router;
-        let (addr, _mock) = start_mock_agent_labview().await;
         let agent_a = register_agent_id(app).await;
-        let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
         let unknown_id = "00000000-0000-0000-0000-000000000099";
 
         let (_, source) =
-            create_vi_template_http(app, &agent_a, Some("Add"), r"C:\x\Add.vi").await;
+            create_vi_template_http(app, &agent_a, "Add", r"C:\x\Add.vi").await;
 
         let body = serde_json::json!({
-            "target_agent_ids": [agent_b, unknown_id]
+            "target_agent_id": unknown_id
         });
         let resp = app
             .clone()
@@ -2742,22 +2879,10 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(out.results.len(), 2);
-
-        let by_agent: std::collections::HashMap<_, _> = out
-            .results
-            .iter()
-            .map(|r| (r.agent_id.as_str(), r))
-            .collect();
-        assert_eq!(by_agent[agent_b.as_str()].status, "created");
-        assert_eq!(by_agent[unknown_id].status, "error");
-        assert_eq!(
-            by_agent[unknown_id].error.as_deref(),
-            Some("agent not found")
-        );
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
     }
 
     async fn create_vi_template_with_inputs_http(
@@ -2873,7 +2998,7 @@ mod tests {
         let app = &test.router;
         let agent_a = register_agent_at(app, "192.168.1.10", 26631).await;
         let agent_b = register_agent_at(app, "192.168.1.11", 26632).await;
-        let (_, tpl_b) = create_vi_template_http(app, &agent_b, Some("B"), r"C:\b.vi").await;
+        let (_, tpl_b) = create_vi_template_http(app, &agent_b, "B", r"C:\b.vi").await;
 
         let put_body = serde_json::json!({
             "items": [{ "vi_template_id": tpl_b.id }]
