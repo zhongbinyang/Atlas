@@ -690,7 +690,7 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
 }
 
 async fn list_vi_templates(State(s): State<AppState>) -> impl IntoResponse {
-    match s.store.list_vi_templates().await {
+    match s.store.list_vi_templates(None).await {
         Ok(templates) => {
             let mut views = Vec::with_capacity(templates.len());
             for t in templates {

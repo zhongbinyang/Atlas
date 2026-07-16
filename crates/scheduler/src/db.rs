@@ -2,9 +2,23 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
+async fn apply_migration(pool: &SqlitePool, sql: &str) -> Result<(), sqlx::Error> {
+    match sqlx::raw_sql(sql).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("duplicate column name") {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     if let Some(path) = database_url.strip_prefix("sqlite:") {
-        let path = path.trim_start_matches("//");
+        let path = path.strip_prefix("//").unwrap_or(path);
         if let Some(parent) = std::path::Path::new(path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -18,5 +32,10 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     ] {
         sqlx::raw_sql(sql).execute(&pool).await?;
     }
+    apply_migration(
+        &pool,
+        include_str!("../migrations/004_vi_origin_and_unique.sql"),
+    )
+    .await?;
     Ok(pool)
 }

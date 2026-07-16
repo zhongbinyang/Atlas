@@ -83,6 +83,7 @@ pub struct ViTemplate {
     pub id: String,
     pub name: String,
     pub agent_id: String,
+    pub origin_agent_id: String,
     pub vi_path: String,
     pub cli_path: String,
     pub getinfo_path: String,
@@ -90,6 +91,13 @@ pub struct ViTemplate {
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViTemplateEnriched {
+    pub template: ViTemplate,
+    pub agent_name: Option<String>,
+    pub origin_agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -520,6 +528,68 @@ impl Store {
         Ok(row.map(|r| r.into_screenshot()))
     }
 
+    pub async fn upsert_vi_template(
+        &self,
+        name: &str,
+        agent_id: &str,
+        origin_agent_id: &str,
+        vi_path: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        inputs: &serde_json::Value,
+        show_front_panel: bool,
+        timeout_secs: Option<i64>,
+    ) -> Result<(ViTemplate, bool), sqlx::Error> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM vi_templates WHERE agent_id = ? AND vi_path = ?",
+        )
+        .bind(agent_id)
+        .bind(vi_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        let created = existing.is_none();
+
+        let id = existing
+            .map(|(id,)| id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let row = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            INSERT INTO vi_templates (
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id, vi_path) DO UPDATE SET
+                name = excluded.name,
+                cli_path = excluded.cli_path,
+                getinfo_path = excluded.getinfo_path,
+                inputs_json = excluded.inputs_json,
+                show_front_panel = excluded.show_front_panel,
+                timeout_secs = excluded.timeout_secs
+            RETURNING
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            "#,
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(agent_id)
+        .bind(origin_agent_id)
+        .bind(vi_path)
+        .bind(cli_path)
+        .bind(getinfo_path)
+        .bind(&inputs_json)
+        .bind(i64::from(show_front_panel))
+        .bind(timeout_secs)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((row.into_vi_template(), created))
+    }
+
     pub async fn create_vi_template(
         &self,
         name: &str,
@@ -531,57 +601,101 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<ViTemplate, sqlx::Error> {
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        let inputs_json = serde_json::to_string(inputs)
-            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
-        let row = sqlx::query_as::<_, ViTemplateRow>(
-            r#"
-            INSERT INTO vi_templates (
-                id, name, agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+        let (template, _) = self
+            .upsert_vi_template(
+                name,
+                agent_id,
+                agent_id,
+                vi_path,
+                cli_path,
+                getinfo_path,
+                inputs,
+                show_front_panel,
+                timeout_secs,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING
-                id, name, agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
-            "#,
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(agent_id)
-        .bind(vi_path)
-        .bind(cli_path)
-        .bind(getinfo_path)
-        .bind(&inputs_json)
-        .bind(i64::from(show_front_panel))
-        .bind(timeout_secs)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.into_vi_template())
+            .await?;
+        Ok(template)
     }
 
-    pub async fn list_vi_templates(&self) -> Result<Vec<ViTemplate>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, ViTemplateRow>(
-            r#"
-            SELECT
-                id, name, agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
-            FROM vi_templates
-            ORDER BY created_at ASC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    pub async fn list_vi_templates(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<ViTemplate>, sqlx::Error> {
+        let rows = if let Some(agent_id) = agent_id {
+            sqlx::query_as::<_, ViTemplateRow>(
+                r#"
+                SELECT
+                    id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                    inputs_json, show_front_panel, timeout_secs, created_at
+                FROM vi_templates
+                WHERE agent_id = ?
+                ORDER BY created_at ASC
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, ViTemplateRow>(
+                r#"
+                SELECT
+                    id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                    inputs_json, show_front_panel, timeout_secs, created_at
+                FROM vi_templates
+                ORDER BY created_at ASC
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
         Ok(rows.into_iter().map(|r| r.into_vi_template()).collect())
+    }
+
+    pub async fn list_vi_templates_enriched(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<ViTemplateEnriched>, sqlx::Error> {
+        let rows = if let Some(agent_id) = agent_id {
+            sqlx::query_as::<_, ViTemplateEnrichedRow>(
+                r#"
+                SELECT
+                    t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
+                    t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                    t.created_at, a.name AS agent_name, o.name AS origin_agent_name
+                FROM vi_templates t
+                LEFT JOIN agents a ON a.id = t.agent_id
+                LEFT JOIN agents o ON o.id = t.origin_agent_id
+                WHERE t.agent_id = ?
+                ORDER BY t.created_at ASC
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, ViTemplateEnrichedRow>(
+                r#"
+                SELECT
+                    t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
+                    t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                    t.created_at, a.name AS agent_name, o.name AS origin_agent_name
+                FROM vi_templates t
+                LEFT JOIN agents a ON a.id = t.agent_id
+                LEFT JOIN agents o ON o.id = t.origin_agent_id
+                ORDER BY t.created_at ASC
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
     }
 
     pub async fn get_vi_template(&self, id: &str) -> Result<Option<ViTemplate>, sqlx::Error> {
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             SELECT
-                id, name, agent_id, vi_path, cli_path, getinfo_path,
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
                 inputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE id = ?
@@ -718,6 +832,7 @@ struct ViTemplateRow {
     id: String,
     name: String,
     agent_id: String,
+    origin_agent_id: String,
     vi_path: String,
     cli_path: String,
     getinfo_path: String,
@@ -727,12 +842,30 @@ struct ViTemplateRow {
     created_at: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct ViTemplateEnrichedRow {
+    id: String,
+    name: String,
+    agent_id: String,
+    origin_agent_id: String,
+    vi_path: String,
+    cli_path: String,
+    getinfo_path: String,
+    inputs_json: String,
+    show_front_panel: i64,
+    timeout_secs: Option<i64>,
+    created_at: String,
+    agent_name: Option<String>,
+    origin_agent_name: Option<String>,
+}
+
 impl ViTemplateRow {
     fn into_vi_template(self) -> ViTemplate {
         ViTemplate {
             id: self.id,
             name: self.name,
             agent_id: self.agent_id,
+            origin_agent_id: self.origin_agent_id,
             vi_path: self.vi_path,
             cli_path: self.cli_path,
             getinfo_path: self.getinfo_path,
@@ -740,6 +873,28 @@ impl ViTemplateRow {
             show_front_panel: self.show_front_panel != 0,
             timeout_secs: self.timeout_secs,
             created_at: self.created_at,
+        }
+    }
+}
+
+impl ViTemplateEnrichedRow {
+    fn into_enriched(self) -> ViTemplateEnriched {
+        ViTemplateEnriched {
+            template: ViTemplate {
+                id: self.id,
+                name: self.name,
+                agent_id: self.agent_id,
+                origin_agent_id: self.origin_agent_id,
+                vi_path: self.vi_path,
+                cli_path: self.cli_path,
+                getinfo_path: self.getinfo_path,
+                inputs_json: self.inputs_json,
+                show_front_panel: self.show_front_panel != 0,
+                timeout_secs: self.timeout_secs,
+                created_at: self.created_at,
+            },
+            agent_name: self.agent_name,
+            origin_agent_name: self.origin_agent_name,
         }
     }
 }
@@ -888,7 +1043,9 @@ mod tests {
         assert_eq!(tpl.timeout_secs, Some(30));
         assert!(!tpl.created_at.is_empty());
 
-        let listed = store.list_vi_templates().await.unwrap();
+        assert_eq!(tpl.origin_agent_id, agent.id);
+
+        let listed = store.list_vi_templates(None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, tpl.id);
 
@@ -921,6 +1078,160 @@ mod tests {
             .unwrap();
         assert!(!tpl.show_front_panel);
         assert_eq!(tpl.timeout_secs, None);
+    }
+
+    #[tokio::test]
+    async fn vi_template_origin_defaults_to_agent_on_create() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let (got, created) = store
+            .upsert_vi_template(
+                "Add",
+                &agent.id,
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(got.origin_agent_id, agent.id);
+    }
+
+    #[tokio::test]
+    async fn vi_template_upsert_same_path_keeps_origin() {
+        let store = test_store().await;
+        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
+        let inputs = serde_json::json!([{"name":"a","value":1}]);
+        let (created, _) = store
+            .upsert_vi_template(
+                "Orig",
+                &agent_a.id,
+                &agent_a.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.origin_agent_id, agent_a.id);
+
+        let updated_inputs = serde_json::json!([{"name":"a","value":2}]);
+        let (updated, was_created) = store
+            .upsert_vi_template(
+                "Updated",
+                &agent_a.id,
+                &agent_b.id,
+                r"C:\x\Add.vi",
+                r"C:\cli2.exe",
+                r"C:\getinfo2.vi",
+                &updated_inputs,
+                true,
+                Some(60),
+            )
+            .await
+            .unwrap();
+        assert!(!was_created);
+        assert_eq!(updated.origin_agent_id, agent_a.id);
+        assert_eq!(updated.name, "Updated");
+        assert_eq!(updated.inputs_json, updated_inputs.to_string());
+        assert!(updated.show_front_panel);
+        assert_eq!(updated.timeout_secs, Some(60));
+    }
+
+    #[tokio::test]
+    async fn vi_template_list_filters_by_agent() {
+        let store = test_store().await;
+        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
+        let inputs = serde_json::json!([]);
+        store
+            .upsert_vi_template(
+                "A",
+                &agent_a.id,
+                &agent_a.id,
+                r"C:\a.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_vi_template(
+                "B",
+                &agent_b.id,
+                &agent_b.id,
+                r"C:\b.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let for_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].name, "A");
+
+        let for_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
+        assert_eq!(for_b.len(), 1);
+        assert_eq!(for_b[0].name, "B");
+
+        let all = store.list_vi_templates(None).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn vi_template_unique_agent_path() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        store
+            .upsert_vi_template(
+                "First",
+                &agent.id,
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_vi_template(
+                "Second",
+                &agent.id,
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli2.exe",
+                r"C:\getinfo2.vi",
+                &inputs,
+                true,
+                Some(10),
+            )
+            .await
+            .unwrap();
+
+        let listed = store.list_vi_templates(Some(&agent.id)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Second");
     }
 
     #[tokio::test]
