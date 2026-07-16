@@ -24,6 +24,14 @@ fn http_client() -> reqwest::Client {
         .expect("http client")
 }
 
+fn labview_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("labview http client")
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -36,6 +44,7 @@ async fn main() {
         .expect("database connection failed");
     let store = Store::new(pool);
     let client = http_client();
+    let labview_client = labview_http_client();
 
     let poll_store = store.clone();
     let poll_client = client.clone();
@@ -54,6 +63,7 @@ async fn main() {
     let app = api::router(AppState {
         store,
         client,
+        labview_client,
         screenshot_dir: cfg.screenshot_dir,
     })
     .merge(web::static_router());

@@ -19,6 +19,8 @@ use crate::store::{
 pub struct AppState {
     pub store: Store,
     pub client: reqwest::Client,
+    /// LabVIEW inspect/run/config can block for minutes; keep a longer timeout than `client`.
+    pub labview_client: reqwest::Client,
     pub screenshot_dir: String,
 }
 
@@ -1048,7 +1050,7 @@ async fn proxy_labview_config(
 ) -> impl IntoResponse {
     match s.store.get_agent(&id).await {
         Ok(Some(agent)) => {
-            proxy_agent_request(&s.client, &agent, "/api/labview/config").await
+            proxy_agent_request(&s.labview_client, &agent, "/api/labview/config").await
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1071,7 +1073,7 @@ async fn proxy_labview_inspect(
 ) -> impl IntoResponse {
     match s.store.get_agent(&id).await {
         Ok(Some(agent)) => {
-            proxy_agent_post_request(&s.client, &agent, "/api/labview/inspect", body).await
+            proxy_agent_post_request(&s.labview_client, &agent, "/api/labview/inspect", body).await
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1094,7 +1096,7 @@ async fn proxy_labview_run(
 ) -> impl IntoResponse {
     match s.store.get_agent(&id).await {
         Ok(Some(agent)) => {
-            proxy_agent_post_request(&s.client, &agent, "/api/labview/run", body).await
+            proxy_agent_post_request(&s.labview_client, &agent, "/api/labview/run", body).await
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -1270,10 +1272,16 @@ mod tests {
         let pool = crate::db::connect(&url).await.unwrap();
         let screenshot_dir = dir.path().join("shots");
         let screenshot_dir_str = screenshot_dir.to_string_lossy().to_string();
+        let labview_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
         TestApp {
             router: router(AppState {
                 store: Store::new(pool),
                 client: reqwest::Client::new(),
+                labview_client,
                 screenshot_dir: screenshot_dir_str.clone(),
             }),
             _db_dir: dir,
