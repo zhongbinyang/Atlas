@@ -1,33 +1,18 @@
 :root {
-
   --bg: #e8eef3;
-
   --surface: #f4f7fa;
-
   --panel: #ffffff;
-
   --border: #c5d0db;
-
   --text: #1a2332;
-
   --muted: #5a6b7d;
-
   --accent: #0b3d91;
-
   --ok: #1f8a4c;
-
   --busy: #c47a00;
-
   --err: #c0392b;
-
   --radius: 4px;
-
   --font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-
   --font-brand: "IBM Plex Sans Condensed", "IBM Plex Sans", "Segoe UI", sans-serif;
-
   --font-mono: ui-monospace, Consolas, monospace;
-
 }
 
 
