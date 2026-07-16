@@ -9,7 +9,6 @@ use axum::{
 use common::{ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
-use crate::labview_cmd::build_dispatch_command;
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
     Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams, ViTemplate,
@@ -309,10 +308,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/vi-templates/{id}",
             get(get_vi_template).delete(delete_vi_template),
-        )
-        .route(
-            "/api/vi-templates/{id}/dispatch",
-            post(dispatch_vi_template),
         )
         .route(
             "/api/agents/{id}/screenshots",
@@ -826,57 +821,6 @@ async fn delete_vi_template(
             .into_response(),
         Err(e) => {
             tracing::error!("delete vi template: {e}");
-            db_error().into_response()
-        }
-    }
-}
-
-async fn dispatch_vi_template(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    let template = match s.store.get_vi_template(&id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    error: "vi template not found".into(),
-                }),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!("get vi template for dispatch: {e}");
-            return db_error().into_response();
-        }
-    };
-
-    let command = match build_dispatch_command(&template) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorBody { error: e }),
-            )
-                .into_response();
-        }
-    };
-
-    let params = CreateTaskParams {
-        agent_id: template.agent_id,
-        source: "vi_template".into(),
-        template_id: None,
-        shell: "cmd".into(),
-        command,
-        workdir: None,
-        timeout_secs: template.timeout_secs.unwrap_or_else(default_timeout),
-    };
-
-    match s.store.create_task(params).await {
-        Ok(task) => (StatusCode::CREATED, Json(TaskView::from(task))).into_response(),
-        Err(e) => {
-            tracing::error!("dispatch vi template task: {e}");
             db_error().into_response()
         }
     }
@@ -2323,58 +2267,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn dispatch_vi_template_enqueues_task() {
-        let test = test_app().await;
-        let app = &test.router;
-        let agent_id = register_agent_id(app).await;
-
-        let create_body = serde_json::json!({
-            "agent_id": agent_id,
-            "vi_path": r"C:\x\Add.vi",
-            "cli_path": r"C:\labview-runner-cli\labview-runner-cli.exe",
-            "getinfo_path": r"C:\labview-runner-cli\getinfo.vi",
-            "inputs": [{"name":"a","className":"Digital","value":3.0}],
-            "show_front_panel": true,
-            "timeout_secs": 30
-        });
-        let resp = app
-            .clone()
-            .oneshot(json_request("POST", "/api/vi-templates", &create_body))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let template: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/vi-templates/{}/dispatch", template.id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let task: TaskView = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(task.agent_id, agent_id);
-        assert_eq!(task.source, "vi_template");
-        assert_eq!(task.shell, "cmd");
-        assert_eq!(task.timeout_secs, 30);
-        assert_eq!(task.status, "queued");
-        assert!(task
-            .command
-            .contains(r#""C:\labview-runner-cli\labview-runner-cli.exe""#));
-        assert!(task.command.contains("--action run"));
-        assert!(task.command.contains("--show-front-panel"));
-        assert!(task.command.contains("--timeout 30"));
-        assert!(task.command.contains("--input "));
     }
 
     #[tokio::test]

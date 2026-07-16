@@ -975,11 +975,9 @@ function renderViTemplates() {
       '<td>' + escapeHtml(timeout) + '</td>' +
       '<td class="row-actions">' +
         '<button type="button" class="btn-sm btn-vi-trial">试跑</button>' +
-        '<button type="button" class="btn-sm btn-vi-dispatch">下发</button>' +
         '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
       '</td>';
     row.querySelector('.btn-vi-trial').addEventListener('click', () => trialRunViTemplate(t));
-    row.querySelector('.btn-vi-dispatch').addEventListener('click', () => dispatchViTemplate(t));
     row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t.id));
     tbody.appendChild(row);
   }
@@ -1014,29 +1012,6 @@ async function trialRunViTemplate(t) {
   } catch (e) {
     outEl.textContent = e.message;
     showViTemplatesMsg('试跑失败: ' + e.message, false);
-  }
-}
-
-async function dispatchViTemplate(t) {
-  if (!confirm('确定下发模板「' + t.name + '」为作业任务？')) return;
-  showViTemplatesMsg('下发中…', true);
-  try {
-    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id) + '/dispatch', {
-      method: 'POST',
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      showViTemplatesMsg('下发失败: ' + (data.error || resp.status), false);
-      return;
-    }
-    showViTemplatesMsg('已下发任务: ' + (data.id ? data.id.slice(0, 8) + '…' : t.name), true);
-    await fetchTasks();
-    if (confirm('任务已入队，是否切换到作业视图？')) {
-      showView('jobs');
-      if (data.id) showTaskDetail(data.id);
-    }
-  } catch (e) {
-    showViTemplatesMsg('下发失败: ' + e.message, false);
   }
 }
 

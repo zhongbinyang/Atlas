@@ -34,13 +34,18 @@ pub async fn run_command(
 ) -> ExecuteResult {
     let mut cmd = match shell {
         ShellKind::Cmd => {
+            // The task command is already a full cmd.exe command line (paths and
+            // quoted args may use cmd doubling of "). Passing it through
+            // Command::arg would re-escape quotes and break the command.
             let mut c = Command::new("cmd");
-            c.args(["/C", command]);
+            c.arg("/C");
+            append_raw_command_arg(&mut c, command);
             c
         }
         ShellKind::Powershell => {
             let mut c = Command::new("powershell");
-            c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+            c.args(["-NoProfile", "-NonInteractive", "-Command"]);
+            append_raw_command_arg(&mut c, command);
             c
         }
     };
@@ -94,6 +99,19 @@ pub async fn run_command(
     }
 }
 
+/// Append `command` as a single argv without Windows quote re-escaping.
+fn append_raw_command_arg(cmd: &mut Command, command: &str) {
+    #[cfg(windows)]
+    {
+        // tokio::process::Command::raw_arg — skip Windows argv re-escaping
+        cmd.raw_arg(command);
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg(command);
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
@@ -116,5 +134,23 @@ mod tests {
     async fn timeout_kills() {
         let r = run_command(ShellKind::Cmd, "ping -n 10 127.0.0.1", None, 1).await;
         assert_eq!(r.status, TaskStatus::Timeout);
+    }
+
+    #[tokio::test]
+    async fn cmd_keeps_json_input_quoting() {
+        // Same quoting style as LabVIEW dispatch --input "{""Array"":[1,2,3]}"
+        let r = run_command(
+            ShellKind::Cmd,
+            r#"echo "{""Array"":[1,2,3]}""#,
+            None,
+            30,
+        )
+        .await;
+        assert_eq!(r.status, TaskStatus::Succeeded, "stderr={}", r.stderr);
+        let out = r.stdout.replace('\r', "").replace('\n', "");
+        assert!(
+            out.contains(r#"{"Array":[1,2,3]}"#) || out.contains(r#"{""Array"":[1,2,3]}"#),
+            "unexpected stdout: {out:?}"
+        );
     }
 }
