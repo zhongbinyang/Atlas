@@ -101,9 +101,7 @@ pub async fn run_cli(cli: &Path, args: &[String]) -> Result<Value, LabviewError>
     let args = args.to_vec();
 
     tokio::task::spawn_blocking(move || {
-        let output = Command::new(&cli)
-            .args(&args)
-            .output()
+        let output = spawn_cli(&cli, &args)
             .map_err(|e| LabviewError::Io(e.to_string()))?;
 
         if output.status.success() {
@@ -121,6 +119,24 @@ pub async fn run_cli(cli: &Path, args: &[String]) -> Result<Value, LabviewError>
     })
     .await
     .map_err(|e| LabviewError::Io(e.to_string()))?
+}
+
+fn spawn_cli(cli: &Path, args: &[String]) -> std::io::Result<std::process::Output> {
+    #[cfg(windows)]
+    {
+        let ext = cli
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd") {
+            return Command::new("cmd")
+                .arg("/C")
+                .arg(cli)
+                .args(args)
+                .output();
+        }
+    }
+    Command::new(cli).args(args).output()
 }
 
 #[cfg(test)]

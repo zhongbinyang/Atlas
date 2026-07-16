@@ -45,6 +45,8 @@ async fn main() {
         metrics: Arc::new(Mutex::new(MetricsSampler::new())),
         center_url: cfg.center_url.clone(),
         files_root: cfg.files_root.clone(),
+        labview_cli: cfg.labview_cli.clone(),
+        labview_getinfo: cfg.labview_getinfo.clone(),
     };
 
     let client = register::http_client();
