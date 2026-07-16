@@ -72,19 +72,25 @@ WebUI 采用「产线工控清爽」壳层：调度中心默认「机台」视�
 3. **分发**：在模板行点击 **分发** → 多选目标机台 → 确认；目标机台出现同路径模板且可 **试跑**（不走任务队列）。
 4. 目标机台 **同路径再次分发** 会覆盖更新且保持单行；`origin_agent_id` 按规格保留来源机台（分发 upsert 不覆盖来源）。
 
+### 执行序列（Agent）
+
+1. **Agent「序列」页**：左「已注册」→ 右「选定」（同一模板可重复加入；支持拖拽与上下移动排序）。
+2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；增删改序后自动 `PUT` 保存。
+3. **按序执行**：`POST /api/labview/run-sequence` 在 Agent 服务端串行试跑各步，遇错即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
+
 ### WebUI 入口
 
 | 位置 | 说明 |
 |------|------|
-| Agent WebUI（`:26631`） | 区块「VI」：只读 config、VI 路径、查询参数 / 试跑 / **注册到中心**；下方「**已注册功能**」列表（本机项）支持试跑 |
+| Agent WebUI（`:26631`） | 顶栏「VI」/「**序列**」：VI 工作台同前；**序列** 页双列表编排队列并 **按序执行** |
 | 调度中心 WebUI（`:26630`） | 顶栏「VI」：选择在线 Agent 代理 inspect / 试跑 / 注册；模板表含当前/来源机台，支持试跑、**分发**、删除 |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机）。
-- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`（列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（多目标、跳过来源、逐项结果），`POST /api/vi-templates/{id}/dispatch`（任务队列下发）。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机），`GET/PUT /api/labview/run-queue`（代理中心队列），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
+- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`（列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（多目标、跳过来源、逐项结果），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
