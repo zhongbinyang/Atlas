@@ -3,6 +3,7 @@ mod capture;
 mod config;
 mod files;
 mod labview;
+mod labview_sequence;
 mod executor;
 mod metrics;
 mod register;

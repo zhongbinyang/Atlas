@@ -93,6 +93,36 @@ pub fn ensure_vi(vi: &Path) -> Result<(), LabviewError> {
     }
 }
 
+pub fn error_message(err: &LabviewError) -> String {
+    match err {
+        LabviewError::MissingTool => "labview cli not found".into(),
+        LabviewError::MissingVi => "vi not found".into(),
+        LabviewError::Cli {
+            stderr_json,
+            stderr_raw,
+            ..
+        } => {
+            if let Some(j) = stderr_json {
+                if let Some(err_obj) = j.get("error") {
+                    if let Some(s) = err_obj.as_str() {
+                        return s.to_string();
+                    }
+                    return err_obj.to_string();
+                }
+                if j.get("kind").is_some() && j.get("message").is_some() {
+                    return format!(
+                        "{}: {}",
+                        j.get("kind").cloned().unwrap_or(Value::Null),
+                        j.get("message").cloned().unwrap_or(Value::Null)
+                    );
+                }
+            }
+            stderr_raw.clone()
+        }
+        LabviewError::Io(msg) => msg.clone(),
+    }
+}
+
 pub fn map_status(err: &LabviewError) -> StatusCode {
     match err {
         LabviewError::MissingTool => StatusCode::NOT_FOUND,

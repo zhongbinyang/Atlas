@@ -29,6 +29,20 @@ impl TaskSlot {
         self.inner.lock().await.busy
     }
 
+    /// Returns Err("busy") if slot occupied.
+    pub async fn try_acquire(&self) -> Result<(), &'static str> {
+        let mut g = self.inner.lock().await;
+        if g.busy {
+            return Err("busy");
+        }
+        g.busy = true;
+        Ok(())
+    }
+
+    pub async fn release(&self) {
+        self.inner.lock().await.busy = false;
+    }
+
     pub async fn list(&self) -> Vec<AgentTaskView> {
         self.inner.lock().await.tasks.values().cloned().collect()
     }
@@ -82,11 +96,23 @@ impl TaskSlot {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use common::ShellKind;
 
+    #[tokio::test]
+    async fn try_acquire_rejects_second() {
+        let slot = TaskSlot::new();
+        assert!(slot.try_acquire().await.is_ok());
+        assert_eq!(slot.try_acquire().await.unwrap_err(), "busy");
+        slot.release().await;
+        assert!(slot.try_acquire().await.is_ok());
+        slot.release().await;
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn rejects_second_while_busy() {
         let slot = TaskSlot::new();
