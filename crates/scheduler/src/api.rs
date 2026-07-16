@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, Request, StatusCode, Uri},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use common::{ErrorBody, RegisterAgentRequest};
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
-    Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams,
-    ViTemplateEnriched,
+    Agent, CreateTaskParams, QueueReplaceError, Screenshot, Store, Task, TaskTemplate,
+    UpdateTemplateParams, ViRunQueueItem, ViTemplateEnriched,
 };
 use crate::vi_distribute::{distribute_template, DistributeViTemplateResponse};
 
@@ -216,6 +216,73 @@ pub struct CreateViTemplateRequest {
     pub timeout_secs: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViRunQueueItemView {
+    pub id: String,
+    pub vi_template_id: String,
+    pub position: i64,
+    pub name: String,
+    pub vi_path: String,
+    pub inputs: serde_json::Value,
+    pub show_front_panel: bool,
+    pub timeout_secs: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ViRunQueueListResponse {
+    pub items: Vec<ViRunQueueItemView>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplaceViRunQueueRequest {
+    pub items: Vec<ReplaceViRunQueueItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplaceViRunQueueItem {
+    pub vi_template_id: String,
+}
+
+fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
+    let inputs: serde_json::Value = serde_json::from_str(&item.inputs_json)
+        .map_err(|err| format!("invalid inputs_json: {err}"))?;
+    Ok(ViRunQueueItemView {
+        id: item.id,
+        vi_template_id: item.vi_template_id,
+        position: item.position,
+        name: item.template_name,
+        vi_path: item.vi_path,
+        inputs,
+        show_front_panel: item.show_front_panel,
+        timeout_secs: item.timeout_secs,
+    })
+}
+
+fn vi_run_queue_views(items: Vec<ViRunQueueItem>) -> Result<Vec<ViRunQueueItemView>, String> {
+    items.into_iter().map(vi_run_queue_item_view).collect()
+}
+
+fn queue_replace_error_response(err: QueueReplaceError) -> (StatusCode, Json<ErrorBody>) {
+    match err {
+        QueueReplaceError::AgentNotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        ),
+        QueueReplaceError::BadTemplate { vi_template_id } => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: format!("vi template not found or not owned by agent: {vi_template_id}"),
+            }),
+        ),
+        QueueReplaceError::Db(e) => {
+            tracing::error!("vi run queue db error: {e}");
+            db_error()
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub agent_id: String,
@@ -342,6 +409,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/{id}/screenshots",
             get(list_agent_screenshots).post(capture_agent_screenshot),
+        )
+        .route(
+            "/api/agents/{id}/vi-run-queue",
+            get(get_vi_run_queue).put(put_vi_run_queue),
         )
         .route("/api/agents/{id}/files", get(list_agent_files))
         .route("/api/agents/{id}/files/content", get(get_agent_file_content))
@@ -1157,6 +1228,73 @@ async fn capture_agent_screenshot(
             tracing::error!("capture screenshot for agent {id}: {e:?}");
             capture_error_response(e).into_response()
         }
+    }
+}
+
+async fn get_vi_run_queue(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for vi run queue: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    match s.store.list_vi_run_queue(&id).await {
+        Ok(items) => match vi_run_queue_views(items) {
+            Ok(views) => (
+                StatusCode::OK,
+                Json(ViRunQueueListResponse { items: views }),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!("vi run queue view: {e}");
+                db_error().into_response()
+            }
+        },
+        Err(e) => {
+            tracing::error!("list vi run queue: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn put_vi_run_queue(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ReplaceViRunQueueRequest>,
+) -> impl IntoResponse {
+    let template_ids: Vec<String> = req
+        .items
+        .into_iter()
+        .map(|item| item.vi_template_id)
+        .collect();
+
+    match s.store.replace_vi_run_queue(&id, &template_ids).await {
+        Ok(items) => match vi_run_queue_views(items) {
+            Ok(views) => (
+                StatusCode::OK,
+                Json(ViRunQueueListResponse { items: views }),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!("vi run queue view: {e}");
+                db_error().into_response()
+            }
+        },
+        Err(e) => queue_replace_error_response(e).into_response(),
     }
 }
 
@@ -2620,5 +2758,190 @@ mod tests {
             by_agent[unknown_id].error.as_deref(),
             Some("agent not found")
         );
+    }
+
+    async fn create_vi_template_with_inputs_http(
+        app: &Router,
+        agent_id: &str,
+        name: &str,
+        vi_path: &str,
+        inputs: serde_json::Value,
+        show_front_panel: bool,
+        timeout_secs: Option<i64>,
+    ) -> ViTemplateView {
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "name": name,
+            "vi_path": vi_path,
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": inputs,
+            "show_front_panel": show_front_panel,
+            "timeout_secs": timeout_secs
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_put_get_round_trip() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let tpl_a = create_vi_template_with_inputs_http(
+            app,
+            &agent_id,
+            "A",
+            r"C:\a.vi",
+            serde_json::json!([{"name":"x","value":1.0}]),
+            true,
+            Some(45),
+        )
+        .await;
+        let tpl_b = create_vi_template_with_inputs_http(
+            app,
+            &agent_id,
+            "B",
+            r"C:\b.vi",
+            serde_json::json!([{"name":"y","value":2.0}]),
+            false,
+            None,
+        )
+        .await;
+
+        let put_body = serde_json::json!({
+            "items": [
+                { "vi_template_id": tpl_b.id },
+                { "vi_template_id": tpl_a.id }
+            ]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/agents/{agent_id}/vi-run-queue"),
+                &put_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let put_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(put_list.items.len(), 2);
+        assert_eq!(put_list.items[0].position, 0);
+        assert_eq!(put_list.items[0].vi_template_id, tpl_b.id);
+        assert_eq!(put_list.items[0].name, "B");
+        assert_eq!(put_list.items[0].vi_path, r"C:\b.vi");
+        assert!(!put_list.items[0].show_front_panel);
+        assert_eq!(put_list.items[0].timeout_secs, None);
+        assert_eq!(put_list.items[1].position, 1);
+        assert_eq!(put_list.items[1].vi_template_id, tpl_a.id);
+        assert_eq!(put_list.items[1].name, "A");
+        assert!(put_list.items[1].show_front_panel);
+        assert_eq!(put_list.items[1].timeout_secs, Some(45));
+        assert!(put_list.items[1].inputs.is_array());
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/vi-run-queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let get_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(get_list.items.len(), 2);
+        assert_eq!(get_list.items[0].vi_template_id, tpl_b.id);
+        assert_eq!(get_list.items[1].vi_template_id, tpl_a.id);
+        assert_eq!(get_list.items[1].inputs, tpl_a.inputs);
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_put_rejects_other_agents_template() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_a = register_agent_at(app, "192.168.1.10", 26631).await;
+        let agent_b = register_agent_at(app, "192.168.1.11", 26632).await;
+        let (_, tpl_b) = create_vi_template_http(app, &agent_b, Some("B"), r"C:\b.vi").await;
+
+        let put_body = serde_json::json!({
+            "items": [{ "vi_template_id": tpl_b.id }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/agents/{agent_a}/vi-run-queue"),
+                &put_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(err.error.contains(&tpl_b.id));
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_a}/vi-run-queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(list.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_unknown_agent_404() {
+        let test = test_app().await;
+        let app = &test.router;
+        let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{unknown_id}/vi-run-queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
+
+        let put_body = serde_json::json!({ "items": [] });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/agents/{unknown_id}/vi-run-queue"),
+                &put_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
     }
 }

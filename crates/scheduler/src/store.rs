@@ -102,6 +102,9 @@ pub struct ViRunQueueItem {
     pub created_at: String,
     pub template_name: String,
     pub vi_path: String,
+    pub inputs_json: String,
+    pub show_front_panel: bool,
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -814,7 +817,8 @@ impl Store {
         let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
             r#"
             SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
-                   t.name AS template_name, t.vi_path
+                   t.name AS template_name, t.vi_path,
+                   t.inputs_json, t.show_front_panel, t.timeout_secs
             FROM vi_run_queue_items q
             JOIN vi_templates t ON t.id = q.vi_template_id
             WHERE q.agent_id = ?
@@ -1033,6 +1037,9 @@ struct ViRunQueueItemRow {
     created_at: String,
     template_name: String,
     vi_path: String,
+    inputs_json: String,
+    show_front_panel: i64,
+    timeout_secs: Option<i64>,
 }
 
 impl ViRunQueueItemRow {
@@ -1045,6 +1052,9 @@ impl ViRunQueueItemRow {
             created_at: self.created_at,
             template_name: self.template_name,
             vi_path: self.vi_path,
+            inputs_json: self.inputs_json,
+            show_front_panel: self.show_front_panel != 0,
+            timeout_secs: self.timeout_secs,
         }
     }
 }
