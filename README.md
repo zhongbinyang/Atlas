@@ -62,15 +62,16 @@ WebUI 采用「产线工控清爽」壳层：调度中心默认「机台」视�
 
 1. **查询参数（inspect）**：对目标 VI 绝对路径调用 `labview-runner-cli --action inspect`，返回 inputs/outputs JSON；在 WebUI 表格中编辑各参数的默认 `value`（`name` / `className` 只读）。
 2. **试跑（run）**：用当前 inputs 同步执行 `--action run`，返回 outputs JSON；可选「显示前面板」与 CLI `--timeout`（秒）。
-3. **注册**：将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 SQLite 表 `vi_templates`，并绑定目标 Agent。
+3. **注册**：填写 **显示名称**（必填），将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 SQLite 表 `vi_templates`，并绑定目标 Agent。同一 Agent **可多次注册相同 VI 路径**（每次生成独立 `id`）。
 4. **下发**：从模板列表拼好 `cmd` 命令行入队现有任务队列，在绑定 Agent 上串行执行；结果在「作业」任务列表查看 stdout/stderr。
 
 ### 已注册列表与分发（试跑）
 
-1. **Agent**：在「VI」工作台 **注册到中心** 后，下方「**已注册功能**」列表出现该 VI；可 **试跑** 或 **加载到编辑区**（仅本机已注册项）。
-2. **调度中心**：顶栏「VI」模板表显示 **当前机台** / **来源机台** 列（来源缺失时显示「未知」）。
-3. **分发**：在模板行点击 **分发** → 多选目标机台 → 确认；目标机台出现同路径模板且可 **试跑**（不走任务队列）。
-4. 目标机台 **同路径再次分发** 会覆盖更新且保持单行；`origin_agent_id` 按规格保留来源机台（分发 upsert 不覆盖来源）。
+1. **Agent**：在「VI」工作台 **注册到中心** 后，下方「**已注册功能**」列表出现该 VI；可 **试跑**、**重命名**（仅本机持有项）或 **加载到编辑区**。
+2. **调度中心**：顶栏「VI」模板表显示 **当前机台** / **来源机台** 列（来源缺失时显示「未知」）；支持 **重命名**。
+3. **同路径多份**：同一 VI 路径可在同一或不同机台重复注册，每条记录拥有独立 `id` / 显示名称；**不会** 按路径合并覆盖。
+4. **分发（转移）**：在模板行点击 **分发** → **单选** 目标机台 → 确认。将 **同一模板 `id`** 转移至目标机台（非复制）；**源机台不再持有** 该记录，`origin_agent_id` 保持不变。转移时清除该 `id` 在各机台执行序列中的队列项，**不** 自动加入目标序列。
+5. 目标机台收到转移后的模板可 **试跑**（不走任务队列）。
 
 ### 执行序列（Agent）
 
@@ -89,8 +90,8 @@ VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机），`GET/PUT /api/labview/run-queue`（代理中心队列），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
-- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`（列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（多目标、跳过来源、逐项结果），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机），`GET/PUT /api/labview/run-queue`（代理中心队列），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
+- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/PATCH/DELETE /api/vi-templates`（注册 `name` 必填；列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（**单目标** `{ target_agent_id, vi_path? }`；**转移** 同一 `id`，返回更新后的模板对象），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
@@ -168,7 +169,7 @@ cargo run -p agent
    - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「已注册功能」出现该项且可试跑。
    - 中心「VI」：模板表可见刚注册项，**当前机台** / **来源机台** 均为注册 Agent。
    - 中心：换另一 VI 路径代理 **查询参数**；对模板 **试跑** 与 **下发**，在「作业」确认任务 `succeeded`。
-   - 中心：**分发** 到另一在线 Agent；目标 Agent「已注册功能」可见，来源机台不变；同路径再分发仅保留一行。
+   - 中心：**分发**（单选目标）到另一在线 Agent；目标「已注册功能」出现 **同一 `id`**，来源机台不变，源 Agent 列表不再含该项；同路径可另注册第二条独立记录。
    - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
 
 ## 测试
