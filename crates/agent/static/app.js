@@ -690,7 +690,9 @@ async function onSeqDrop(e) {
   const dropIndex = parseInt(targetRow.getAttribute('data-index'), 10);
   if (seqDragIndex === dropIndex) return;
   const item = seqSelected.splice(seqDragIndex, 1)[0];
-  seqSelected.splice(dropIndex, 0, item);
+  // After removal, indices after seqDragIndex shift down by one.
+  const insertAt = seqDragIndex < dropIndex ? dropIndex - 1 : dropIndex;
+  seqSelected.splice(insertAt, 0, item);
   seqDragIndex = null;
   renderSeqSelected();
   await saveQueue();
