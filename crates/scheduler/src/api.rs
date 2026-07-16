@@ -9,8 +9,11 @@ use axum::{
 use common::{ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
+use crate::labview_cmd::build_dispatch_command;
 use crate::screenshot::{capture_and_archive, CaptureError};
-use crate::store::{Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams};
+use crate::store::{
+    Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams, ViTemplate,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -138,6 +141,54 @@ pub struct UpdateTemplateRequest {
     pub timeout_secs: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViTemplateView {
+    pub id: String,
+    pub name: String,
+    pub agent_id: String,
+    pub vi_path: String,
+    pub cli_path: String,
+    pub getinfo_path: String,
+    pub inputs: serde_json::Value,
+    pub show_front_panel: bool,
+    pub timeout_secs: Option<i64>,
+    pub created_at: String,
+}
+
+impl TryFrom<ViTemplate> for ViTemplateView {
+    type Error = String;
+
+    fn try_from(t: ViTemplate) -> Result<Self, Self::Error> {
+        let inputs: serde_json::Value =
+            serde_json::from_str(&t.inputs_json).map_err(|e| format!("invalid inputs_json: {e}"))?;
+        Ok(Self {
+            id: t.id,
+            name: t.name,
+            agent_id: t.agent_id,
+            vi_path: t.vi_path,
+            cli_path: t.cli_path,
+            getinfo_path: t.getinfo_path,
+            inputs,
+            show_front_panel: t.show_front_panel,
+            timeout_secs: t.timeout_secs,
+            created_at: t.created_at,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateViTemplateRequest {
+    pub agent_id: String,
+    pub vi_path: String,
+    pub cli_path: String,
+    pub getinfo_path: String,
+    pub inputs: serde_json::Value,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub show_front_panel: bool,
+    pub timeout_secs: Option<i64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub agent_id: String,
@@ -249,6 +300,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
+        .route(
+            "/api/vi-templates",
+            get(list_vi_templates).post(create_vi_template),
+        )
+        .route(
+            "/api/vi-templates/{id}",
+            get(get_vi_template).delete(delete_vi_template),
+        )
+        .route(
+            "/api/vi-templates/{id}/dispatch",
+            post(dispatch_vi_template),
+        )
         .route(
             "/api/agents/{id}/screenshots",
             get(list_agent_screenshots).post(capture_agent_screenshot),
@@ -585,6 +648,220 @@ async fn create_task(
         Ok(task) => (StatusCode::CREATED, Json(TaskView::from(task))).into_response(),
         Err(e) => {
             tracing::error!("create task: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+fn vi_path_stem(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("vi-template")
+        .to_string()
+}
+
+fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static str> {
+    if req.agent_id.trim().is_empty() {
+        return Some("agent_id is required");
+    }
+    if req.vi_path.trim().is_empty() {
+        return Some("vi_path is required");
+    }
+    if req.cli_path.trim().is_empty() {
+        return Some("cli_path is required");
+    }
+    if req.getinfo_path.trim().is_empty() {
+        return Some("getinfo_path is required");
+    }
+    if !req.inputs.is_array() {
+        return Some("inputs must be an array");
+    }
+    if req.timeout_secs == Some(0) {
+        return Some("timeout_secs must be greater than 0");
+    }
+    None
+}
+
+async fn list_vi_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.list_vi_templates().await {
+        Ok(templates) => {
+            let mut views = Vec::with_capacity(templates.len());
+            for t in templates {
+                match ViTemplateView::try_from(t) {
+                    Ok(v) => views.push(v),
+                    Err(e) => {
+                        tracing::error!("vi template view: {e}");
+                        return db_error().into_response();
+                    }
+                }
+            }
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list vi templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_vi_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateViTemplateRequest>,
+) -> impl IntoResponse {
+    if let Some(msg) = validate_vi_template_create(&req) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody { error: msg.into() }),
+        )
+            .into_response();
+    }
+
+    match s.store.get_agent(req.agent_id.trim()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for vi template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| vi_path_stem(req.vi_path.trim()));
+
+    match s
+        .store
+        .create_vi_template(
+            &name,
+            req.agent_id.trim(),
+            req.vi_path.trim(),
+            req.cli_path.trim(),
+            req.getinfo_path.trim(),
+            &req.inputs,
+            req.show_front_panel,
+            req.timeout_secs,
+        )
+        .await
+    {
+        Ok(template) => match ViTemplateView::try_from(template) {
+            Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
+            Err(e) => {
+                tracing::error!("vi template view: {e}");
+                db_error().into_response()
+            }
+        },
+        Err(e) => {
+            tracing::error!("create vi template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_vi_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_vi_template(&id).await {
+        Ok(Some(template)) => match ViTemplateView::try_from(template) {
+            Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+            Err(e) => {
+                tracing::error!("vi template view: {e}");
+                db_error().into_response()
+            }
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "vi template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get vi template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_vi_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.delete_vi_template(&id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "vi template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete vi template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn dispatch_vi_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let template = match s.store.get_vi_template(&id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "vi template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get vi template for dispatch: {e}");
+            return db_error().into_response();
+        }
+    };
+
+    let command = match build_dispatch_command(&template) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+
+    let params = CreateTaskParams {
+        agent_id: template.agent_id,
+        source: "vi_template".into(),
+        template_id: None,
+        shell: "cmd".into(),
+        command,
+        workdir: None,
+        timeout_secs: template.timeout_secs.unwrap_or_else(default_timeout),
+    };
+
+    match s.store.create_task(params).await {
+        Ok(task) => (StatusCode::CREATED, Json(TaskView::from(task))).into_response(),
+        Err(e) => {
+            tracing::error!("dispatch vi template task: {e}");
             db_error().into_response()
         }
     }
@@ -1619,5 +1896,168 @@ mod tests {
             let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
             assert!(!err.error.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn vi_template_crud_via_http() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let create_body = serde_json::json!({
+            "agent_id": agent_id,
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\labview-runner-cli\labview-runner-cli.exe",
+            "getinfo_path": r"C:\labview-runner-cli\getinfo.vi",
+            "inputs": [{"name":"a","className":"Digital","value":3.0}],
+            "show_front_panel": true,
+            "timeout_secs": 30
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &create_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let created: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(created.name, "Add");
+        assert_eq!(created.agent_id, agent_id);
+        assert_eq!(created.vi_path, r"C:\x\Add.vi");
+        assert!(created.show_front_panel);
+        assert_eq!(created.timeout_secs, Some(30));
+        assert!(created.inputs.is_array());
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/vi-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, created.id);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let got: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(got.id, created.id);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/vi-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn dispatch_vi_template_enqueues_task() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let create_body = serde_json::json!({
+            "agent_id": agent_id,
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\labview-runner-cli\labview-runner-cli.exe",
+            "getinfo_path": r"C:\labview-runner-cli\getinfo.vi",
+            "inputs": [{"name":"a","className":"Digital","value":3.0}],
+            "show_front_panel": true,
+            "timeout_secs": 30
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &create_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let template: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/vi-templates/{}/dispatch", template.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let task: TaskView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(task.agent_id, agent_id);
+        assert_eq!(task.source, "vi_template");
+        assert_eq!(task.shell, "cmd");
+        assert_eq!(task.timeout_secs, 30);
+        assert_eq!(task.status, "queued");
+        assert!(task
+            .command
+            .contains(r#""C:\labview-runner-cli\labview-runner-cli.exe""#));
+        assert!(task.command.contains("--action run"));
+        assert!(task.command.contains("--show-front-panel"));
+        assert!(task.command.contains("--timeout 30"));
+        assert!(task.command.contains("--input "));
+    }
+
+    #[tokio::test]
+    async fn create_vi_template_rejects_unknown_agent() {
+        let test = test_app().await;
+        let app = &test.router;
+        let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+        let create_body = serde_json::json!({
+            "agent_id": unknown_id,
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": []
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &create_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
     }
 }

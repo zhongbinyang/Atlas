@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod db;
 mod dispatcher;
+mod labview_cmd;
 mod poller;
 mod screenshot;
 mod store;
