@@ -503,13 +503,17 @@ function renderAgentDetail(agentId) {
     '<div><span class="label">忙碌</span><div>' + (a.busy ? '是' : '否') + '</div></div>' +
     '<div><span class="label">最近见面</span><div class="mono">' + seen + '</div></div>';
   const actions = document.getElementById('agent-detail-actions');
+  const offline = a.status === 'offline';
+  const dis = offline ? ' disabled' : '';
   actions.innerHTML =
-    '<button type="button" class="btn-primary" id="detail-shot">截图</button>' +
-    '<button type="button" class="btn-sm" id="detail-history">历史</button>' +
-    '<button type="button" class="btn-sm" id="detail-files">文件</button>';
-  document.getElementById('detail-shot').onclick = () => takeScreenshot(a.id);
-  document.getElementById('detail-history').onclick = () => openHistory(a.id);
-  document.getElementById('detail-files').onclick = () => openFiles(a.id);
+    '<button type="button" class="btn-primary" id="detail-shot"' + dis + '>截图</button>' +
+    '<button type="button" class="btn-sm" id="detail-history"' + dis + '>历史</button>' +
+    '<button type="button" class="btn-sm" id="detail-files"' + dis + '>文件</button>';
+  if (!offline) {
+    document.getElementById('detail-shot').onclick = () => takeScreenshot(a.id);
+    document.getElementById('detail-history').onclick = () => openHistory(a.id);
+    document.getElementById('detail-files').onclick = () => openFiles(a.id);
+  }
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
@@ -660,5 +664,4 @@ async function deleteViTemplate(id) {
 document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
 
 applyRoute(parseRoute());
-refreshCurrent();
 setInterval(refreshCurrent, POLL_MS);
