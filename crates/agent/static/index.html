@@ -66,6 +66,61 @@
         </table>
       </div>
     </section>
+
+    <section id="labview-section">
+      <h2>LabVIEW VI</h2>
+      <div class="lv-config">
+        <div class="lv-field">
+          <span class="label">CLI</span>
+          <code id="lv-cli" class="mono">—</code>
+        </div>
+        <div class="lv-field">
+          <span class="label">GetInfo</span>
+          <code id="lv-getinfo" class="mono">—</code>
+        </div>
+      </div>
+      <div class="lv-toolbar">
+        <label class="lv-path-label">
+          <span class="label">VI 路径</span>
+          <input id="lv-vi-path" type="text" class="lv-path-input mono" placeholder="C:\path\to\My.vi">
+        </label>
+        <div class="lv-actions">
+          <button id="lv-inspect-btn" type="button">查询参数</button>
+          <button id="lv-run-btn" type="button">试跑</button>
+          <button id="lv-register-btn" type="button" class="btn-primary">注册到中心</button>
+        </div>
+      </div>
+      <div class="lv-options">
+        <label class="lv-check">
+          <input id="lv-show-fp" type="checkbox">
+          前面板
+        </label>
+        <label class="lv-timeout">
+          <span class="label">超时(秒)</span>
+          <input id="lv-timeout" type="number" min="1" placeholder="可选">
+        </label>
+      </div>
+      <div class="table-scroll">
+        <table class="lv-inputs-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>值</th>
+            </tr>
+          </thead>
+          <tbody id="lv-inputs-body">
+            <tr><td colspan="3" class="empty">先查询参数</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details class="lv-raw">
+        <summary>原始 JSON</summary>
+        <pre id="lv-json-raw" class="mono lv-pre">—</pre>
+      </details>
+      <pre id="lv-run-out" class="mono lv-pre" hidden></pre>
+      <p id="lv-msg" class="msg" hidden></p>
+    </section>
   </main>
 
   <script src="/app.js"></script>

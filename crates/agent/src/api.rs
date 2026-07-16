@@ -33,6 +33,7 @@ pub struct AppState {
     pub slot: Arc<TaskSlot>,
     pub metrics: Arc<Mutex<MetricsSampler>>,
     pub center_url: String,
+    pub http_client: reqwest::Client,
     pub files_root: Option<PathBuf>,
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
@@ -54,6 +55,17 @@ struct LabviewRunRequest {
     vi_path: String,
     #[serde(default)]
     inputs: Option<Value>,
+    #[serde(default)]
+    show_front_panel: bool,
+    timeout_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct LabviewRegisterTemplateRequest {
+    vi_path: String,
+    #[serde(default)]
+    inputs: Option<Value>,
+    name: Option<String>,
     #[serde(default)]
     show_front_panel: bool,
     timeout_secs: Option<u64>,
@@ -126,6 +138,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/labview/config", get(labview_config))
         .route("/api/labview/inspect", post(labview_inspect))
         .route("/api/labview/run", post(labview_run))
+        .route(
+            "/api/labview/register-template",
+            post(labview_register_template),
+        )
         .with_state(state)
 }
 
@@ -410,14 +426,88 @@ async fn files_content(
     }
 }
 
+async fn labview_register_template(
+    State(s): State<AppState>,
+    Json(req): Json<LabviewRegisterTemplateRequest>,
+) -> impl IntoResponse {
+    if req.vi_path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "vi_path is required" })),
+        )
+            .into_response();
+    }
+
+    let inputs = match req.inputs {
+        Some(Value::Array(arr)) => Value::Array(arr),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "inputs must be an array" })),
+            )
+                .into_response();
+        }
+        None => Value::Array(vec![]),
+    };
+
+    let agent_id = match crate::register::resolve_agent_id(
+        &s.http_client,
+        &s.center_url,
+        &s.hostname,
+        &s.ip,
+        s.port,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) if e == "agent not found on center" => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+
+    let center_body = serde_json::json!({
+        "agent_id": agent_id,
+        "vi_path": req.vi_path.trim(),
+        "cli_path": s.labview_cli.display().to_string(),
+        "getinfo_path": s.labview_getinfo.display().to_string(),
+        "inputs": inputs,
+        "name": req.name,
+        "show_front_panel": req.show_front_panel,
+        "timeout_secs": req.timeout_secs,
+    });
+
+    match crate::register::register_vi_template(&s.http_client, &s.center_url, &center_body).await {
+        Ok((status, body)) => {
+            let axum_status =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (axum_status, Json(body)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+    }
+}
+
 async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
     let body = RegisterAgentRequest {
         name: s.hostname.clone(),
         ip: s.ip.clone(),
         port: s.port,
     };
-    let client = crate::register::http_client();
-    match crate::register::register_with_center(&client, &s.center_url, &body).await {
+    match crate::register::register_with_center(&s.http_client, &s.center_url, &body).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -443,6 +533,7 @@ mod tests {
             slot: TaskSlot::new(),
             metrics: Arc::new(Mutex::new(MetricsSampler::new())),
             center_url: "http://localhost:3000".into(),
+            http_client: crate::register::http_client(),
             files_root: None,
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
@@ -638,5 +729,75 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body.get("action").and_then(|v| v.as_str()), Some("run"));
+    }
+
+    #[tokio::test]
+    async fn labview_register_template_proxies_to_center() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "agent-uuid-1",
+                "name": "test-host",
+                "ip": "127.0.0.1",
+                "port": 8080,
+                "status": "online",
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "busy": false,
+                "last_seen_at": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/vi-templates"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "tpl-1",
+                "name": "Add",
+                "agent_id": "agent-uuid-1",
+                "vi_path": "C:\\x\\Add.vi",
+                "cli_path": "C:\\tools\\cli.exe",
+                "getinfo_path": "C:\\tools\\getinfo.vi",
+                "inputs": [{ "name": "a", "className": "Digital", "value": 1.0 }],
+                "show_front_panel": false,
+                "timeout_secs": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        state.labview_cli = PathBuf::from(r"C:\tools\cli.exe");
+        state.labview_getinfo = PathBuf::from(r"C:\tools\getinfo.vi");
+
+        let app = router(state);
+
+        let payload = serde_json::json!({
+            "vi_path": "C:\\x\\Add.vi",
+            "inputs": [{ "name": "a", "className": "Digital", "value": 1.0 }],
+            "name": "Add"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/register-template")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some("tpl-1"));
+        assert_eq!(
+            body.get("agent_id").and_then(|v| v.as_str()),
+            Some("agent-uuid-1")
+        );
     }
 }

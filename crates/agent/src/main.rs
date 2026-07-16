@@ -36,6 +36,7 @@ async fn main() {
             .unwrap_or_else(|_| "127.0.0.1".into())
     });
 
+    let http_client = register::http_client();
     let state = AppState {
         hostname: hostname.clone(),
         ip: ip.clone(),
@@ -44,18 +45,18 @@ async fn main() {
         slot: TaskSlot::new(),
         metrics: Arc::new(Mutex::new(MetricsSampler::new())),
         center_url: cfg.center_url.clone(),
+        http_client: http_client.clone(),
         files_root: cfg.files_root.clone(),
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
     };
 
-    let client = register::http_client();
     let reg = common::RegisterAgentRequest {
         name: hostname,
         ip,
         port: cfg.port,
     };
-    if let Err(e) = register::register_with_center(&client, &cfg.center_url, &reg).await {
+    if let Err(e) = register::register_with_center(&http_client, &cfg.center_url, &reg).await {
         tracing::warn!("initial register failed: {e}");
     }
 
