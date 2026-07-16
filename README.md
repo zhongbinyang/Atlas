@@ -181,7 +181,7 @@ cargo test -p agent
 cargo test -p scheduler
 ```
 
-自动化测试使用 mock/fake CLI，**不** 依赖本机 LabVIEW；需硬件或真实 CLI 的用例标有 `#[ignore]` 或仅作手工验收（见上文第 9 项）。
+自动化测试使用 mock/fake CLI，**不** 依赖本机 LabVIEW；需硬件或真实 CLI 的用例标有 `#[ignore]` 或仅作手工验收（见上文第 7 项）。
 
 ## 目录结构
 
