@@ -73,6 +73,7 @@ function showView(id) {
 async function applyRoute(route) {
   if (route.name === 'functions') {
     showView('view-functions');
+    await fetchAgents();
     await fetchViTemplates();
     return;
   }
@@ -589,7 +590,7 @@ function renderViTemplates() {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (viTemplates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无 VI 模板</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无已注册功能，请在机台端注册</td></tr>';
     return;
   }
   for (const t of viTemplates) {
