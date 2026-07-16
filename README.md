@@ -47,6 +47,39 @@ WebUI 采用「产线工控清爽」壳层：调度中心默认「机台」视�
 | `AGENT_ADVERTISE_IP` | 自动探测 | 向调度中心注册的 IP |
 | `AGENT_HOSTNAME` | 系统计算机名 | 向调度中心注册的电脑名称 |
 | `AGENT_FILES_ROOT` | *（可选）* | 只读文件浏览根目录（绝对路径推荐）；未配置或无效时文件 API 返回 503 |
+| `AGENT_LABVIEW_CLI` | `C:\labview-runner-cli\labview-runner-cli.exe` | LabVIEW 试跑 CLI 可执行文件路径 |
+| `AGENT_LABVIEW_GETINFO_VI` | `C:\labview-runner-cli\getinfo.vi` | LabVIEW inspect 用的 getinfo VI 路径 |
+
+## LabVIEW VI 模板
+
+### 前置条件
+
+- **仅 Agent 机台**安装 LabVIEW 与外部工具 **`labview-runner-cli`**（安装与用法见 [`C:\Users\zhong\test06\README.md`](file:///C:/Users/zhong/test06/README.md)）。
+- 将 `labview-runner-cli.exe` 与 `getinfo.vi` 部署到 Agent 本机（默认目录 `C:\labview-runner-cli\`），或通过 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 覆盖路径。
+- 调度中心 **不** 在本机调用 LabVIEW；中心 WebUI 的 VI 操作一律 **代理** 到在线 Agent。
+
+### 工作流
+
+1. **查询参数（inspect）**：对目标 VI 绝对路径调用 `labview-runner-cli --action inspect`，返回 inputs/outputs JSON；在 WebUI 表格中编辑各参数的默认 `value`（`name` / `className` 只读）。
+2. **试跑（run）**：用当前 inputs 同步执行 `--action run`，返回 outputs JSON；可选「显示前面板」与 CLI `--timeout`（秒）。
+3. **注册**：将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 SQLite 表 `vi_templates`，并绑定目标 Agent。
+4. **下发**：从模板列表拼好 `cmd` 命令行入队现有任务队列，在绑定 Agent 上串行执行；结果在「作业」任务列表查看 stdout/stderr。
+
+### WebUI 入口
+
+| 位置 | 说明 |
+|------|------|
+| Agent WebUI（`:26631`） | 区块「VI」：只读 config、VI 路径文本框、查询参数 / 试跑 / **注册到中心** |
+| 调度中心 WebUI（`:26630`） | 顶栏「VI」：选择在线 Agent，代理 inspect / 试跑 / 注册；下方模板列表支持试跑、下发、删除 |
+
+VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。
+
+### 相关 API（摘要）
+
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`）。
+- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`，`POST /api/vi-templates/{id}/dispatch`。
+
+CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
 ## 运行
 
@@ -118,12 +151,22 @@ cargo run -p agent
 6. **忙碌排队**：先下发长任务（如 `ping -n 8 127.0.0.1`），立刻再提交一条短任务；第二条在第一条完成前保持 `queued`，之后再成功。
 7. **桌面截图**：在 Agent 列表点击 **截图**，弹窗显示主屏 PNG；点击 **历史** 可浏览已归档记录。
 8. **文件浏览**：将 Agent 的 `AGENT_FILES_ROOT` 指向样例结果目录；在 Agent 列表点击 **文件**，浏览根下 `Log.txt` 与进入 `EyeDiagram/35` 预览 `CH1.gif`，并验证下载。
+9. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
+   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**。
+   - 中心「VI」：模板列表可见刚注册项且绑定正确 Agent。
+   - 中心：换另一 VI 路径代理 **查询参数**；对模板 **试跑** 与 **下发**，在「作业」确认任务 `succeeded`。
+   - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
 
 ## 测试
 
 ```powershell
 cargo test --workspace
+# 或分包：
+cargo test -p agent
+cargo test -p scheduler
 ```
+
+自动化测试使用 mock/fake CLI，**不** 依赖本机 LabVIEW；需硬件或真实 CLI 的用例标有 `#[ignore]` 或仅作手工验收（见上文第 9 项）。
 
 ## 目录结构
 
