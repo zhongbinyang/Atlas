@@ -78,6 +78,248 @@ body {
 
 
 
+.topbar-left {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 1.25rem;
+
+  flex-wrap: wrap;
+
+}
+
+
+
+.page-tabs {
+
+  display: flex;
+
+  gap: 0.25rem;
+
+}
+
+
+
+.page-tabs .tab {
+
+  padding: 0.35rem 0.85rem;
+
+  font-weight: 600;
+
+  font-size: 0.85rem;
+
+}
+
+
+
+.page-tabs .tab.active {
+
+  background: var(--accent);
+
+  color: #fff;
+
+  border-color: var(--accent);
+
+}
+
+
+
+.page-tabs .tab.active:hover {
+
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+
+  border-color: color-mix(in srgb, var(--accent) 85%, #000);
+
+}
+
+
+
+#page-workbench[hidden],
+
+#page-sequence[hidden] {
+
+  display: none;
+
+}
+
+
+
+.seq-panel h3 {
+
+  margin: 0 0 0.5rem;
+
+  font-size: 0.95rem;
+
+}
+
+
+
+.seq-columns {
+
+  display: grid;
+
+  grid-template-columns: 1fr 1fr;
+
+  gap: 1rem;
+
+  margin-bottom: 0.75rem;
+
+}
+
+
+
+.seq-actions {
+
+  margin-top: 0.5rem;
+
+}
+
+
+
+.seq-row {
+
+  cursor: grab;
+
+}
+
+
+
+.seq-row.seq-dragging {
+
+  opacity: 0.5;
+
+}
+
+
+
+.seq-row.seq-drag-over td {
+
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+
+}
+
+
+
+.seq-row-actions {
+
+  white-space: nowrap;
+
+}
+
+
+
+.seq-results-list {
+
+  margin-top: 0.75rem;
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 0.5rem;
+
+}
+
+
+
+.seq-step {
+
+  border: 1px solid var(--border);
+
+  border-radius: var(--radius);
+
+  padding: 0.5rem 0.75rem;
+
+  background: var(--surface);
+
+}
+
+
+
+.seq-step-ok {
+
+  border-left: 3px solid var(--ok);
+
+}
+
+
+
+.seq-step-fail {
+
+  border-left: 3px solid var(--err);
+
+}
+
+
+
+.seq-step-label {
+
+  font-weight: 600;
+
+  margin-right: 0.5rem;
+
+}
+
+
+
+.seq-step-status {
+
+  font-size: 0.85rem;
+
+}
+
+
+
+.seq-step-ok .seq-step-status {
+
+  color: var(--ok);
+
+}
+
+
+
+.seq-step-fail .seq-step-status {
+
+  color: var(--err);
+
+}
+
+
+
+.seq-step-error {
+
+  margin-top: 0.35rem;
+
+  font-size: 0.85rem;
+
+  color: var(--err);
+
+}
+
+
+
+.seq-step-details {
+
+  margin-top: 0.35rem;
+
+  font-size: 0.85rem;
+
+}
+
+
+
+.seq-step-details summary {
+
+  cursor: pointer;
+
+  color: var(--muted);
+
+}
+
+
+
 .brand {
 
   font-family: var(--font-brand);
@@ -617,6 +859,14 @@ th {
     flex-wrap: wrap;
 
     gap: 0.75rem;
+
+  }
+
+
+
+  .seq-columns {
+
+    grid-template-columns: 1fr;
 
   }
 

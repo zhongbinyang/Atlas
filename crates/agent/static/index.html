@@ -11,7 +11,13 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 class="brand">产线 Agent</h1>
+    <div class="topbar-left">
+      <h1 class="brand">产线 Agent</h1>
+      <nav class="page-tabs">
+        <button type="button" class="tab active" data-page="workbench">VI</button>
+        <button type="button" class="tab" data-page="sequence">序列</button>
+      </nav>
+    </div>
     <button id="register-btn" type="button" class="btn-primary">重新注册</button>
   </header>
 
@@ -67,6 +73,7 @@
       </div>
     </section>
 
+    <div id="page-workbench">
     <section id="labview-section">
       <h2>LabVIEW VI</h2>
       <div class="lv-config">
@@ -140,6 +147,54 @@
         </table>
       </div>
     </section>
+    </div>
+
+    <div id="page-sequence" hidden>
+      <section class="seq-panel">
+        <h2>执行序列</h2>
+        <div class="seq-columns">
+          <div class="seq-col">
+            <h3>已注册功能</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>VI 路径</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="seq-registered-body">
+                  <tr><td colspan="3" class="empty">加载中…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="seq-col">
+            <h3>执行顺序</h3>
+            <div class="table-scroll">
+              <table class="seq-selected-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>名称</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="seq-selected-body">
+                  <tr><td colspan="3" class="empty">队列为空，从左侧添加</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="seq-actions">
+          <button id="seq-run-btn" type="button" class="btn-primary">按序执行</button>
+        </div>
+        <p id="seq-msg" class="msg" hidden></p>
+        <div id="seq-results"></div>
+      </section>
+    </div>
   </main>
 
   <script src="/app.js"></script>

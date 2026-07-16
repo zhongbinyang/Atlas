@@ -435,6 +435,349 @@ document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
 document.getElementById('lv-run-btn').addEventListener('click', runVi);
 document.getElementById('lv-register-btn').addEventListener('click', registerViTemplate);
 
+// --- Sequence page ---
+
+let seqRegistered = [];
+let seqSelected = [];
+let seqRunning = false;
+let seqDragIndex = null;
+
+function showPage(page) {
+  const workbench = document.getElementById('page-workbench');
+  const sequence = document.getElementById('page-sequence');
+  workbench.hidden = page !== 'workbench';
+  sequence.hidden = page !== 'sequence';
+  document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-page') === page);
+  });
+  if (page === 'sequence') {
+    loadSequencePage();
+  }
+}
+
+document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    showPage(btn.getAttribute('data-page'));
+  });
+});
+
+function showSeqMsg(text, ok) {
+  const msg = document.getElementById('seq-msg');
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = ok ? 'msg ok' : 'msg err';
+}
+
+function setSeqControlsDisabled(disabled) {
+  seqRunning = disabled;
+  document.getElementById('seq-run-btn').disabled = disabled;
+  document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
+    btn.disabled = disabled;
+  });
+  document.querySelectorAll('#seq-selected-body tr[data-index]').forEach(function (row) {
+    row.draggable = !disabled;
+  });
+}
+
+async function loadSequencePage() {
+  await Promise.all([loadSeqRegistered(), loadQueue()]);
+}
+
+async function loadSeqRegistered() {
+  const tbody = document.getElementById('seq-registered-body');
+  try {
+    const resp = await fetch('/api/labview/registered-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML =
+        '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    seqRegistered = Array.isArray(data) ? data : [];
+    renderSeqRegistered();
+  } catch (e) {
+    tbody.innerHTML =
+      '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+function renderSeqRegistered() {
+  const tbody = document.getElementById('seq-registered-body');
+  tbody.innerHTML = '';
+  if (!seqRegistered.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无已注册功能</td></tr>';
+    return;
+  }
+  for (let i = 0; i < seqRegistered.length; i++) {
+    const t = seqRegistered[i];
+    const row = document.createElement('tr');
+    const name = escapeHtml(t.name || t.id || '—');
+    const viPath = escapeHtml(t.vi_path || '—');
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '添加';
+    addBtn.disabled = seqRunning;
+    addBtn.addEventListener('click', function () {
+      addToQueue(t);
+    });
+    const actions = document.createElement('td');
+    actions.appendChild(addBtn);
+    row.innerHTML = '<td>' + name + '</td><td class="mono">' + viPath + '</td>';
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function loadQueue() {
+  try {
+    const resp = await fetch('/api/labview/run-queue');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('加载队列失败: ' + err, false);
+      seqSelected = [];
+    } else {
+      seqSelected = Array.isArray(data.items) ? data.items : [];
+    }
+    renderSeqSelected();
+  } catch (e) {
+    showSeqMsg('加载队列失败: ' + e.message, false);
+    seqSelected = [];
+    renderSeqSelected();
+  }
+}
+
+function renderSeqSelected() {
+  const tbody = document.getElementById('seq-selected-body');
+  tbody.innerHTML = '';
+  if (!seqSelected.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">队列为空，从左侧添加</td></tr>';
+    document.getElementById('seq-run-btn').disabled = seqRunning;
+    return;
+  }
+  for (let i = 0; i < seqSelected.length; i++) {
+    const item = seqSelected[i];
+    const row = document.createElement('tr');
+    row.setAttribute('data-index', String(i));
+    row.draggable = !seqRunning;
+    row.className = 'seq-row';
+    const name = escapeHtml(item.name || item.vi_template_id || '—');
+    row.innerHTML = '<td class="mono">' + (i + 1) + '</td><td>' + name + '</td>';
+    const actions = document.createElement('td');
+    actions.className = 'seq-row-actions';
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.textContent = '↑';
+    upBtn.title = '上移';
+    upBtn.disabled = seqRunning || i === 0;
+    upBtn.addEventListener('click', function () { moveQueueItem(i, -1); });
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button';
+    downBtn.textContent = '↓';
+    downBtn.title = '下移';
+    downBtn.disabled = seqRunning || i === seqSelected.length - 1;
+    downBtn.addEventListener('click', function () { moveQueueItem(i, 1); });
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.textContent = '移除';
+    removeBtn.disabled = seqRunning;
+    removeBtn.addEventListener('click', function () { removeFromQueue(i); });
+    actions.appendChild(upBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(downBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(removeBtn);
+    row.appendChild(actions);
+    row.addEventListener('dragstart', onSeqDragStart);
+    row.addEventListener('dragover', onSeqDragOver);
+    row.addEventListener('dragleave', onSeqDragLeave);
+    row.addEventListener('drop', onSeqDrop);
+    row.addEventListener('dragend', onSeqDragEnd);
+    tbody.appendChild(row);
+  }
+  document.getElementById('seq-run-btn').disabled = seqRunning || !seqSelected.length;
+}
+
+async function saveQueue() {
+  const body = {
+    items: seqSelected.map(function (item) {
+      return { vi_template_id: item.vi_template_id };
+    }),
+  };
+  try {
+    const resp = await fetch('/api/labview/run-queue', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('保存失败: ' + err, false);
+      await loadQueue();
+      return false;
+    }
+    if (Array.isArray(data.items)) {
+      seqSelected = data.items;
+    }
+    renderSeqSelected();
+    return true;
+  } catch (e) {
+    showSeqMsg('保存失败: ' + e.message, false);
+    await loadQueue();
+    return false;
+  }
+}
+
+async function addToQueue(template) {
+  const templateId = template.id;
+  if (!templateId) {
+    showSeqMsg('模板缺少 ID', false);
+    return;
+  }
+  seqSelected.push({
+    vi_template_id: templateId,
+    name: template.name || templateId,
+    vi_path: template.vi_path || '',
+  });
+  renderSeqSelected();
+  await saveQueue();
+}
+
+async function removeFromQueue(index) {
+  seqSelected.splice(index, 1);
+  renderSeqSelected();
+  await saveQueue();
+}
+
+async function moveQueueItem(index, delta) {
+  const newIndex = index + delta;
+  if (newIndex < 0 || newIndex >= seqSelected.length) return;
+  const item = seqSelected.splice(index, 1)[0];
+  seqSelected.splice(newIndex, 0, item);
+  renderSeqSelected();
+  await saveQueue();
+}
+
+function onSeqDragStart(e) {
+  if (seqRunning) {
+    e.preventDefault();
+    return;
+  }
+  const row = e.currentTarget;
+  seqDragIndex = parseInt(row.getAttribute('data-index'), 10);
+  row.classList.add('seq-dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(seqDragIndex));
+}
+
+function onSeqDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('seq-drag-over');
+}
+
+function onSeqDragLeave(e) {
+  e.currentTarget.classList.remove('seq-drag-over');
+}
+
+async function onSeqDrop(e) {
+  e.preventDefault();
+  const targetRow = e.currentTarget;
+  targetRow.classList.remove('seq-drag-over');
+  if (seqDragIndex == null || seqRunning) return;
+  const dropIndex = parseInt(targetRow.getAttribute('data-index'), 10);
+  if (seqDragIndex === dropIndex) return;
+  const item = seqSelected.splice(seqDragIndex, 1)[0];
+  seqSelected.splice(dropIndex, 0, item);
+  seqDragIndex = null;
+  renderSeqSelected();
+  await saveQueue();
+}
+
+function onSeqDragEnd(e) {
+  e.currentTarget.classList.remove('seq-dragging');
+  document.querySelectorAll('.seq-drag-over').forEach(function (el) {
+    el.classList.remove('seq-drag-over');
+  });
+  seqDragIndex = null;
+}
+
+function renderSeqResults(data) {
+  const container = document.getElementById('seq-results');
+  container.innerHTML = '';
+  if (!data || !data.steps || !data.steps.length) return;
+  const heading = document.createElement('h3');
+  heading.textContent = '执行结果';
+  container.appendChild(heading);
+  const list = document.createElement('div');
+  list.className = 'seq-results-list';
+  for (let i = 0; i < data.steps.length; i++) {
+    const step = data.steps[i];
+    const row = document.createElement('div');
+    row.className = 'seq-step ' + (step.ok ? 'seq-step-ok' : 'seq-step-fail');
+    const label = document.createElement('span');
+    label.className = 'seq-step-label';
+    label.textContent = (step.position != null ? step.position + 1 : i + 1) + '. ' + (step.name || step.template_id || '—');
+    const status = document.createElement('span');
+    status.className = 'seq-step-status';
+    status.textContent = step.ok ? '成功' : '失败';
+    row.appendChild(label);
+    row.appendChild(status);
+    if (!step.ok && step.error) {
+      const errEl = document.createElement('div');
+      errEl.className = 'seq-step-error mono';
+      errEl.textContent = step.error;
+      row.appendChild(errEl);
+    }
+    if (step.ok && step.result != null) {
+      const details = document.createElement('details');
+      details.className = 'seq-step-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '结果 JSON';
+      const pre = document.createElement('pre');
+      pre.className = 'mono lv-pre';
+      pre.textContent = JSON.stringify(step.result, null, 2);
+      details.appendChild(summary);
+      details.appendChild(pre);
+      row.appendChild(details);
+    }
+    list.appendChild(row);
+  }
+  container.appendChild(list);
+}
+
+async function runSequence() {
+  if (seqRunning || !seqSelected.length) return;
+  setSeqControlsDisabled(true);
+  document.getElementById('seq-results').innerHTML = '';
+  showSeqMsg('执行中…', true);
+  try {
+    const resp = await fetch('/api/labview/run-sequence', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('执行失败: ' + err, false);
+      return;
+    }
+    renderSeqResults(data);
+    if (data.stopped) {
+      showSeqMsg('执行中止于第 ' + ((data.failed_at != null ? data.failed_at : 0) + 1) + ' 步', false);
+    } else {
+      showSeqMsg('全部执行成功', true);
+    }
+  } catch (e) {
+    showSeqMsg('执行失败: ' + e.message, false);
+  } finally {
+    setSeqControlsDisabled(false);
+    renderSeqRegistered();
+    renderSeqSelected();
+  }
+}
+
+document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+
 fetchStatus();
 fetchTasks();
 loadLabviewConfig();
