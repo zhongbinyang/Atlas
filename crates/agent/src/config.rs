@@ -6,6 +6,8 @@ pub struct AgentConfig {
     pub advertise_ip: Option<String>,
     pub hostname: Option<String>,
     pub files_root: Option<std::path::PathBuf>,
+    pub labview_cli: std::path::PathBuf,
+    pub labview_getinfo: std::path::PathBuf,
 }
 
 impl AgentConfig {
@@ -23,6 +25,14 @@ impl AgentConfig {
         let files_root = std::env::var("AGENT_FILES_ROOT")
             .ok()
             .map(std::path::PathBuf::from);
+        let labview_cli = std::env::var("AGENT_LABVIEW_CLI")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe")
+            });
+        let labview_getinfo = std::env::var("AGENT_LABVIEW_GETINFO_VI")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"));
         Ok(Self {
             bind,
             port,
@@ -30,6 +40,8 @@ impl AgentConfig {
             advertise_ip,
             hostname,
             files_root,
+            labview_cli,
+            labview_getinfo,
         })
     }
 }
@@ -56,5 +68,23 @@ mod tests {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("AGENT_CENTER_URL");
         assert!(AgentConfig::load_from_env().is_err());
+    }
+
+    #[test]
+    fn labview_defaults_when_env_unset() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("AGENT_LABVIEW_CLI");
+        std::env::remove_var("AGENT_LABVIEW_GETINFO_VI");
+        std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:26630");
+        let cfg = AgentConfig::load_from_env().unwrap();
+        assert_eq!(
+            cfg.labview_cli,
+            std::path::PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe")
+        );
+        assert_eq!(
+            cfg.labview_getinfo,
+            std::path::PathBuf::from(r"C:\labview-runner-cli\getinfo.vi")
+        );
+        std::env::remove_var("AGENT_CENTER_URL");
     }
 }
