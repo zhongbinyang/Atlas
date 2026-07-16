@@ -65,19 +65,26 @@ WebUI 采用「产线工控清爽」壳层：调度中心默认「机台」视�
 3. **注册**：将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 SQLite 表 `vi_templates`，并绑定目标 Agent。
 4. **下发**：从模板列表拼好 `cmd` 命令行入队现有任务队列，在绑定 Agent 上串行执行；结果在「作业」任务列表查看 stdout/stderr。
 
+### 已注册列表与分发（试跑）
+
+1. **Agent**：在「VI」工作台 **注册到中心** 后，下方「**已注册功能**」列表出现该 VI；可 **试跑** 或 **加载到编辑区**（仅本机已注册项）。
+2. **调度中心**：顶栏「VI」模板表显示 **当前机台** / **来源机台** 列（来源缺失时显示「未知」）。
+3. **分发**：在模板行点击 **分发** → 多选目标机台 → 确认；目标机台出现同路径模板且可 **试跑**（不走任务队列）。
+4. 目标机台 **同路径再次分发** 会覆盖更新且保持单行；`origin_agent_id` 按规格保留来源机台（分发 upsert 不覆盖来源）。
+
 ### WebUI 入口
 
 | 位置 | 说明 |
 |------|------|
-| Agent WebUI（`:26631`） | 区块「VI」：只读 config、VI 路径文本框、查询参数 / 试跑 / **注册到中心** |
-| 调度中心 WebUI（`:26630`） | 顶栏「VI」：选择在线 Agent，代理 inspect / 试跑 / 注册；下方模板列表支持试跑、下发、删除 |
+| Agent WebUI（`:26631`） | 区块「VI」：只读 config、VI 路径、查询参数 / 试跑 / **注册到中心**；下方「**已注册功能**」列表（本机项）支持试跑 |
+| 调度中心 WebUI（`:26630`） | 顶栏「VI」：选择在线 Agent 代理 inspect / 试跑 / 注册；模板表含当前/来源机台，支持试跑、**分发**、删除 |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`）。
-- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`，`POST /api/vi-templates/{id}/dispatch`。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（服务端代写中心 `POST /api/vi-templates`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机）。
+- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/DELETE /api/vi-templates`（列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（多目标、跳过来源、逐项结果），`POST /api/vi-templates/{id}/dispatch`（任务队列下发）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
@@ -152,9 +159,10 @@ cargo run -p agent
 7. **桌面截图**：在 Agent 列表点击 **截图**，弹窗显示主屏 PNG；点击 **历史** 可浏览已归档记录。
 8. **文件浏览**：将 Agent 的 `AGENT_FILES_ROOT` 指向样例结果目录；在 Agent 列表点击 **文件**，浏览根下 `Log.txt` 与进入 `EyeDiagram/35` 预览 `CH1.gif`，并验证下载。
 9. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
-   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**。
-   - 中心「VI」：模板列表可见刚注册项且绑定正确 Agent。
+   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「已注册功能」出现该项且可试跑。
+   - 中心「VI」：模板表可见刚注册项，**当前机台** / **来源机台** 均为注册 Agent。
    - 中心：换另一 VI 路径代理 **查询参数**；对模板 **试跑** 与 **下发**，在「作业」确认任务 `succeeded`。
+   - 中心：**分发** 到另一在线 Agent；目标 Agent「已注册功能」可见，来源机台不变；同路径再分发仅保留一行。
    - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
 
 ## 测试
