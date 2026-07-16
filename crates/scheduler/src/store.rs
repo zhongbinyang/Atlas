@@ -79,6 +79,20 @@ pub struct TaskUpdate {
 }
 
 #[derive(Debug, Clone)]
+pub struct ViTemplate {
+    pub id: String,
+    pub name: String,
+    pub agent_id: String,
+    pub vi_path: String,
+    pub cli_path: String,
+    pub getinfo_path: String,
+    pub inputs_json: String,
+    pub show_front_panel: bool,
+    pub timeout_secs: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Screenshot {
     pub id: String,
     pub agent_id: String,
@@ -505,6 +519,87 @@ impl Store {
         .await?;
         Ok(row.map(|r| r.into_screenshot()))
     }
+
+    pub async fn create_vi_template(
+        &self,
+        name: &str,
+        agent_id: &str,
+        vi_path: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        inputs: &serde_json::Value,
+        show_front_panel: bool,
+        timeout_secs: Option<i64>,
+    ) -> Result<ViTemplate, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let row = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            INSERT INTO vi_templates (
+                id, name, agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING
+                id, name, agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            "#,
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(agent_id)
+        .bind(vi_path)
+        .bind(cli_path)
+        .bind(getinfo_path)
+        .bind(&inputs_json)
+        .bind(i64::from(show_front_panel))
+        .bind(timeout_secs)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_vi_template())
+    }
+
+    pub async fn list_vi_templates(&self) -> Result<Vec<ViTemplate>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            SELECT
+                id, name, agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            FROM vi_templates
+            ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_vi_template()).collect())
+    }
+
+    pub async fn get_vi_template(&self, id: &str) -> Result<Option<ViTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            SELECT
+                id, name, agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            FROM vi_templates
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_vi_template()))
+    }
+
+    pub async fn delete_vi_template(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM vi_templates WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -616,6 +711,37 @@ struct ScreenshotRow {
     width: Option<i32>,
     height: Option<i32>,
     created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ViTemplateRow {
+    id: String,
+    name: String,
+    agent_id: String,
+    vi_path: String,
+    cli_path: String,
+    getinfo_path: String,
+    inputs_json: String,
+    show_front_panel: i64,
+    timeout_secs: Option<i64>,
+    created_at: String,
+}
+
+impl ViTemplateRow {
+    fn into_vi_template(self) -> ViTemplate {
+        ViTemplate {
+            id: self.id,
+            name: self.name,
+            agent_id: self.agent_id,
+            vi_path: self.vi_path,
+            cli_path: self.cli_path,
+            getinfo_path: self.getinfo_path,
+            inputs_json: self.inputs_json,
+            show_front_panel: self.show_front_panel != 0,
+            timeout_secs: self.timeout_secs,
+            created_at: self.created_at,
+        }
+    }
 }
 
 impl ScreenshotRow {
@@ -732,6 +858,69 @@ mod tests {
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, meta.id);
         assert!(store.get_screenshot(&meta.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn vi_template_crud_round_trips_fields() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([{"name":"a","className":"Digital","value":3.0}]);
+        let tpl = store
+            .create_vi_template(
+                "Add",
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\labview-runner-cli\labview-runner-cli.exe",
+                r"C:\labview-runner-cli\getinfo.vi",
+                &inputs,
+                true,
+                Some(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tpl.name, "Add");
+        assert_eq!(tpl.agent_id, agent.id);
+        assert_eq!(tpl.vi_path, r"C:\x\Add.vi");
+        assert_eq!(tpl.cli_path, r"C:\labview-runner-cli\labview-runner-cli.exe");
+        assert_eq!(tpl.getinfo_path, r"C:\labview-runner-cli\getinfo.vi");
+        assert_eq!(tpl.inputs_json, inputs.to_string());
+        assert!(tpl.show_front_panel);
+        assert_eq!(tpl.timeout_secs, Some(30));
+        assert!(!tpl.created_at.is_empty());
+
+        let listed = store.list_vi_templates().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, tpl.id);
+
+        let got = store.get_vi_template(&tpl.id).await.unwrap().unwrap();
+        assert_eq!(got.id, tpl.id);
+        assert!(got.show_front_panel);
+
+        assert!(store.delete_vi_template(&tpl.id).await.unwrap());
+        assert!(store.get_vi_template(&tpl.id).await.unwrap().is_none());
+        assert!(!store.delete_vi_template(&tpl.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn vi_template_show_front_panel_defaults_false() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let tpl = store
+            .create_vi_template(
+                "NoPanel",
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!tpl.show_front_panel);
+        assert_eq!(tpl.timeout_secs, None);
     }
 
     #[tokio::test]

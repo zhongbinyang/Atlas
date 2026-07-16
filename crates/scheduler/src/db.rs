@@ -14,6 +14,7 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     for sql in [
         include_str!("../migrations/001_init.sql"),
         include_str!("../migrations/002_screenshots.sql"),
+        include_str!("../migrations/003_vi_templates.sql"),
     ] {
         sqlx::raw_sql(sql).execute(&pool).await?;
     }
