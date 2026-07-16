@@ -33,7 +33,7 @@ async fn fetch_labview_config(
         .map_err(|e| format!("invalid labview config: {e}"))
 }
 
-pub async fn transfer_template(
+pub async fn copy_template(
     store: &Store,
     labview_client: &reqwest::Client,
     source: &ViTemplate,
@@ -63,7 +63,7 @@ pub async fn transfer_template(
     };
 
     store
-        .transfer_vi_template(
+        .copy_vi_template(
             &source.id,
             target_agent_id,
             &cli_path,
@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transfer_moves_template_to_target() {
+    async fn copy_creates_template_on_target_keeps_source() {
         let store = test_store().await;
         let (addr, _mock) = start_mock_labview().await;
         let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
@@ -143,7 +143,7 @@ mod tests {
             .unwrap();
 
         let labview_client = reqwest::Client::new();
-        let transferred = transfer_template(
+        let copied = copy_template(
             &store,
             &labview_client,
             &source,
@@ -152,27 +152,29 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(transferred.id, source.id);
-        assert_eq!(transferred.agent_id, agent_b.id);
-        assert_eq!(transferred.origin_agent_id, agent_a.id);
-        assert_eq!(transferred.cli_path, r"C:\cli\LabVIEWCLI.exe");
+        assert_ne!(copied.id, source.id);
+        assert_eq!(copied.agent_id, agent_b.id);
+        assert_eq!(copied.origin_agent_id, agent_a.id);
+        assert_eq!(copied.vi_path, source.vi_path);
+        assert_eq!(copied.cli_path, r"C:\cli\LabVIEWCLI.exe");
 
         let listed_a = store
             .list_vi_templates(Some(&agent_a.id))
             .await
             .unwrap();
-        assert!(listed_a.is_empty());
+        assert_eq!(listed_a.len(), 1);
+        assert_eq!(listed_a[0].id, source.id);
 
         let listed_b = store
             .list_vi_templates(Some(&agent_b.id))
             .await
             .unwrap();
         assert_eq!(listed_b.len(), 1);
-        assert_eq!(listed_b[0].id, source.id);
+        assert_eq!(listed_b[0].id, copied.id);
     }
 
     #[tokio::test]
-    async fn transfer_to_self_errors() {
+    async fn copy_to_self_errors() {
         let store = test_store().await;
         let agent = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
         let inputs = serde_json::json!([]);
@@ -191,7 +193,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = transfer_template(
+        let err = copy_template(
             &store,
             &reqwest::Client::new(),
             &source,

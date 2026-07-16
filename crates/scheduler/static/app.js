@@ -163,7 +163,7 @@ function openDistributeModal(t) {
       container.appendChild(label);
     }
   }
-  document.getElementById('vi-distribute-path').value = '';
+  document.getElementById('vi-distribute-path').value = t.vi_path || '';
   document.getElementById('vi-distribute-results').textContent = '';
   document.getElementById('vi-distribute-modal').hidden = false;
 }
@@ -206,9 +206,9 @@ async function submitDistribute() {
     const agentName = data.agent_name || (agent ? agent.name : null) ||
       (data.agent_id ? data.agent_id.slice(0, 8) : '—');
     const idShort = data.id ? data.id.slice(0, 8) + '…' : '';
-    resultsEl.textContent = '已挪至 ' + agentName +
-      (idShort ? '（id: ' + idShort + '）' : '') +
-      '；源机不再持有该模板';
+    resultsEl.textContent = '已复制到 ' + agentName +
+      (idShort ? '（新 id: ' + idShort + '）' : '') +
+      '；源机台仍保留原模板';
     await fetchViTemplates();
   } catch (e) {
     resultsEl.textContent = '分发失败: ' + e.message;

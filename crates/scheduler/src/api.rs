@@ -14,7 +14,7 @@ use crate::store::{
     Agent, CreateTaskParams, QueueReplaceError, Screenshot, Store, Task, TaskTemplate,
     UpdateTemplateParams, ViRunQueueItem, ViTemplateEnriched, ViTemplatePatch,
 };
-use crate::vi_distribute::{transfer_template, TransferApiError};
+use crate::vi_distribute::{copy_template, TransferApiError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -817,7 +817,7 @@ fn transfer_error_response(err: TransferApiError) -> (StatusCode, Json<ErrorBody
         TransferApiError::SameAgent => (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: "cannot transfer to source agent".into(),
+                error: "cannot distribute to source agent".into(),
             }),
         ),
         TransferApiError::Config(msg) => {
@@ -1050,7 +1050,7 @@ async fn distribute_vi_template(
         }
     };
 
-    let transferred = match transfer_template(
+    let copied = match copy_template(
         &s.store,
         &s.labview_client,
         &source,
@@ -1063,7 +1063,7 @@ async fn distribute_vi_template(
         Err(e) => return transfer_error_response(e).into_response(),
     };
 
-    match s.store.get_vi_template_enriched(&transferred.id).await {
+    match s.store.get_vi_template_enriched(&copied.id).await {
         Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
             Ok(view) => (StatusCode::OK, Json(view)).into_response(),
             Err(e) => {
@@ -2772,7 +2772,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distribute_transfers_same_id_to_target() {
+    async fn distribute_copies_template_to_target() {
         let test = test_app().await;
         let app = &test.router;
         let (addr, _mock) = start_mock_agent_labview().await;
@@ -2796,10 +2796,11 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let transferred: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(transferred.id, source.id);
-        assert_eq!(transferred.agent_id, agent_b);
-        assert_eq!(transferred.origin_agent_id, agent_a);
+        let copied: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(copied.id, source.id);
+        assert_eq!(copied.agent_id, agent_b);
+        assert_eq!(copied.origin_agent_id, agent_a);
+        assert_eq!(copied.vi_path, source.vi_path);
 
         let resp = app
             .clone()
@@ -2813,7 +2814,8 @@ mod tests {
             .unwrap();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list_a: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
-        assert!(list_a.is_empty());
+        assert_eq!(list_a.len(), 1);
+        assert_eq!(list_a[0].id, source.id);
 
         let resp = app
             .clone()
@@ -2828,7 +2830,7 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list_b: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(list_b.len(), 1);
-        assert_eq!(list_b[0].id, source.id);
+        assert_eq!(list_b[0].id, copied.id);
     }
 
     #[tokio::test]
@@ -2854,7 +2856,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(err.error, "cannot transfer to source agent");
+        assert_eq!(err.error, "cannot distribute to source agent");
     }
 
     #[tokio::test]

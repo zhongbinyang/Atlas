@@ -646,6 +646,53 @@ impl Store {
         self.get_vi_template(id).await
     }
 
+    /// INSERT a copy on the target agent; source row is unchanged.
+    pub async fn copy_vi_template(
+        &self,
+        source_id: &str,
+        target_agent_id: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        vi_path: Option<&str>,
+    ) -> Result<ViTemplate, TransferError> {
+        let source = self
+            .get_vi_template(source_id)
+            .await
+            .map_err(TransferError::Db)?
+            .ok_or(TransferError::NotFound)?;
+
+        if source.agent_id == target_agent_id {
+            return Err(TransferError::SameAgent);
+        }
+
+        if self
+            .get_agent(target_agent_id)
+            .await
+            .map_err(TransferError::Db)?
+            .is_none()
+        {
+            return Err(TransferError::AgentNotFound);
+        }
+
+        let vi_path = vi_path.unwrap_or(&source.vi_path);
+        let inputs: serde_json::Value = serde_json::from_str(&source.inputs_json)
+            .map_err(|e| TransferError::Db(sqlx::Error::Protocol(format!("inputs json: {e}"))))?;
+
+        self.insert_vi_template(
+            &source.name,
+            target_agent_id,
+            &source.origin_agent_id,
+            vi_path,
+            cli_path,
+            getinfo_path,
+            &inputs,
+            source.show_front_panel,
+            source.timeout_secs,
+        )
+        .await
+        .map_err(TransferError::Db)
+    }
+
     pub async fn transfer_vi_template(
         &self,
         id: &str,
@@ -1423,6 +1470,51 @@ mod tests {
 
         let got = store.get_vi_template(&tpl.id).await.unwrap().unwrap();
         assert_eq!(got.name, "NewName");
+    }
+
+    #[tokio::test]
+    async fn copy_vi_template_keeps_source() {
+        let store = test_store().await;
+        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let source = store
+            .create_vi_template(
+                "CopyMe",
+                &agent_a.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let copied = store
+            .copy_vi_template(
+                &source.id,
+                &agent_b.id,
+                r"C:\cli-b.exe",
+                r"C:\getinfo-b.vi",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(copied.id, source.id);
+        assert_eq!(copied.agent_id, agent_b.id);
+        assert_eq!(copied.origin_agent_id, agent_a.id);
+        assert_eq!(copied.vi_path, source.vi_path);
+
+        let on_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
+        assert_eq!(on_a.len(), 1);
+        assert_eq!(on_a[0].id, source.id);
+
+        let on_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].id, copied.id);
     }
 
     #[tokio::test]

@@ -166,12 +166,12 @@
         <button id="vi-distribute-close" type="button" class="btn-sm">关闭</button>
       </div>
       <div class="modal-body">
-        <p class="msg">分发后源机将不再持有该模板</p>
+        <p class="msg">分发将在目标机台创建副本，源机台仍保留原模板</p>
         <p class="label">目标 Agent（单选）</p>
         <div id="vi-distribute-agents" class="vi-distribute-agents"></div>
         <label class="lv-path-label vi-distribute-path-label">
           <span class="label">VI 路径（可选，覆盖源路径）</span>
-          <input id="vi-distribute-path" type="text" class="lv-path-input mono" placeholder="留空则使用源模板路径">
+          <input id="vi-distribute-path" type="text" class="lv-path-input mono" placeholder="目标机 VI 路径">
         </label>
         <pre id="vi-distribute-results" class="mono lv-pre"></pre>
         <div class="lv-actions vi-distribute-actions">
