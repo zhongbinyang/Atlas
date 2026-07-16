@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
-    Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams, ViTemplate,
+    Agent, CreateTaskParams, Screenshot, Store, Task, TaskTemplate, UpdateTemplateParams,
+    ViTemplateEnriched,
 };
+use crate::vi_distribute::{distribute_template, DistributeViTemplateResponse};
+
+pub use crate::vi_distribute::DistributeResultItem;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -147,6 +151,9 @@ pub struct ViTemplateView {
     pub id: String,
     pub name: String,
     pub agent_id: String,
+    pub origin_agent_id: String,
+    pub agent_name: String,
+    pub origin_agent_name: String,
     pub vi_path: String,
     pub cli_path: String,
     pub getinfo_path: String,
@@ -156,25 +163,44 @@ pub struct ViTemplateView {
     pub created_at: String,
 }
 
-impl TryFrom<ViTemplate> for ViTemplateView {
+fn agent_display_name(name: Option<String>) -> String {
+    name.filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "未知".into())
+}
+
+impl TryFrom<ViTemplateEnriched> for ViTemplateView {
     type Error = String;
 
-    fn try_from(t: ViTemplate) -> Result<Self, Self::Error> {
-        let inputs: serde_json::Value =
-            serde_json::from_str(&t.inputs_json).map_err(|e| format!("invalid inputs_json: {e}"))?;
+    fn try_from(e: ViTemplateEnriched) -> Result<Self, Self::Error> {
+        let inputs: serde_json::Value = serde_json::from_str(&e.template.inputs_json)
+            .map_err(|err| format!("invalid inputs_json: {err}"))?;
         Ok(Self {
-            id: t.id,
-            name: t.name,
-            agent_id: t.agent_id,
-            vi_path: t.vi_path,
-            cli_path: t.cli_path,
-            getinfo_path: t.getinfo_path,
+            id: e.template.id,
+            name: e.template.name,
+            agent_id: e.template.agent_id,
+            origin_agent_id: e.template.origin_agent_id,
+            agent_name: agent_display_name(e.agent_name),
+            origin_agent_name: agent_display_name(e.origin_agent_name),
+            vi_path: e.template.vi_path,
+            cli_path: e.template.cli_path,
+            getinfo_path: e.template.getinfo_path,
             inputs,
-            show_front_panel: t.show_front_panel,
-            timeout_secs: t.timeout_secs,
-            created_at: t.created_at,
+            show_front_panel: e.template.show_front_panel,
+            timeout_secs: e.template.timeout_secs,
+            created_at: e.template.created_at,
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListViTemplatesQuery {
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DistributeViTemplateRequest {
+    pub target_agent_ids: Vec<String>,
+    pub vi_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +334,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/vi-templates/{id}",
             get(get_vi_template).delete(delete_vi_template),
+        )
+        .route(
+            "/api/vi-templates/{id}/distribute",
+            post(distribute_vi_template),
         )
         .route(
             "/api/agents/{id}/screenshots",
@@ -689,8 +719,12 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     None
 }
 
-async fn list_vi_templates(State(s): State<AppState>) -> impl IntoResponse {
-    match s.store.list_vi_templates(None).await {
+async fn list_vi_templates(
+    State(s): State<AppState>,
+    Query(q): Query<ListViTemplatesQuery>,
+) -> impl IntoResponse {
+    let agent_filter = q.agent_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    match s.store.list_vi_templates_enriched(agent_filter).await {
         Ok(templates) => {
             let mut views = Vec::with_capacity(templates.len());
             for t in templates {
@@ -754,8 +788,9 @@ async fn create_vi_template(
 
     match s
         .store
-        .create_vi_template(
+        .upsert_vi_template(
             &name,
+            req.agent_id.trim(),
             req.agent_id.trim(),
             &vi_path,
             &cli_path,
@@ -766,10 +801,24 @@ async fn create_vi_template(
         )
         .await
     {
-        Ok(template) => match ViTemplateView::try_from(template) {
-            Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok((template, created)) => match s.store.get_vi_template_enriched(&template.id).await {
+            Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
+                Ok(view) => {
+                    let status = if created {
+                        StatusCode::CREATED
+                    } else {
+                        StatusCode::OK
+                    };
+                    (status, Json(view)).into_response()
+                }
+                Err(e) => {
+                    tracing::error!("vi template view: {e}");
+                    db_error().into_response()
+                }
+            },
+            Ok(None) => db_error().into_response(),
             Err(e) => {
-                tracing::error!("vi template view: {e}");
+                tracing::error!("get vi template enriched after create: {e}");
                 db_error().into_response()
             }
         },
@@ -784,7 +833,7 @@ async fn get_vi_template(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match s.store.get_vi_template(&id).await {
+    match s.store.get_vi_template_enriched(&id).await {
         Ok(Some(template)) => match ViTemplateView::try_from(template) {
             Ok(view) => (StatusCode::OK, Json(view)).into_response(),
             Err(e) => {
@@ -804,6 +853,44 @@ async fn get_vi_template(
             db_error().into_response()
         }
     }
+}
+
+async fn distribute_vi_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<DistributeViTemplateRequest>,
+) -> impl IntoResponse {
+    let source = match s.store.get_vi_template(&id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "vi template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get vi template for distribute: {e}");
+            return db_error().into_response();
+        }
+    };
+
+    let results = distribute_template(
+        &s.store,
+        &s.labview_client,
+        &source,
+        &req.target_agent_ids,
+        req.vi_path.as_deref(),
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(DistributeViTemplateResponse { results }),
+    )
+        .into_response()
 }
 
 async fn delete_vi_template(
@@ -2291,5 +2378,247 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent not found");
+    }
+
+    async fn create_vi_template_http(
+        app: &Router,
+        agent_id: &str,
+        name: Option<&str>,
+        vi_path: &str,
+    ) -> (StatusCode, ViTemplateView) {
+        let mut body = serde_json::json!({
+            "agent_id": agent_id,
+            "vi_path": vi_path,
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": []
+        });
+        if let Some(n) = name {
+            body["name"] = serde_json::json!(n);
+        }
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        (status, view)
+    }
+
+    #[tokio::test]
+    async fn list_vi_templates_filter_by_agent_query() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_a = register_agent_at(app, "192.168.1.10", 26631).await;
+        let agent_b = register_agent_at(app, "192.168.1.11", 26632).await;
+
+        let (_, tpl_a) = create_vi_template_http(app, &agent_a, Some("A"), r"C:\a.vi").await;
+        let (_, tpl_b) = create_vi_template_http(app, &agent_b, Some("B"), r"C:\b.vi").await;
+        assert_eq!(tpl_a.agent_id, agent_a);
+        assert_eq!(tpl_b.agent_id, agent_b);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates?agent_id={agent_a}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, tpl_a.id);
+        assert_eq!(list[0].name, "A");
+    }
+
+    #[tokio::test]
+    async fn create_vi_template_upsert_keeps_origin() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let (status1, first) =
+            create_vi_template_http(app, &agent_id, Some("First"), r"C:\x\Add.vi").await;
+        assert_eq!(status1, StatusCode::CREATED);
+        assert_eq!(first.origin_agent_id, agent_id);
+
+        let (status2, second) =
+            create_vi_template_http(app, &agent_id, Some("Second"), r"C:\x\Add.vi").await;
+        assert_eq!(status2, StatusCode::OK);
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.name, "Second");
+        assert_eq!(second.origin_agent_id, agent_id);
+    }
+
+    #[tokio::test]
+    async fn distribute_creates_on_target_and_preserves_origin() {
+        let test = test_app().await;
+        let app = &test.router;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_a = register_agent_id(app).await;
+        let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
+
+        let (_, source) =
+            create_vi_template_http(app, &agent_a, Some("Add"), r"C:\x\Add.vi").await;
+
+        let body = serde_json::json!({
+            "target_agent_ids": [agent_b]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/vi-templates/{}/distribute", source.id),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.results[0].status, "created");
+        assert_eq!(out.results[0].agent_id, agent_b);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates?agent_id={agent_b}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].agent_id, agent_b);
+        assert_eq!(list[0].origin_agent_id, agent_a);
+    }
+
+    #[tokio::test]
+    async fn distribute_updates_same_path_on_target() {
+        let test = test_app().await;
+        let app = &test.router;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_a = register_agent_id(app).await;
+        let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
+
+        let (_, source) =
+            create_vi_template_http(app, &agent_a, Some("FromA"), r"C:\x\Add.vi").await;
+        let (_, local_b) =
+            create_vi_template_http(app, &agent_b, Some("LocalB"), r"C:\x\Add.vi").await;
+        assert_eq!(local_b.origin_agent_id, agent_b);
+
+        let body = serde_json::json!({
+            "target_agent_ids": [agent_b]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/vi-templates/{}/distribute", source.id),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(out.results[0].status, "updated");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/vi-templates?agent_id={agent_b}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, local_b.id);
+        assert_eq!(list[0].origin_agent_id, agent_a);
+        assert_eq!(list[0].name, "FromA");
+    }
+
+    #[tokio::test]
+    async fn distribute_skips_source_agent() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+        let (_, source) =
+            create_vi_template_http(app, &agent_id, Some("Add"), r"C:\x\Add.vi").await;
+
+        let body = serde_json::json!({
+            "target_agent_ids": [agent_id]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/vi-templates/{}/distribute", source.id),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.results[0].status, "skipped");
+        assert_eq!(out.results[0].error.as_deref(), Some("source agent"));
+    }
+
+    #[tokio::test]
+    async fn distribute_partial_failure_unknown_agent() {
+        let test = test_app().await;
+        let app = &test.router;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_a = register_agent_id(app).await;
+        let agent_b = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
+        let unknown_id = "00000000-0000-0000-0000-000000000099";
+
+        let (_, source) =
+            create_vi_template_http(app, &agent_a, Some("Add"), r"C:\x\Add.vi").await;
+
+        let body = serde_json::json!({
+            "target_agent_ids": [agent_b, unknown_id]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/vi-templates/{}/distribute", source.id),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let out: DistributeViTemplateResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(out.results.len(), 2);
+
+        let by_agent: std::collections::HashMap<_, _> = out
+            .results
+            .iter()
+            .map(|r| (r.agent_id.as_str(), r))
+            .collect();
+        assert_eq!(by_agent[agent_b.as_str()].status, "created");
+        assert_eq!(by_agent[unknown_id].status, "error");
+        assert_eq!(
+            by_agent[unknown_id].error.as_deref(),
+            Some("agent not found")
+        );
     }
 }

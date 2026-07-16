@@ -6,6 +6,7 @@ mod labview_cmd;
 mod poller;
 mod screenshot;
 mod store;
+mod vi_distribute;
 mod web;
 
 use std::net::SocketAddr;

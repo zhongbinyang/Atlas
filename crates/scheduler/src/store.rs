@@ -590,6 +590,69 @@ impl Store {
         Ok((row.into_vi_template(), created))
     }
 
+    pub async fn upsert_vi_template_distribute(
+        &self,
+        name: &str,
+        agent_id: &str,
+        origin_agent_id: &str,
+        vi_path: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        inputs: &serde_json::Value,
+        show_front_panel: bool,
+        timeout_secs: Option<i64>,
+    ) -> Result<(ViTemplate, bool), sqlx::Error> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM vi_templates WHERE agent_id = ? AND vi_path = ?",
+        )
+        .bind(agent_id)
+        .bind(vi_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        let created = existing.is_none();
+
+        let id = existing
+            .map(|(id,)| id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let row = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            INSERT INTO vi_templates (
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id, vi_path) DO UPDATE SET
+                name = excluded.name,
+                origin_agent_id = excluded.origin_agent_id,
+                cli_path = excluded.cli_path,
+                getinfo_path = excluded.getinfo_path,
+                inputs_json = excluded.inputs_json,
+                show_front_panel = excluded.show_front_panel,
+                timeout_secs = excluded.timeout_secs
+            RETURNING
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            "#,
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(agent_id)
+        .bind(origin_agent_id)
+        .bind(vi_path)
+        .bind(cli_path)
+        .bind(getinfo_path)
+        .bind(&inputs_json)
+        .bind(i64::from(show_front_panel))
+        .bind(timeout_secs)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((row.into_vi_template(), created))
+    }
+
     pub async fn create_vi_template(
         &self,
         name: &str,
@@ -689,6 +752,28 @@ impl Store {
             .await?
         };
         Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn get_vi_template_enriched(
+        &self,
+        id: &str,
+    ) -> Result<Option<ViTemplateEnriched>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ViTemplateEnrichedRow>(
+            r#"
+            SELECT
+                t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
+                t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                t.created_at, a.name AS agent_name, o.name AS origin_agent_name
+            FROM vi_templates t
+            LEFT JOIN agents a ON a.id = t.agent_id
+            LEFT JOIN agents o ON o.id = t.origin_agent_id
+            WHERE t.id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_enriched()))
     }
 
     pub async fn get_vi_template(&self, id: &str) -> Result<Option<ViTemplate>, sqlx::Error> {
@@ -1232,6 +1317,50 @@ mod tests {
         let listed = store.list_vi_templates(Some(&agent.id)).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Second");
+    }
+
+    #[tokio::test]
+    async fn vi_template_distribute_upsert_sets_origin_on_conflict() {
+        let store = test_store().await;
+        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let (on_b, created) = store
+            .upsert_vi_template(
+                "Local",
+                &agent_b.id,
+                &agent_b.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(on_b.origin_agent_id, agent_b.id);
+
+        let (distributed, was_created) = store
+            .upsert_vi_template_distribute(
+                "FromA",
+                &agent_b.id,
+                &agent_a.id,
+                r"C:\x\Add.vi",
+                r"C:\cli2.exe",
+                r"C:\getinfo2.vi",
+                &inputs,
+                true,
+                Some(45),
+            )
+            .await
+            .unwrap();
+        assert!(!was_created);
+        assert_eq!(distributed.origin_agent_id, agent_a.id);
+        assert_eq!(distributed.name, "FromA");
+        assert!(distributed.show_front_panel);
+        assert_eq!(distributed.timeout_secs, Some(45));
     }
 
     #[tokio::test]
