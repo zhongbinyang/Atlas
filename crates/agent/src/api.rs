@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, Request, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use common::{
@@ -67,7 +67,8 @@ struct LabviewRegisterTemplateRequest {
     vi_path: String,
     #[serde(default)]
     inputs: Option<Value>,
-    name: Option<String>,
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     show_front_panel: bool,
     timeout_secs: Option<u64>,
@@ -147,6 +148,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/labview/registered-templates",
             get(labview_registered_templates),
+        )
+        .route(
+            "/api/labview/templates/{id}",
+            patch(labview_patch_template),
         )
         .route("/api/labview/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
         .route("/api/labview/run-sequence", post(labview_run_sequence))
@@ -447,6 +452,14 @@ async fn labview_register_template(
             .into_response();
     }
 
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "name is required" })),
+        )
+            .into_response();
+    }
+
     let inputs = match req.inputs {
         Some(Value::Array(arr)) => Value::Array(arr),
         Some(_) => {
@@ -491,7 +504,7 @@ async fn labview_register_template(
         "cli_path": s.labview_cli.display().to_string(),
         "getinfo_path": s.labview_getinfo.display().to_string(),
         "inputs": inputs,
-        "name": req.name,
+        "name": req.name.trim(),
         "show_front_panel": req.show_front_panel,
         "timeout_secs": req.timeout_secs,
     });
@@ -501,6 +514,25 @@ async fn labview_register_template(
             let axum_status =
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             (axum_status, Json(body)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+    }
+}
+
+async fn labview_patch_template(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    match crate::register::patch_vi_template(&s.http_client, &s.center_url, &id, &body).await {
+        Ok((status, resp_body)) => {
+            let axum_status =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (axum_status, Json(resp_body)).into_response()
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -912,6 +944,93 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body.get("action").and_then(|v| v.as_str()), Some("run"));
+    }
+
+    #[tokio::test]
+    async fn labview_register_template_without_name_400() {
+        let app = router(test_state());
+
+        let payload = serde_json::json!({
+            "vi_path": "C:\\x\\Add.vi",
+            "inputs": []
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/register-template")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body.get("error").and_then(|v| v.as_str()),
+            Some("name is required")
+        );
+
+        let payload = serde_json::json!({
+            "vi_path": "C:\\x\\Add.vi",
+            "inputs": [],
+            "name": "   "
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/register-template")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body.get("error").and_then(|v| v.as_str()),
+            Some("name is required")
+        );
+    }
+
+    #[tokio::test]
+    async fn labview_patch_template_proxies_to_center() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/api/vi-templates/tpl-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "tpl-1",
+                "name": "Renamed",
+                "agent_id": "agent-uuid-1",
+                "vi_path": "C:\\x\\Add.vi",
+                "cli_path": "C:\\tools\\cli.exe",
+                "getinfo_path": "C:\\tools\\getinfo.vi",
+                "inputs": [],
+                "show_front_panel": false,
+                "timeout_secs": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let app = router(state);
+
+        let payload = serde_json::json!({ "name": "Renamed" });
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/labview/templates/tpl-1")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some("tpl-1"));
+        assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("Renamed"));
     }
 
     #[tokio::test]

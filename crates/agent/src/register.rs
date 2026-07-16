@@ -62,6 +62,28 @@ pub async fn resolve_agent_id(
         .ok_or_else(|| "agent not found on center".into())
 }
 
+pub async fn patch_vi_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    id: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/vi-templates/{}",
+        center_url.trim_end_matches('/'),
+        id
+    );
+    let resp = client
+        .patch(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
 pub async fn register_vi_template(
     client: &reqwest::Client,
     center_url: &str,
