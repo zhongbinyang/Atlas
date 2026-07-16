@@ -319,6 +319,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents/{id}/files", get(list_agent_files))
         .route("/api/agents/{id}/files/content", get(get_agent_file_content))
         .route(
+            "/api/agents/{id}/labview/config",
+            get(proxy_labview_config),
+        )
+        .route(
             "/api/agents/{id}/labview/inspect",
             post(proxy_labview_inspect),
         )
@@ -1038,6 +1042,28 @@ async fn get_agent_file_content(
     }
 }
 
+async fn proxy_labview_config(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(Some(agent)) => {
+            proxy_agent_request(&s.client, &agent, "/api/labview/config").await
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent for labview config: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
 async fn proxy_labview_inspect(
     State(s): State<AppState>,
     Path(id): Path<String>,
@@ -1341,14 +1367,31 @@ mod tests {
         (addr, handle)
     }
 
+    const MOCK_LABVIEW_CONFIG: &str =
+        r#"{"cli_path":"C:\\cli\\LabVIEWCLI.exe","getinfo_path":"C:\\cli\\GetInfo.exe"}"#;
     const MOCK_LABVIEW_INSPECT: &str =
         r#"{"action":"inspect","controls":[{"name":"X","type":"Numeric"}]}"#;
     const MOCK_LABVIEW_RUN: &str = r#"{"action":"run","status":"ok"}"#;
 
     async fn start_mock_agent_labview() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let config_json = MOCK_LABVIEW_CONFIG.to_string();
         let inspect_json = MOCK_LABVIEW_INSPECT.to_string();
         let run_json = MOCK_LABVIEW_RUN.to_string();
         let mock = Router::new()
+            .route(
+                "/api/labview/config",
+                get({
+                    let config_json = config_json.clone();
+                    move || async move {
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            config_json,
+                        )
+                            .into_response()
+                    }
+                }),
+            )
             .route(
                 "/api/labview/inspect",
                 post({
@@ -2012,6 +2055,33 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent not found");
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_config_forwards_json() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let resp = test
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/labview/config"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_LABVIEW_CONFIG.as_bytes());
     }
 
     #[tokio::test]

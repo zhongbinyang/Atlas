@@ -2,10 +2,12 @@ const POLL_MS = 2000;
 
 let agents = [];
 let templates = [];
+let viTemplates = [];
 let tasks = [];
 let selectedTaskId = null;
 let historyAgentId = null;
 let historyOffset = 0;
+let viLabviewConfig = null;
 const HISTORY_LIMIT = 50;
 let filesAgentId = null;
 let filesPath = '';
@@ -36,6 +38,7 @@ async function fetchAgents() {
   agents = await resp.json();
   renderAgents();
   updateAgentSelects();
+  updateViAgentSelect();
 }
 
 function formatByteSize(bytes) {
@@ -611,26 +614,431 @@ document.getElementById('shot-history-next').addEventListener('click', () => {
 });
 
 function showView(name) {
-  const machines = document.getElementById('view-machines');
-  const jobs = document.getElementById('view-jobs');
-  const navM = document.getElementById('nav-machines');
-  const navJ = document.getElementById('nav-jobs');
-  const isMachines = name === 'machines';
-  machines.hidden = !isMachines;
-  jobs.hidden = isMachines;
-  machines.classList.toggle('view-active', isMachines);
-  jobs.classList.toggle('view-active', !isMachines);
-  navM.classList.toggle('active', isMachines);
-  navJ.classList.toggle('active', !isMachines);
+  const views = {
+    machines: document.getElementById('view-machines'),
+    jobs: document.getElementById('view-jobs'),
+    vi: document.getElementById('view-vi'),
+  };
+  const navs = {
+    machines: document.getElementById('nav-machines'),
+    jobs: document.getElementById('nav-jobs'),
+    vi: document.getElementById('nav-vi'),
+  };
+  for (const key of Object.keys(views)) {
+    const active = name === key;
+    views[key].hidden = !active;
+    views[key].classList.toggle('view-active', active);
+    navs[key].classList.toggle('active', active);
+  }
 }
 
 document.getElementById('nav-machines').addEventListener('click', () => showView('machines'));
 document.getElementById('nav-jobs').addEventListener('click', () => showView('jobs'));
+document.getElementById('nav-vi').addEventListener('click', () => showView('vi'));
 showView('machines');
 
 async function refreshAll() {
-  await Promise.all([fetchAgents(), fetchTemplates(), fetchTasks()]);
+  await Promise.all([fetchAgents(), fetchTemplates(), fetchTasks(), fetchViTemplates()]);
 }
+
+function updateViAgentSelect() {
+  const sel = document.getElementById('vi-agent');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— 选择 Agent —</option>';
+  for (const a of agents) {
+    if (a.status === 'offline') continue;
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.name + ' (' + a.ip + ')';
+    sel.appendChild(opt);
+  }
+  if (prev && agents.some(a => a.id === prev && a.status !== 'offline')) {
+    sel.value = prev;
+    loadViLabviewConfig(prev);
+  } else {
+    viLabviewConfig = null;
+    document.getElementById('vi-cli').textContent = '—';
+    document.getElementById('vi-getinfo').textContent = '—';
+  }
+}
+
+async function loadViLabviewConfig(agentId) {
+  if (!agentId) {
+    viLabviewConfig = null;
+    document.getElementById('vi-cli').textContent = '—';
+    document.getElementById('vi-getinfo').textContent = '—';
+    return;
+  }
+  const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/labview/config');
+  if (!resp.ok) {
+    viLabviewConfig = null;
+    document.getElementById('vi-cli').textContent = '—';
+    document.getElementById('vi-getinfo').textContent = '—';
+    return;
+  }
+  viLabviewConfig = await resp.json();
+  document.getElementById('vi-cli').textContent = viLabviewConfig.cli_path;
+  document.getElementById('vi-getinfo').textContent = viLabviewConfig.getinfo_path;
+}
+
+function showViMsg(text, ok) {
+  showMsg(document.getElementById('vi-msg'), text, ok);
+}
+
+function showViTemplatesMsg(text, ok) {
+  showMsg(document.getElementById('vi-templates-msg'), text, ok);
+}
+
+function isJsonScalar(value) {
+  return value !== null && typeof value === 'object';
+}
+
+function renderViInputsTable(inputs) {
+  const tbody = document.getElementById('vi-inputs-body');
+  tbody.innerHTML = '';
+  if (!inputs || inputs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">无输入参数</td></tr>';
+    return;
+  }
+  for (const inp of inputs) {
+    const row = document.createElement('tr');
+    const name = escapeHtml(inp.name || '');
+    const className = escapeHtml(inp.className || inp.type || '');
+    const val = inp.value;
+    let valueCell;
+    if (isJsonScalar(val)) {
+      valueCell =
+        '<textarea class="lv-value lv-value-json mono" data-name="' +
+        escapeHtml(inp.name) +
+        '" data-class="' +
+        className +
+        '" rows="2">' +
+        escapeHtml(JSON.stringify(val)) +
+        '</textarea>';
+    } else {
+      valueCell =
+        '<input class="lv-value mono" data-name="' +
+        escapeHtml(inp.name) +
+        '" data-class="' +
+        className +
+        '" type="text" value="' +
+        escapeHtml(val == null ? '' : String(val)) +
+        '">';
+    }
+    row.innerHTML =
+      '<td>' + name + '</td>' +
+      '<td class="mono">' + className + '</td>' +
+      '<td>' + valueCell + '</td>';
+    tbody.appendChild(row);
+  }
+}
+
+function collectViInputsFromTable() {
+  const inputs = [];
+  document.querySelectorAll('#vi-inputs-body .lv-value').forEach(function (el) {
+    const name = el.getAttribute('data-name');
+    const className = el.getAttribute('data-class') || '';
+    let value;
+    if (el.tagName === 'TEXTAREA') {
+      try {
+        value = JSON.parse(el.value);
+      } catch (e) {
+        throw new Error('参数 ' + name + ' JSON 无效: ' + e.message);
+      }
+    } else if (el.value.trim() === '') {
+      value = null;
+    } else if (/^-?\d+(\.\d+)?$/.test(el.value.trim())) {
+      value = Number(el.value);
+    } else if (el.value.trim() === 'true' || el.value.trim() === 'false') {
+      value = el.value.trim() === 'true';
+    } else {
+      value = el.value;
+    }
+    inputs.push({ name: name, className: className, value: value });
+  });
+  return inputs;
+}
+
+function readViRunOptions() {
+  const showFp = document.getElementById('vi-show-fp').checked;
+  const timeoutRaw = document.getElementById('vi-timeout').value.trim();
+  const opts = { show_front_panel: showFp };
+  if (timeoutRaw !== '') {
+    const n = parseInt(timeoutRaw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error('超时必须是正整数');
+    }
+    opts.timeout_secs = n;
+  }
+  return opts;
+}
+
+function selectedViAgentId() {
+  return document.getElementById('vi-agent').value;
+}
+
+function requireViAgent() {
+  const agentId = selectedViAgentId();
+  if (!agentId) throw new Error('请选择 Agent');
+  return agentId;
+}
+
+async function inspectVi() {
+  let agentId;
+  try {
+    agentId = requireViAgent();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  const viPath = document.getElementById('vi-vi-path').value.trim();
+  if (!viPath) {
+    showViMsg('请输入 VI 路径', false);
+    return;
+  }
+  showViMsg('查询中…', true);
+  document.getElementById('vi-run-out').hidden = true;
+  try {
+    const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/labview/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vi_path: viPath }),
+    });
+    const data = await resp.json();
+    document.getElementById('vi-json-raw').textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showViMsg('查询失败: ' + err, false);
+      return;
+    }
+    renderViInputsTable(data.inputs || data.controls || []);
+    showViMsg('参数已加载', true);
+  } catch (e) {
+    showViMsg('查询失败: ' + e.message, false);
+  }
+}
+
+async function runVi() {
+  let agentId;
+  try {
+    agentId = requireViAgent();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  const viPath = document.getElementById('vi-vi-path').value.trim();
+  if (!viPath) {
+    showViMsg('请输入 VI 路径', false);
+    return;
+  }
+  let inputs;
+  try {
+    inputs = collectViInputsFromTable();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  let opts;
+  try {
+    opts = readViRunOptions();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  showViMsg('试跑中…', true);
+  const outEl = document.getElementById('vi-run-out');
+  outEl.hidden = false;
+  outEl.textContent = '…';
+  try {
+    const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/labview/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ vi_path: viPath, inputs: inputs }, opts)),
+    });
+    const data = await resp.json();
+    outEl.textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showViMsg('试跑失败: ' + err, false);
+      return;
+    }
+    showViMsg('试跑完成', true);
+  } catch (e) {
+    outEl.textContent = e.message;
+    showViMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+async function registerViTemplate() {
+  let agentId;
+  try {
+    agentId = requireViAgent();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  if (!viLabviewConfig) {
+    showViMsg('Agent LabVIEW 配置未加载', false);
+    return;
+  }
+  const viPath = document.getElementById('vi-vi-path').value.trim();
+  if (!viPath) {
+    showViMsg('请输入 VI 路径', false);
+    return;
+  }
+  let inputs;
+  try {
+    inputs = collectViInputsFromTable();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  let opts;
+  try {
+    opts = readViRunOptions();
+  } catch (e) {
+    showViMsg(e.message, false);
+    return;
+  }
+  const stem = viPath.replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
+  showViMsg('注册中…', true);
+  try {
+    const body = Object.assign({
+      agent_id: agentId,
+      vi_path: viPath,
+      cli_path: viLabviewConfig.cli_path,
+      getinfo_path: viLabviewConfig.getinfo_path,
+      inputs: inputs,
+      name: stem || undefined,
+    }, opts);
+    const resp = await fetch('/api/vi-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      showViMsg('注册失败: ' + (data.error || resp.status), false);
+      return;
+    }
+    showViMsg('已注册: ' + (data.name || data.id), true);
+    await fetchViTemplates();
+  } catch (e) {
+    showViMsg('注册失败: ' + e.message, false);
+  }
+}
+
+async function fetchViTemplates() {
+  const resp = await fetch('/api/vi-templates');
+  if (!resp.ok) return;
+  viTemplates = await resp.json();
+  renderViTemplates();
+}
+
+function renderViTemplates() {
+  const tbody = document.getElementById('vi-templates-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (viTemplates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无 VI 模板</td></tr>';
+    return;
+  }
+  for (const t of viTemplates) {
+    const row = document.createElement('tr');
+    const agent = agents.find(a => a.id === t.agent_id);
+    const agentName = agent ? agent.name : t.agent_id.slice(0, 8);
+    const timeout = t.timeout_secs != null ? t.timeout_secs + 's' : '—';
+    row.innerHTML =
+      '<td>' + escapeHtml(t.name) + '</td>' +
+      '<td>' + escapeHtml(agentName) + '</td>' +
+      '<td class="mono">' + escapeHtml(t.vi_path) + '</td>' +
+      '<td>' + escapeHtml(timeout) + '</td>' +
+      '<td class="row-actions">' +
+        '<button type="button" class="btn-sm btn-vi-trial">试跑</button>' +
+        '<button type="button" class="btn-sm btn-vi-dispatch">下发</button>' +
+        '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
+      '</td>';
+    row.querySelector('.btn-vi-trial').addEventListener('click', () => trialRunViTemplate(t));
+    row.querySelector('.btn-vi-dispatch').addEventListener('click', () => dispatchViTemplate(t));
+    row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t.id));
+    tbody.appendChild(row);
+  }
+}
+
+async function trialRunViTemplate(t) {
+  showViTemplatesMsg('试跑中…', true);
+  const outEl = document.getElementById('vi-run-out');
+  outEl.hidden = false;
+  outEl.textContent = '…';
+  const body = {
+    vi_path: t.vi_path,
+    inputs: t.inputs,
+    show_front_panel: t.show_front_panel,
+  };
+  if (t.timeout_secs != null) body.timeout_secs = t.timeout_secs;
+  try {
+    const resp = await fetch('/api/agents/' + encodeURIComponent(t.agent_id) + '/labview/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    outEl.textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showViTemplatesMsg('试跑失败: ' + err, false);
+      return;
+    }
+    showViTemplatesMsg('试跑完成: ' + t.name, true);
+    showView('vi');
+  } catch (e) {
+    outEl.textContent = e.message;
+    showViTemplatesMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+async function dispatchViTemplate(t) {
+  if (!confirm('确定下发模板「' + t.name + '」为作业任务？')) return;
+  showViTemplatesMsg('下发中…', true);
+  try {
+    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id) + '/dispatch', {
+      method: 'POST',
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showViTemplatesMsg('下发失败: ' + (data.error || resp.status), false);
+      return;
+    }
+    showViTemplatesMsg('已下发任务: ' + (data.id ? data.id.slice(0, 8) + '…' : t.name), true);
+    await fetchTasks();
+    if (confirm('任务已入队，是否切换到作业视图？')) {
+      showView('jobs');
+      if (data.id) showTaskDetail(data.id);
+    }
+  } catch (e) {
+    showViTemplatesMsg('下发失败: ' + e.message, false);
+  }
+}
+
+async function deleteViTemplate(id) {
+  if (!confirm('确定删除此 VI 模板？')) return;
+  const resp = await fetch('/api/vi-templates/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (resp.ok || resp.status === 204) {
+    showViTemplatesMsg('已删除', true);
+    await fetchViTemplates();
+  } else {
+    const data = await resp.json().catch(() => ({}));
+    showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+  }
+}
+
+document.getElementById('vi-agent').addEventListener('change', (e) => {
+  loadViLabviewConfig(e.target.value);
+});
+document.getElementById('vi-inspect-btn').addEventListener('click', inspectVi);
+document.getElementById('vi-run-btn').addEventListener('click', runVi);
+document.getElementById('vi-register-btn').addEventListener('click', registerViTemplate);
 
 syncTaskFormMode();
 refreshAll();

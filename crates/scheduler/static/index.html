@@ -16,6 +16,7 @@
       <nav class="view-tabs" aria-label="主分区">
         <button type="button" id="nav-machines" class="tab active" data-view="machines">机台</button>
         <button type="button" id="nav-jobs" class="tab" data-view="jobs">作业</button>
+        <button type="button" id="nav-vi" class="tab" data-view="vi">VI</button>
       </nav>
     </div>
     <button id="refresh-btn" type="button" class="btn-primary">刷新</button>
@@ -156,6 +157,90 @@
         <div class="output-block">
           <h3>stderr</h3>
           <pre id="task-stderr"></pre>
+        </div>
+      </section>
+    </div>
+
+    <div id="view-vi" class="view" hidden>
+      <section id="vi-workbench-section">
+        <h2>VI 工作台</h2>
+        <div class="form-grid vi-agent-row">
+          <label for="vi-agent">Agent</label>
+          <select id="vi-agent" name="agent_id">
+            <option value="">— 选择 Agent —</option>
+          </select>
+        </div>
+        <div class="lv-config">
+          <div class="lv-field">
+            <span class="label">CLI</span>
+            <code id="vi-cli" class="mono">—</code>
+          </div>
+          <div class="lv-field">
+            <span class="label">GetInfo</span>
+            <code id="vi-getinfo" class="mono">—</code>
+          </div>
+        </div>
+        <div class="lv-toolbar">
+          <label class="lv-path-label">
+            <span class="label">VI 路径</span>
+            <input id="vi-vi-path" type="text" class="lv-path-input mono" placeholder="C:\path\to\My.vi">
+          </label>
+          <div class="lv-actions">
+            <button id="vi-inspect-btn" type="button">查询参数</button>
+            <button id="vi-run-btn" type="button">试跑</button>
+            <button id="vi-register-btn" type="button" class="btn-primary">注册模板</button>
+          </div>
+        </div>
+        <div class="lv-options">
+          <label class="lv-check">
+            <input id="vi-show-fp" type="checkbox">
+            前面板
+          </label>
+          <label class="lv-timeout">
+            <span class="label">超时(秒)</span>
+            <input id="vi-timeout" type="number" min="1" placeholder="可选">
+          </label>
+        </div>
+        <div class="table-scroll">
+          <table class="lv-inputs-table">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>类型</th>
+                <th>值</th>
+              </tr>
+            </thead>
+            <tbody id="vi-inputs-body">
+              <tr><td colspan="3" class="empty">先查询参数</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <details class="lv-raw">
+          <summary>原始 JSON</summary>
+          <pre id="vi-json-raw" class="mono lv-pre">—</pre>
+        </details>
+        <pre id="vi-run-out" class="mono lv-pre" hidden></pre>
+        <p id="vi-msg" class="msg" hidden></p>
+      </section>
+
+      <section id="vi-templates-section">
+        <h2>VI 模板</h2>
+        <p id="vi-templates-msg" class="msg" hidden></p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>Agent</th>
+                <th>VI 路径</th>
+                <th>超时</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="vi-templates-body">
+              <tr><td colspan="5" class="empty">暂无 VI 模板</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
     </div>
