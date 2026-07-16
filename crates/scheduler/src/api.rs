@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{header, Request, StatusCode, Uri},
     response::IntoResponse,
@@ -318,6 +318,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/agents/{id}/files", get(list_agent_files))
         .route("/api/agents/{id}/files/content", get(get_agent_file_content))
+        .route(
+            "/api/agents/{id}/labview/inspect",
+            post(proxy_labview_inspect),
+        )
+        .route("/api/agents/{id}/labview/run", post(proxy_labview_run))
         .route("/api/screenshots/{id}", get(get_screenshot))
         .route("/api/screenshots/{id}/image", get(get_screenshot_image))
         .with_state(state)
@@ -900,6 +905,21 @@ async fn proxy_agent_get(
     client.get(url).send().await
 }
 
+async fn proxy_agent_post(
+    client: &reqwest::Client,
+    agent: &Agent,
+    path: &str,
+    body: Bytes,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let url = format!("http://{}:{}{}", agent.ip, agent.port, path);
+    client
+        .post(url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+}
+
 async fn proxied_agent_response(resp: reqwest::Response) -> axum::response::Response {
     let status = StatusCode::from_u16(resp.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -941,6 +961,24 @@ async fn proxy_agent_request(
     path_and_query: &str,
 ) -> axum::response::Response {
     match proxy_agent_get(client, agent, path_and_query).await {
+        Ok(resp) => proxied_agent_response(resp).await,
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn proxy_agent_post_request(
+    client: &reqwest::Client,
+    agent: &Agent,
+    path: &str,
+    body: Bytes,
+) -> axum::response::Response {
+    match proxy_agent_post(client, agent, path, body).await {
         Ok(resp) => proxied_agent_response(resp).await,
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -995,6 +1033,52 @@ async fn get_agent_file_content(
             .into_response(),
         Err(e) => {
             tracing::error!("get agent for file content: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn proxy_labview_inspect(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(Some(agent)) => {
+            proxy_agent_post_request(&s.client, &agent, "/api/labview/inspect", body).await
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent for labview inspect: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn proxy_labview_run(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(Some(agent)) => {
+            proxy_agent_post_request(&s.client, &agent, "/api/labview/run", body).await
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent for labview run: {e}");
             db_error().into_response()
         }
     }
@@ -1248,6 +1332,59 @@ mod tests {
                         (StatusCode::OK, headers, MOCK_FILE_BYTES).into_response()
                     },
                 ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        (addr, handle)
+    }
+
+    const MOCK_LABVIEW_INSPECT: &str =
+        r#"{"action":"inspect","controls":[{"name":"X","type":"Numeric"}]}"#;
+    const MOCK_LABVIEW_RUN: &str = r#"{"action":"run","status":"ok"}"#;
+
+    async fn start_mock_agent_labview() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let inspect_json = MOCK_LABVIEW_INSPECT.to_string();
+        let run_json = MOCK_LABVIEW_RUN.to_string();
+        let mock = Router::new()
+            .route(
+                "/api/labview/inspect",
+                post({
+                    let inspect_json = inspect_json.clone();
+                    move |Json(body): Json<serde_json::Value>| async move {
+                        if body.get("vi_path").and_then(|v| v.as_str()) == Some("missing") {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(ErrorBody {
+                                    error: "vi not found".into(),
+                                }),
+                            )
+                                .into_response();
+                        }
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            inspect_json,
+                        )
+                            .into_response()
+                    }
+                }),
+            )
+            .route(
+                "/api/labview/run",
+                post({
+                    let run_json = run_json.clone();
+                    move |Json(_body): Json<serde_json::Value>| async move {
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            run_json,
+                        )
+                            .into_response()
+                    }
+                }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1869,6 +2006,127 @@ mod tests {
                     .body(Body::empty())
                     .unwrap(),
             )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "agent not found");
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_inspect_forwards_json() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let body = serde_json::json!({ "vi_path": "C:\\test.vi" });
+        let resp = test
+            .router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/agents/{agent_id}/labview/inspect"),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_LABVIEW_INSPECT.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_run_forwards_json() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let body = serde_json::json!({
+            "vi_path": "C:\\test.vi",
+            "inputs": { "X": 1.0 }
+        });
+        let resp = test
+            .router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/agents/{agent_id}/labview/run"),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), MOCK_LABVIEW_RUN.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_inspect_forwards_agent_status() {
+        let test = test_app().await;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_id =
+            register_agent_at(&test.router, &addr.ip().to_string(), addr.port()).await;
+
+        let body = serde_json::json!({ "vi_path": "missing" });
+        let resp = test
+            .router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/agents/{agent_id}/labview/inspect"),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "vi not found");
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_unreachable_returns_503() {
+        let test = test_app().await;
+        let agent_id = register_agent_at(&test.router, "127.0.0.1", 1).await;
+
+        let body = serde_json::json!({ "vi_path": "C:\\test.vi" });
+        let resp = test
+            .router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/agents/{agent_id}/labview/inspect"),
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(!err.error.is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_agent_labview_unknown_agent_returns_404() {
+        let test = test_app().await;
+        let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+        let body = serde_json::json!({ "vi_path": "C:\\test.vi" });
+        let resp = test
+            .router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/agents/{unknown_id}/labview/inspect"),
+                &body,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
