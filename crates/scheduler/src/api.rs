@@ -676,13 +676,13 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     if req.agent_id.trim().is_empty() {
         return Some("agent_id is required");
     }
-    if req.vi_path.trim().is_empty() {
+    if crate::labview_cmd::normalize_fs_path(&req.vi_path).is_empty() {
         return Some("vi_path is required");
     }
-    if req.cli_path.trim().is_empty() {
+    if crate::labview_cmd::normalize_fs_path(&req.cli_path).is_empty() {
         return Some("cli_path is required");
     }
-    if req.getinfo_path.trim().is_empty() {
+    if crate::labview_cmd::normalize_fs_path(&req.getinfo_path).is_empty() {
         return Some("getinfo_path is required");
     }
     if !req.inputs.is_array() {
@@ -745,22 +745,26 @@ async fn create_vi_template(
         }
     }
 
+    let vi_path = crate::labview_cmd::normalize_fs_path(&req.vi_path);
+    let cli_path = crate::labview_cmd::normalize_fs_path(&req.cli_path);
+    let getinfo_path = crate::labview_cmd::normalize_fs_path(&req.getinfo_path);
+
     let name = req
         .name
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| vi_path_stem(req.vi_path.trim()));
+        .unwrap_or_else(|| vi_path_stem(&vi_path));
 
     match s
         .store
         .create_vi_template(
             &name,
             req.agent_id.trim(),
-            req.vi_path.trim(),
-            req.cli_path.trim(),
-            req.getinfo_path.trim(),
+            &vi_path,
+            &cli_path,
+            &getinfo_path,
             &req.inputs,
             req.show_front_panel,
             req.timeout_secs,

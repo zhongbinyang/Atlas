@@ -20,6 +20,19 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
+function normalizeFsPath(raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  if (s.length >= 2) {
+    const a = s[0];
+    const b = s[s.length - 1];
+    if ((a === '"' && b === '"') || (a === "'" && b === "'")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
 function agentStatusKind(a) {
   if (a.status === 'offline') return 'offline';
   if (a.busy) return 'busy';
@@ -792,7 +805,9 @@ async function inspectVi() {
     showViMsg(e.message, false);
     return;
   }
-  const viPath = document.getElementById('vi-vi-path').value.trim();
+  const pathEl = document.getElementById('vi-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showViMsg('请输入 VI 路径', false);
     return;
@@ -827,7 +842,9 @@ async function runVi() {
     showViMsg(e.message, false);
     return;
   }
-  const viPath = document.getElementById('vi-vi-path').value.trim();
+  const pathEl = document.getElementById('vi-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showViMsg('请输入 VI 路径', false);
     return;
@@ -882,7 +899,9 @@ async function registerViTemplate() {
     showViMsg('Agent LabVIEW 配置未加载', false);
     return;
   }
-  const viPath = document.getElementById('vi-vi-path').value.trim();
+  const pathEl = document.getElementById('vi-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showViMsg('请输入 VI 路径', false);
     return;

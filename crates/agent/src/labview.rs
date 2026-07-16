@@ -70,6 +70,21 @@ pub fn build_run_args(
     args
 }
 
+/// Strip whitespace and a single layer of surrounding quotes (`"` or `'`).
+/// Users often paste PowerShell-style `"C:\path\to.vi"` into the path box.
+pub fn normalize_fs_path(raw: &str) -> String {
+    let s = raw.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return s[1..s.len() - 1].trim().to_string();
+        }
+    }
+    s.to_string()
+}
+
 pub fn ensure_vi(vi: &Path) -> Result<(), LabviewError> {
     if vi.exists() {
         Ok(())
@@ -143,6 +158,22 @@ fn spawn_cli(cli: &Path, args: &[String]) -> std::io::Result<std::process::Outpu
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn normalize_fs_path_strips_quotes_and_spaces() {
+        assert_eq!(
+            normalize_fs_path(r#"  "C:\Users\zhong\test08\Add.vi"  "#),
+            r"C:\Users\zhong\test08\Add.vi"
+        );
+        assert_eq!(
+            normalize_fs_path(r"'C:\labview-runner-cli\getinfo.vi'"),
+            r"C:\labview-runner-cli\getinfo.vi"
+        );
+        assert_eq!(
+            normalize_fs_path(r"C:\x\Add.vi"),
+            r"C:\x\Add.vi"
+        );
+    }
 
     #[test]
     fn build_inspect_args_order() {

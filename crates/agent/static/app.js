@@ -55,6 +55,19 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
+function normalizeFsPath(raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  if (s.length >= 2) {
+    const a = s[0];
+    const b = s[s.length - 1];
+    if ((a === '"' && b === '"') || (a === "'" && b === "'")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
 async function registerNow() {
   const msg = document.getElementById('register-msg');
   msg.hidden = false;
@@ -178,7 +191,9 @@ function readRunOptions() {
 }
 
 async function inspectVi() {
-  const viPath = document.getElementById('lv-vi-path').value.trim();
+  const pathEl = document.getElementById('lv-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showLvMsg('请输入 VI 路径', false);
     return;
@@ -206,7 +221,9 @@ async function inspectVi() {
 }
 
 async function runVi() {
-  const viPath = document.getElementById('lv-vi-path').value.trim();
+  const pathEl = document.getElementById('lv-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showLvMsg('请输入 VI 路径', false);
     return;
@@ -250,7 +267,9 @@ async function runVi() {
 }
 
 async function registerViTemplate() {
-  const viPath = document.getElementById('lv-vi-path').value.trim();
+  const pathEl = document.getElementById('lv-vi-path');
+  const viPath = normalizeFsPath(pathEl.value);
+  pathEl.value = viPath;
   if (!viPath) {
     showLvMsg('请输入 VI 路径', false);
     return;

@@ -17,7 +17,8 @@ use tokio::sync::Mutex;
 
 use crate::files::{self, EntryKind, FilesError};
 use crate::labview::{
-    build_inspect_args, build_run_args, ensure_vi, inputs_to_cli_object, map_status, run_cli,
+    build_inspect_args, build_run_args, ensure_vi, inputs_to_cli_object, map_status,
+    normalize_fs_path, run_cli,
     LabviewError, LabviewParam,
 };
 use crate::metrics::MetricsSampler;
@@ -200,7 +201,7 @@ async fn labview_inspect(
     State(s): State<AppState>,
     Json(req): Json<LabviewInspectRequest>,
 ) -> impl IntoResponse {
-    let vi = PathBuf::from(&req.vi_path);
+    let vi = PathBuf::from(normalize_fs_path(&req.vi_path));
     if let Err(e) = ensure_vi(&vi) {
         let (status, Json(body)) = labview_error_response(&e);
         return (status, Json(body)).into_response();
@@ -219,7 +220,7 @@ async fn labview_run(
     State(s): State<AppState>,
     Json(req): Json<LabviewRunRequest>,
 ) -> impl IntoResponse {
-    let vi = PathBuf::from(&req.vi_path);
+    let vi = PathBuf::from(normalize_fs_path(&req.vi_path));
     if let Err(e) = ensure_vi(&vi) {
         let (status, Json(body)) = labview_error_response(&e);
         return (status, Json(body)).into_response();
@@ -430,7 +431,8 @@ async fn labview_register_template(
     State(s): State<AppState>,
     Json(req): Json<LabviewRegisterTemplateRequest>,
 ) -> impl IntoResponse {
-    if req.vi_path.trim().is_empty() {
+    let vi_path = normalize_fs_path(&req.vi_path);
+    if vi_path.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "vi_path is required" })),
@@ -478,7 +480,7 @@ async fn labview_register_template(
 
     let center_body = serde_json::json!({
         "agent_id": agent_id,
-        "vi_path": req.vi_path.trim(),
+        "vi_path": vi_path,
         "cli_path": s.labview_cli.display().to_string(),
         "getinfo_path": s.labview_getinfo.display().to_string(),
         "inputs": inputs,
