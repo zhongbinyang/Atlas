@@ -70,17 +70,20 @@ function showView(id) {
   document.getElementById('nav-functions')?.classList.toggle('active', id === 'view-functions');
 }
 
-/** Stub: show/hide only. Task 2 fills loaders (fetchAgents / renderAgentDetail / fetchViTemplates). */
-function applyRoute(route) {
+async function applyRoute(route) {
   if (route.name === 'functions') {
     showView('view-functions');
+    await fetchViTemplates();
     return;
   }
   if (route.name === 'agent') {
     showView('view-agent-detail');
+    await fetchAgents();
+    renderAgentDetail(route.agentId);
     return;
   }
   showView('view-machines');
+  await fetchAgents();
 }
 
 async function fetchAgents() {
@@ -447,9 +450,65 @@ function renderHistory(items, total, offset) {
   }
 }
 
-/** Stub for Task 2: fill #agents-grid with cards. */
+function statusLabel(a) {
+  if (a.status === 'offline') return '离线';
+  return a.busy ? '在线·忙碌' : '在线·空闲';
+}
+
 function renderAgents() {
-  // Task 2 implements card grid
+  const grid = document.getElementById('agents-grid');
+  const empty = document.getElementById('agents-empty');
+  if (!grid) return;
+  grid.innerHTML = '';
+  if (!agents.length) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const a of agents) {
+    const kind = agentStatusKind(a);
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'agent-card' + (kind === 'offline' ? ' agent-card-offline' : '');
+    card.innerHTML =
+      '<div class="agent-card-title">' + escapeHtml(a.name) + '</div>' +
+      '<div class="agent-card-meta mono">' + escapeHtml(a.ip + ':' + a.port) + '</div>' +
+      '<div class="agent-card-status"><span class="dot ' + kind + '"></span>' +
+      escapeHtml(statusLabel(a)) + '</div>' +
+      '<div class="agent-card-metrics">' +
+      '<span>CPU ' + escapeHtml(String(a.cpu_percent.toFixed(1))) + '%</span>' +
+      '<span>内存 ' + escapeHtml(String(a.memory_percent.toFixed(1))) + '%</span>' +
+      '</div>';
+    card.addEventListener('click', () => setHash('agents/' + encodeURIComponent(a.id)));
+    grid.appendChild(card);
+  }
+}
+
+function renderAgentDetail(agentId) {
+  const a = agents.find((x) => x.id === agentId);
+  if (!a) {
+    setHash('machines');
+    return;
+  }
+  document.getElementById('agent-detail-name').textContent = a.name;
+  const bar = document.getElementById('agent-detail-status');
+  const seen = a.last_seen_at ? escapeHtml(a.last_seen_at) : '—';
+  bar.innerHTML =
+    '<div><span class="label">状态</span><div><span class="dot ' + agentStatusKind(a) + '"></span> ' +
+    escapeHtml(statusLabel(a)) + '</div></div>' +
+    '<div><span class="label">地址</span><div class="mono">' + escapeHtml(a.ip + ':' + a.port) + '</div></div>' +
+    '<div><span class="label">CPU</span><div class="mono">' + escapeHtml(a.cpu_percent.toFixed(1)) + '%</div></div>' +
+    '<div><span class="label">内存</span><div class="mono">' + escapeHtml(a.memory_percent.toFixed(1)) + '%</div></div>' +
+    '<div><span class="label">忙碌</span><div>' + (a.busy ? '是' : '否') + '</div></div>' +
+    '<div><span class="label">最近见面</span><div class="mono">' + seen + '</div></div>';
+  const actions = document.getElementById('agent-detail-actions');
+  actions.innerHTML =
+    '<button type="button" class="btn-primary" id="detail-shot">截图</button>' +
+    '<button type="button" class="btn-sm" id="detail-history">历史</button>' +
+    '<button type="button" class="btn-sm" id="detail-files">文件</button>';
+  document.getElementById('detail-shot').onclick = () => takeScreenshot(a.id);
+  document.getElementById('detail-history').onclick = () => openHistory(a.id);
+  document.getElementById('detail-files').onclick = () => openFiles(a.id);
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
@@ -493,7 +552,6 @@ window.addEventListener('hashchange', () => applyRoute(parseRoute()));
 
 async function refreshCurrent() {
   await applyRoute(parseRoute());
-  await Promise.all([fetchAgents(), fetchViTemplates()]);
 }
 
 function updateViTemplatesAgentFilter() {
