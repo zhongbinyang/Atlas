@@ -94,6 +94,24 @@ pub struct ViTemplate {
 }
 
 #[derive(Debug, Clone)]
+pub struct ViRunQueueItem {
+    pub id: String,
+    pub agent_id: String,
+    pub vi_template_id: String,
+    pub position: i64,
+    pub created_at: String,
+    pub template_name: String,
+    pub vi_path: String,
+}
+
+#[derive(Debug)]
+pub enum QueueReplaceError {
+    AgentNotFound,
+    BadTemplate { vi_template_id: String },
+    Db(sqlx::Error),
+}
+
+#[derive(Debug, Clone)]
 pub struct ViTemplateEnriched {
     pub template: ViTemplate,
     pub agent_name: Option<String>,
@@ -792,7 +810,86 @@ impl Store {
         Ok(row.map(|r| r.into_vi_template()))
     }
 
+    pub async fn list_vi_run_queue(&self, agent_id: &str) -> Result<Vec<ViRunQueueItem>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
+            r#"
+            SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
+                   t.name AS template_name, t.vi_path
+            FROM vi_run_queue_items q
+            JOIN vi_templates t ON t.id = q.vi_template_id
+            WHERE q.agent_id = ?
+            ORDER BY q.position ASC
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_item()).collect())
+    }
+
+    pub async fn replace_vi_run_queue(
+        &self,
+        agent_id: &str,
+        template_ids: &[String],
+    ) -> Result<Vec<ViRunQueueItem>, QueueReplaceError> {
+        if self.get_agent(agent_id).await.map_err(QueueReplaceError::Db)?.is_none() {
+            return Err(QueueReplaceError::AgentNotFound);
+        }
+
+        for template_id in template_ids {
+            let template = self
+                .get_vi_template(template_id)
+                .await
+                .map_err(QueueReplaceError::Db)?;
+            match template {
+                Some(t) if t.agent_id == agent_id => {}
+                _ => {
+                    return Err(QueueReplaceError::BadTemplate {
+                        vi_template_id: template_id.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut tx = self.pool.begin().await.map_err(QueueReplaceError::Db)?;
+
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE agent_id = ?")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(QueueReplaceError::Db)?;
+
+        let now = Utc::now().to_rfc3339();
+        for (position, template_id) in template_ids.iter().enumerate() {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                r#"
+                INSERT INTO vi_run_queue_items (id, agent_id, vi_template_id, position, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&id)
+            .bind(agent_id)
+            .bind(template_id)
+            .bind(position as i64)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(QueueReplaceError::Db)?;
+        }
+
+        tx.commit().await.map_err(QueueReplaceError::Db)?;
+
+        self.list_vi_run_queue(agent_id)
+            .await
+            .map_err(QueueReplaceError::Db)
+    }
+
     pub async fn delete_vi_template(&self, id: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         let result = sqlx::query("DELETE FROM vi_templates WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -925,6 +1022,31 @@ struct ViTemplateRow {
     show_front_panel: i64,
     timeout_secs: Option<i64>,
     created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ViRunQueueItemRow {
+    id: String,
+    agent_id: String,
+    vi_template_id: String,
+    position: i64,
+    created_at: String,
+    template_name: String,
+    vi_path: String,
+}
+
+impl ViRunQueueItemRow {
+    fn into_item(self) -> ViRunQueueItem {
+        ViRunQueueItem {
+            id: self.id,
+            agent_id: self.agent_id,
+            vi_template_id: self.vi_template_id,
+            position: self.position,
+            created_at: self.created_at,
+            template_name: self.template_name,
+            vi_path: self.vi_path,
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -1381,5 +1503,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(meta.id, id);
+    }
+
+    async fn vi_template_for_agent(store: &Store, agent_id: &str, name: &str, vi_path: &str) -> ViTemplate {
+        let inputs = serde_json::json!([]);
+        store
+            .create_vi_template(
+                name,
+                agent_id,
+                vi_path,
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_replace_and_list_order() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let tpl_a = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
+        let tpl_b = vi_template_for_agent(&store, &agent.id, "B", r"C:\b.vi").await;
+
+        let replaced = store
+            .replace_vi_run_queue(
+                &agent.id,
+                &[tpl_b.id.clone(), tpl_a.id.clone(), tpl_b.id.clone()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(replaced.len(), 3);
+        assert_eq!(replaced[0].position, 0);
+        assert_eq!(replaced[0].vi_template_id, tpl_b.id);
+        assert_eq!(replaced[0].template_name, "B");
+        assert_eq!(replaced[1].position, 1);
+        assert_eq!(replaced[1].vi_template_id, tpl_a.id);
+        assert_eq!(replaced[1].template_name, "A");
+        assert_eq!(replaced[2].position, 2);
+        assert_eq!(replaced[2].vi_template_id, tpl_b.id);
+
+        let listed = store.list_vi_run_queue(&agent.id).await.unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0].position, 0);
+        assert_eq!(listed[0].vi_template_id, tpl_b.id);
+        assert_eq!(listed[1].position, 1);
+        assert_eq!(listed[1].vi_template_id, tpl_a.id);
+        assert_eq!(listed[2].position, 2);
+        assert_eq!(listed[2].vi_template_id, tpl_b.id);
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_rejects_foreign_template() {
+        let store = test_store().await;
+        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
+        let tpl_b = vi_template_for_agent(&store, &agent_b.id, "B", r"C:\b.vi").await;
+
+        let err = store
+            .replace_vi_run_queue(&agent_a.id, &[tpl_b.id])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, QueueReplaceError::BadTemplate { .. }));
+
+        let listed = store.list_vi_run_queue(&agent_a.id).await.unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_vi_template_cascades_queue_rows() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let tpl = vi_template_for_agent(&store, &agent.id, "T", r"C:\t.vi").await;
+
+        store
+            .replace_vi_run_queue(&agent.id, &[tpl.id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(store.list_vi_run_queue(&agent.id).await.unwrap().len(), 1);
+
+        assert!(store.delete_vi_template(&tpl.id).await.unwrap());
+        assert!(store.get_vi_template(&tpl.id).await.unwrap().is_none());
+        assert!(store.list_vi_run_queue(&agent.id).await.unwrap().is_empty());
     }
 }

@@ -37,5 +37,8 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         include_str!("../migrations/004_vi_origin_and_unique.sql"),
     )
     .await?;
+    sqlx::raw_sql(include_str!("../migrations/005_vi_run_queue.sql"))
+        .execute(&pool)
+        .await?;
     Ok(pool)
 }
