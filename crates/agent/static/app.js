@@ -68,6 +68,19 @@ function normalizeFsPath(raw) {
   return s;
 }
 
+function viStemFromPath(viPath) {
+  return String(viPath || '').replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
+}
+
+function defaultLvNameFromPath() {
+  const pathEl = document.getElementById('lv-vi-path');
+  const nameEl = document.getElementById('lv-name');
+  if (!pathEl || !nameEl) return;
+  if (nameEl.value.trim() !== '') return;
+  const stem = viStemFromPath(normalizeFsPath(pathEl.value));
+  if (stem) nameEl.value = stem;
+}
+
 async function registerNow() {
   const msg = document.getElementById('register-msg');
   msg.hidden = false;
@@ -198,6 +211,7 @@ async function inspectVi() {
     showLvMsg('请输入 VI 路径', false);
     return;
   }
+  defaultLvNameFromPath();
   showLvMsg('查询中…', true);
   document.getElementById('lv-run-out').hidden = true;
   try {
@@ -274,6 +288,12 @@ async function registerViTemplate() {
     showLvMsg('请输入 VI 路径', false);
     return;
   }
+  defaultLvNameFromPath();
+  const name = document.getElementById('lv-name').value.trim();
+  if (!name) {
+    showLvMsg('请输入名称', false);
+    return;
+  }
   let inputs;
   try {
     inputs = collectInputsFromTable();
@@ -288,7 +308,6 @@ async function registerViTemplate() {
     showLvMsg(e.message, false);
     return;
   }
-  const stem = viPath.replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
   showLvMsg('注册中…', true);
   try {
     const resp = await fetch('/api/labview/register-template', {
@@ -297,7 +316,7 @@ async function registerViTemplate() {
       body: JSON.stringify(Object.assign({
         vi_path: viPath,
         inputs: inputs,
-        name: stem || undefined,
+        name: name,
       }, opts)),
     });
     const data = await resp.json();
@@ -307,7 +326,7 @@ async function registerViTemplate() {
       return;
     }
     showLvMsg('已注册: ' + (data.name || data.id), true);
-    fetchRegisteredTemplates();
+    refreshTemplateLists();
   } catch (e) {
     showLvMsg('注册失败: ' + e.message, false);
   }
@@ -322,6 +341,7 @@ function showRegisteredMsg(text, ok) {
 
 function loadTemplateToEditor(t) {
   document.getElementById('lv-vi-path').value = t.vi_path || '';
+  document.getElementById('lv-name').value = t.name || '';
   renderInputsTable(t.inputs || []);
   document.getElementById('lv-show-fp').checked = !!t.show_front_panel;
   const timeoutEl = document.getElementById('lv-timeout');
@@ -333,6 +353,40 @@ function loadTemplateToEditor(t) {
   document.getElementById('lv-json-raw').textContent = JSON.stringify(t, null, 2);
   document.getElementById('lv-run-out').hidden = true;
   showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
+}
+
+async function renameRegisteredTemplate(t) {
+  const current = t.name || '';
+  const next = prompt('重命名', current);
+  if (next == null) return;
+  const name = String(next).trim();
+  if (!name) {
+    showRegisteredMsg('名称不能为空', false);
+    return;
+  }
+  if (name === current) return;
+  showRegisteredMsg('重命名中…', true);
+  try {
+    const resp = await fetch('/api/labview/templates/' + encodeURIComponent(t.id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    });
+    const data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showRegisteredMsg('重命名失败: ' + err, false);
+      return;
+    }
+    showRegisteredMsg('已重命名: ' + (data.name || name), true);
+    await refreshTemplateLists();
+  } catch (e) {
+    showRegisteredMsg('重命名失败: ' + e.message, false);
+  }
+}
+
+async function refreshTemplateLists() {
+  await Promise.all([fetchRegisteredTemplates(), loadSeqRegistered()]);
 }
 
 async function trialRegisteredTemplate(t) {
@@ -392,6 +446,12 @@ function renderRegisteredTemplates(templates) {
     trialBtn.addEventListener('click', function () {
       trialRegisteredTemplate(t);
     });
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.textContent = '重命名';
+    renameBtn.addEventListener('click', function () {
+      renameRegisteredTemplate(t);
+    });
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
     loadBtn.textContent = '加载到编辑区';
@@ -400,6 +460,8 @@ function renderRegisteredTemplates(templates) {
     });
     const actions = document.createElement('td');
     actions.appendChild(trialBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(renameBtn);
     actions.appendChild(document.createTextNode(' '));
     actions.appendChild(loadBtn);
     row.innerHTML =
@@ -434,6 +496,7 @@ async function fetchRegisteredTemplates() {
 document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
 document.getElementById('lv-run-btn').addEventListener('click', runVi);
 document.getElementById('lv-register-btn').addEventListener('click', registerViTemplate);
+document.getElementById('lv-vi-path').addEventListener('blur', defaultLvNameFromPath);
 
 // --- Sequence page ---
 

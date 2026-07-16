@@ -34,6 +34,19 @@ function normalizeFsPath(raw) {
   return s;
 }
 
+function viStemFromPath(viPath) {
+  return String(viPath || '').replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
+}
+
+function defaultViNameFromPath() {
+  const pathEl = document.getElementById('vi-vi-path');
+  const nameEl = document.getElementById('vi-name');
+  if (!pathEl || !nameEl) return;
+  if (nameEl.value.trim() !== '') return;
+  const stem = viStemFromPath(normalizeFsPath(pathEl.value));
+  if (stem) nameEl.value = stem;
+}
+
 function agentStatusKind(a) {
   if (a.status === 'offline') return 'offline';
   if (a.busy) return 'busy';
@@ -115,10 +128,11 @@ function openDistributeModal(t) {
     for (const a of others) {
       const label = document.createElement('label');
       label.className = 'lv-check';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.value = a.id;
-      label.appendChild(cb);
+      const rb = document.createElement('input');
+      rb.type = 'radio';
+      rb.name = 'vi-distribute-target';
+      rb.value = a.id;
+      label.appendChild(rb);
       label.appendChild(document.createTextNode(a.name || a.id.slice(0, 8)));
       container.appendChild(label);
     }
@@ -136,16 +150,15 @@ function closeDistributeModal() {
 
 async function submitDistribute() {
   if (!distributeTemplate) return;
-  const checked = [...document.querySelectorAll('#vi-distribute-agents input[type=checkbox]:checked')]
-    .map(cb => cb.value);
+  const selected = document.querySelector('#vi-distribute-agents input[type=radio]:checked');
   const resultsEl = document.getElementById('vi-distribute-results');
-  if (checked.length === 0) {
-    resultsEl.textContent = '请至少选择一个目标 Agent';
+  if (!selected) {
+    resultsEl.textContent = '请选择一个目标 Agent';
     return;
   }
   const pathRaw = normalizeFsPath(document.getElementById('vi-distribute-path').value);
   const body = {
-    target_agent_ids: checked,
+    target_agent_id: selected.value,
     vi_path: pathRaw || null,
   };
   resultsEl.textContent = '分发中…';
@@ -163,15 +176,13 @@ async function submitDistribute() {
       resultsEl.textContent = '分发失败: ' + (data.error || resp.status);
       return;
     }
-    const lines = (data.results || []).map(r => {
-      const agent = agents.find(a => a.id === r.agent_id);
-      const name = agent ? agent.name : r.agent_id.slice(0, 8);
-      if (r.status === 'error') return name + ': 失败 — ' + (r.error || '未知错误');
-      if (r.status === 'skipped') return name + ': 已跳过';
-      const action = r.status === 'created' ? '已创建' : '已更新';
-      return name + ': ' + action + (r.template_id ? ' (' + r.template_id.slice(0, 8) + '…)' : '');
-    });
-    resultsEl.textContent = lines.length ? lines.join('\n') : JSON.stringify(data, null, 2);
+    const agent = agents.find(a => a.id === data.agent_id);
+    const agentName = data.agent_name || (agent ? agent.name : null) ||
+      (data.agent_id ? data.agent_id.slice(0, 8) : '—');
+    const idShort = data.id ? data.id.slice(0, 8) + '…' : '';
+    resultsEl.textContent = '已挪至 ' + agentName +
+      (idShort ? '（id: ' + idShort + '）' : '') +
+      '；源机不再持有该模板';
     await fetchViTemplates();
   } catch (e) {
     resultsEl.textContent = '分发失败: ' + e.message;
@@ -907,6 +918,7 @@ async function inspectVi() {
     showViMsg('请输入 VI 路径', false);
     return;
   }
+  defaultViNameFromPath();
   showViMsg('查询中…', true);
   document.getElementById('vi-run-out').hidden = true;
   try {
@@ -1001,6 +1013,12 @@ async function registerViTemplate() {
     showViMsg('请输入 VI 路径', false);
     return;
   }
+  defaultViNameFromPath();
+  const name = document.getElementById('vi-name').value.trim();
+  if (!name) {
+    showViMsg('请输入名称', false);
+    return;
+  }
   let inputs;
   try {
     inputs = collectViInputsFromTable();
@@ -1015,7 +1033,6 @@ async function registerViTemplate() {
     showViMsg(e.message, false);
     return;
   }
-  const stem = viPath.replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
   showViMsg('注册中…', true);
   try {
     const body = Object.assign({
@@ -1024,7 +1041,7 @@ async function registerViTemplate() {
       cli_path: viLabviewConfig.cli_path,
       getinfo_path: viLabviewConfig.getinfo_path,
       inputs: inputs,
-      name: stem || undefined,
+      name: name,
     }, opts);
     const resp = await fetch('/api/vi-templates', {
       method: 'POST',
@@ -1076,13 +1093,44 @@ function renderViTemplates() {
       '<td>' + escapeHtml(timeout) + '</td>' +
       '<td class="row-actions">' +
         '<button type="button" class="btn-sm btn-vi-trial">试跑</button>' +
+        '<button type="button" class="btn-sm btn-vi-rename">重命名</button>' +
         '<button type="button" class="btn-sm btn-vi-distribute">分发</button>' +
         '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
       '</td>';
     row.querySelector('.btn-vi-trial').addEventListener('click', () => trialRunViTemplate(t));
+    row.querySelector('.btn-vi-rename').addEventListener('click', () => renameViTemplate(t));
     row.querySelector('.btn-vi-distribute').addEventListener('click', () => openDistributeModal(t));
     row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t.id));
     tbody.appendChild(row);
+  }
+}
+
+async function renameViTemplate(t) {
+  const current = t.name || '';
+  const next = prompt('重命名', current);
+  if (next == null) return;
+  const name = String(next).trim();
+  if (!name) {
+    showViTemplatesMsg('名称不能为空', false);
+    return;
+  }
+  if (name === current) return;
+  showViTemplatesMsg('重命名中…', true);
+  try {
+    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showViTemplatesMsg('重命名失败: ' + (data.error || resp.status), false);
+      return;
+    }
+    showViTemplatesMsg('已重命名: ' + (data.name || name), true);
+    await fetchViTemplates();
+  } catch (e) {
+    showViTemplatesMsg('重命名失败: ' + e.message, false);
   }
 }
 
@@ -1136,6 +1184,7 @@ document.getElementById('vi-agent').addEventListener('change', (e) => {
 document.getElementById('vi-inspect-btn').addEventListener('click', inspectVi);
 document.getElementById('vi-run-btn').addEventListener('click', runVi);
 document.getElementById('vi-register-btn').addEventListener('click', registerViTemplate);
+document.getElementById('vi-vi-path').addEventListener('blur', defaultViNameFromPath);
 document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
 
 syncTaskFormMode();

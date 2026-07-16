@@ -185,6 +185,10 @@
             <span class="label">VI 路径</span>
             <input id="vi-vi-path" type="text" class="lv-path-input mono" placeholder="C:\path\to\My.vi">
           </label>
+          <label class="lv-path-label">
+            <span class="label">名称</span>
+            <input id="vi-name" type="text" class="lv-path-input" placeholder="显示名称（必填）" required>
+          </label>
           <div class="lv-actions">
             <button id="vi-inspect-btn" type="button">查询参数</button>
             <button id="vi-run-btn" type="button">试跑</button>
@@ -347,7 +351,8 @@
         <button id="vi-distribute-close" type="button" class="btn-sm">关闭</button>
       </div>
       <div class="modal-body">
-        <p class="label">目标 Agent</p>
+        <p class="msg">分发后源机将不再持有该模板</p>
+        <p class="label">目标 Agent（单选）</p>
         <div id="vi-distribute-agents" class="vi-distribute-agents"></div>
         <label class="lv-path-label vi-distribute-path-label">
           <span class="label">VI 路径（可选，覆盖源路径）</span>
