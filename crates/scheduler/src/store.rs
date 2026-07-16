@@ -707,64 +707,6 @@ impl Store {
             .ok_or(TransferError::NotFound)
     }
 
-    /// Thin wrapper for callers not yet migrated to `insert_vi_template`.
-    pub async fn upsert_vi_template(
-        &self,
-        name: &str,
-        agent_id: &str,
-        origin_agent_id: &str,
-        vi_path: &str,
-        cli_path: &str,
-        getinfo_path: &str,
-        inputs: &serde_json::Value,
-        show_front_panel: bool,
-        timeout_secs: Option<i64>,
-    ) -> Result<(ViTemplate, bool), sqlx::Error> {
-        let template = self
-            .insert_vi_template(
-                name,
-                agent_id,
-                origin_agent_id,
-                vi_path,
-                cli_path,
-                getinfo_path,
-                inputs,
-                show_front_panel,
-                timeout_secs,
-            )
-            .await?;
-        Ok((template, true))
-    }
-
-    /// Thin wrapper for callers not yet migrated to `transfer_vi_template`.
-    pub async fn upsert_vi_template_distribute(
-        &self,
-        name: &str,
-        agent_id: &str,
-        origin_agent_id: &str,
-        vi_path: &str,
-        cli_path: &str,
-        getinfo_path: &str,
-        inputs: &serde_json::Value,
-        show_front_panel: bool,
-        timeout_secs: Option<i64>,
-    ) -> Result<(ViTemplate, bool), sqlx::Error> {
-        let template = self
-            .insert_vi_template(
-                name,
-                agent_id,
-                origin_agent_id,
-                vi_path,
-                cli_path,
-                getinfo_path,
-                inputs,
-                show_front_panel,
-                timeout_secs,
-            )
-            .await?;
-        Ok((template, true))
-    }
-
     pub async fn create_vi_template(
         &self,
         name: &str,
