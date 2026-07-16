@@ -387,6 +387,25 @@ pre {
   font-size: 0.9rem;
 }
 
+.vi-distribute-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.vi-distribute-path-label {
+  margin-top: 0.75rem;
+}
+
+.vi-distribute-actions {
+  margin-top: 0.75rem;
+}
+
+#vi-distribute-results:not(:empty) {
+  margin-top: 0.75rem;
+}
+
 .files-crumb {
   margin-bottom: 0.75rem;
   font-size: 0.9rem;

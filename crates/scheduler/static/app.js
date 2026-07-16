@@ -8,6 +8,7 @@ let selectedTaskId = null;
 let historyAgentId = null;
 let historyOffset = 0;
 let viLabviewConfig = null;
+let distributeTemplate = null;
 const HISTORY_LIMIT = 50;
 let filesAgentId = null;
 let filesPath = '';
@@ -52,6 +53,7 @@ async function fetchAgents() {
   renderAgents();
   updateAgentSelects();
   updateViAgentSelect();
+  updateViTemplatesAgentFilter();
 }
 
 function formatByteSize(bytes) {
@@ -99,6 +101,81 @@ function closeFilePreviewModal() {
   document.getElementById('file-preview-pre').textContent = '';
   document.getElementById('file-preview-img').hidden = true;
   document.getElementById('file-preview-img').removeAttribute('src');
+}
+
+function openDistributeModal(t) {
+  distributeTemplate = t;
+  document.getElementById('vi-distribute-title').textContent = '分发 — ' + t.name;
+  const container = document.getElementById('vi-distribute-agents');
+  container.innerHTML = '';
+  const others = agents.filter(a => a.id !== t.agent_id);
+  if (others.length === 0) {
+    container.innerHTML = '<p class="empty">无其他 Agent 可分发</p>';
+  } else {
+    for (const a of others) {
+      const label = document.createElement('label');
+      label.className = 'lv-check';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = a.id;
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(a.name || a.id.slice(0, 8)));
+      container.appendChild(label);
+    }
+  }
+  document.getElementById('vi-distribute-path').value = '';
+  document.getElementById('vi-distribute-results').textContent = '';
+  document.getElementById('vi-distribute-modal').hidden = false;
+}
+
+function closeDistributeModal() {
+  document.getElementById('vi-distribute-modal').hidden = true;
+  distributeTemplate = null;
+  document.getElementById('vi-distribute-results').textContent = '';
+}
+
+async function submitDistribute() {
+  if (!distributeTemplate) return;
+  const checked = [...document.querySelectorAll('#vi-distribute-agents input[type=checkbox]:checked')]
+    .map(cb => cb.value);
+  const resultsEl = document.getElementById('vi-distribute-results');
+  if (checked.length === 0) {
+    resultsEl.textContent = '请至少选择一个目标 Agent';
+    return;
+  }
+  const pathRaw = normalizeFsPath(document.getElementById('vi-distribute-path').value);
+  const body = {
+    target_agent_ids: checked,
+    vi_path: pathRaw || null,
+  };
+  resultsEl.textContent = '分发中…';
+  try {
+    const resp = await fetch(
+      '/api/vi-templates/' + encodeURIComponent(distributeTemplate.id) + '/distribute',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = await resp.json();
+    if (!resp.ok) {
+      resultsEl.textContent = '分发失败: ' + (data.error || resp.status);
+      return;
+    }
+    const lines = (data.results || []).map(r => {
+      const agent = agents.find(a => a.id === r.agent_id);
+      const name = agent ? agent.name : r.agent_id.slice(0, 8);
+      if (r.status === 'error') return name + ': 失败 — ' + (r.error || '未知错误');
+      if (r.status === 'skipped') return name + ': 已跳过';
+      const action = r.status === 'created' ? '已创建' : '已更新';
+      return name + ': ' + action + (r.template_id ? ' (' + r.template_id.slice(0, 8) + '…)' : '');
+    });
+    resultsEl.textContent = lines.length ? lines.join('\n') : JSON.stringify(data, null, 2);
+    await fetchViTemplates();
+  } catch (e) {
+    resultsEl.textContent = '分发失败: ' + e.message;
+  }
 }
 
 function joinFilesPath(base, name) {
@@ -603,6 +680,9 @@ document.getElementById('shot-close').addEventListener('click', closeShotModal);
 document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);
 document.getElementById('files-close').addEventListener('click', closeFilesModal);
 document.getElementById('file-preview-close').addEventListener('click', closeFilePreviewModal);
+document.getElementById('vi-distribute-close').addEventListener('click', closeDistributeModal);
+document.getElementById('vi-distribute-cancel').addEventListener('click', closeDistributeModal);
+document.getElementById('vi-distribute-submit').addEventListener('click', submitDistribute);
 
 document.querySelectorAll('.modal-backdrop').forEach(el => {
   el.addEventListener('click', () => {
@@ -611,6 +691,7 @@ document.querySelectorAll('.modal-backdrop').forEach(el => {
     else if (id === 'shot-history-modal') closeShotHistoryModal();
     else if (id === 'files-modal') closeFilesModal();
     else if (id === 'file-preview-modal') closeFilePreviewModal();
+    else if (id === 'vi-distribute-modal') closeDistributeModal();
   });
 });
 
@@ -652,6 +733,20 @@ showView('machines');
 
 async function refreshAll() {
   await Promise.all([fetchAgents(), fetchTemplates(), fetchTasks(), fetchViTemplates()]);
+}
+
+function updateViTemplatesAgentFilter() {
+  const sel = document.getElementById('vi-templates-agent-filter');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">全部</option>';
+  for (const a of agents) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.name + ' (' + a.ip + ')';
+    sel.appendChild(opt);
+  }
+  if (prev && agents.some(a => a.id === prev)) sel.value = prev;
 }
 
 function updateViAgentSelect() {
@@ -949,7 +1044,12 @@ async function registerViTemplate() {
 }
 
 async function fetchViTemplates() {
-  const resp = await fetch('/api/vi-templates');
+  const filterEl = document.getElementById('vi-templates-agent-filter');
+  let url = '/api/vi-templates';
+  if (filterEl && filterEl.value) {
+    url += '?agent_id=' + encodeURIComponent(filterEl.value);
+  }
+  const resp = await fetch(url);
   if (!resp.ok) return;
   viTemplates = await resp.json();
   renderViTemplates();
@@ -960,24 +1060,27 @@ function renderViTemplates() {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (viTemplates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无 VI 模板</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无 VI 模板</td></tr>';
     return;
   }
   for (const t of viTemplates) {
     const row = document.createElement('tr');
-    const agent = agents.find(a => a.id === t.agent_id);
-    const agentName = agent ? agent.name : t.agent_id.slice(0, 8);
+    const agentCol = t.agent_name || t.agent_id.slice(0, 8);
+    const originCol = t.origin_agent_name || '—';
     const timeout = t.timeout_secs != null ? t.timeout_secs + 's' : '—';
     row.innerHTML =
       '<td>' + escapeHtml(t.name) + '</td>' +
-      '<td>' + escapeHtml(agentName) + '</td>' +
+      '<td>' + escapeHtml(agentCol) + '</td>' +
+      '<td>' + escapeHtml(originCol) + '</td>' +
       '<td class="mono">' + escapeHtml(t.vi_path) + '</td>' +
       '<td>' + escapeHtml(timeout) + '</td>' +
       '<td class="row-actions">' +
         '<button type="button" class="btn-sm btn-vi-trial">试跑</button>' +
+        '<button type="button" class="btn-sm btn-vi-distribute">分发</button>' +
         '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
       '</td>';
     row.querySelector('.btn-vi-trial').addEventListener('click', () => trialRunViTemplate(t));
+    row.querySelector('.btn-vi-distribute').addEventListener('click', () => openDistributeModal(t));
     row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t.id));
     tbody.appendChild(row);
   }
@@ -1033,6 +1136,7 @@ document.getElementById('vi-agent').addEventListener('change', (e) => {
 document.getElementById('vi-inspect-btn').addEventListener('click', inspectVi);
 document.getElementById('vi-run-btn').addEventListener('click', runVi);
 document.getElementById('vi-register-btn').addEventListener('click', registerViTemplate);
+document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
 
 syncTaskFormMode();
 refreshAll();
