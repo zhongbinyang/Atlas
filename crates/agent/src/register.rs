@@ -78,3 +78,23 @@ pub async fn register_vi_template(
     let value: Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok((status, value))
 }
+
+pub async fn list_vi_templates_for_agent(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/vi-templates?agent_id={}",
+        center_url.trim_end_matches('/'),
+        agent_id
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}

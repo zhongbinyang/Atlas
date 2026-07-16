@@ -143,6 +143,10 @@ pub fn router(state: AppState) -> Router {
             "/api/labview/register-template",
             post(labview_register_template),
         )
+        .route(
+            "/api/labview/registered-templates",
+            get(labview_registered_templates),
+        )
         .with_state(state)
 }
 
@@ -503,6 +507,53 @@ async fn labview_register_template(
     }
 }
 
+async fn labview_registered_templates(State(s): State<AppState>) -> impl IntoResponse {
+    let agent_id = match crate::register::resolve_agent_id(
+        &s.http_client,
+        &s.center_url,
+        &s.hostname,
+        &s.ip,
+        s.port,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) if e == "agent not found on center" => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+
+    match crate::register::list_vi_templates_for_agent(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+    )
+    .await
+    {
+        Ok((status, body)) => {
+            let axum_status =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (axum_status, Json(body)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+    }
+}
+
 async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
     let body = RegisterAgentRequest {
         name: s.hostname.clone(),
@@ -801,5 +852,66 @@ mod tests {
             body.get("agent_id").and_then(|v| v.as_str()),
             Some("agent-uuid-1")
         );
+    }
+
+    #[tokio::test]
+    async fn labview_registered_templates_filters_via_center() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "agent-uuid-1",
+                "name": "test-host",
+                "ip": "127.0.0.1",
+                "port": 8080,
+                "status": "online",
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "busy": false,
+                "last_seen_at": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/vi-templates"))
+            .and(query_param("agent_id", "agent-uuid-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "tpl-1",
+                "name": "Add",
+                "agent_id": "agent-uuid-1",
+                "vi_path": "C:\\x\\Add.vi",
+                "cli_path": "C:\\tools\\cli.exe",
+                "getinfo_path": "C:\\tools\\getinfo.vi",
+                "inputs": [{ "name": "a", "className": "Digital", "value": 1.0 }],
+                "show_front_panel": false,
+                "timeout_secs": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/labview/registered-templates")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = body.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].get("id").and_then(|v| v.as_str()), Some("tpl-1"));
+        assert_eq!(arr[0].get("name").and_then(|v| v.as_str()), Some("Add"));
     }
 }

@@ -307,8 +307,127 @@ async function registerViTemplate() {
       return;
     }
     showLvMsg('已注册: ' + (data.name || data.id), true);
+    fetchRegisteredTemplates();
   } catch (e) {
     showLvMsg('注册失败: ' + e.message, false);
+  }
+}
+
+function showRegisteredMsg(text, ok) {
+  const msg = document.getElementById('lv-registered-msg');
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = ok ? 'msg ok' : 'msg err';
+}
+
+function loadTemplateToEditor(t) {
+  document.getElementById('lv-vi-path').value = t.vi_path || '';
+  renderInputsTable(t.inputs || []);
+  document.getElementById('lv-show-fp').checked = !!t.show_front_panel;
+  const timeoutEl = document.getElementById('lv-timeout');
+  if (t.timeout_secs != null && t.timeout_secs > 0) {
+    timeoutEl.value = String(t.timeout_secs);
+  } else {
+    timeoutEl.value = '';
+  }
+  document.getElementById('lv-json-raw').textContent = JSON.stringify(t, null, 2);
+  document.getElementById('lv-run-out').hidden = true;
+  showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
+}
+
+async function trialRegisteredTemplate(t) {
+  const viPath = t.vi_path;
+  if (!viPath) {
+    showRegisteredMsg('模板缺少 VI 路径', false);
+    return;
+  }
+  const opts = { show_front_panel: !!t.show_front_panel };
+  if (t.timeout_secs != null && t.timeout_secs > 0) {
+    opts.timeout_secs = t.timeout_secs;
+  }
+  showRegisteredMsg('试跑中: ' + (t.name || t.id) + '…', true);
+  const outEl = document.getElementById('lv-run-out');
+  outEl.hidden = false;
+  outEl.textContent = '…';
+  try {
+    const resp = await fetch('/api/labview/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vi_path: viPath,
+        inputs: t.inputs || [],
+        show_front_panel: opts.show_front_panel,
+        timeout_secs: opts.timeout_secs,
+      }),
+    });
+    const data = await resp.json();
+    outEl.textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showRegisteredMsg('试跑失败: ' + err, false);
+      return;
+    }
+    showRegisteredMsg('试跑完成: ' + (t.name || t.id), true);
+  } catch (e) {
+    outEl.textContent = e.message;
+    showRegisteredMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+function renderRegisteredTemplates(templates) {
+  const tbody = document.getElementById('lv-registered-body');
+  tbody.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无已注册功能</td></tr>';
+    return;
+  }
+  for (let i = 0; i < templates.length; i++) {
+    const t = templates[i];
+    const row = document.createElement('tr');
+    const name = escapeHtml(t.name || t.id || '—');
+    const viPath = escapeHtml(t.vi_path || '—');
+    const trialBtn = document.createElement('button');
+    trialBtn.type = 'button';
+    trialBtn.textContent = '试跑';
+    trialBtn.addEventListener('click', function () {
+      trialRegisteredTemplate(t);
+    });
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.textContent = '加载到编辑区';
+    loadBtn.addEventListener('click', function () {
+      loadTemplateToEditor(t);
+    });
+    const actions = document.createElement('td');
+    actions.appendChild(trialBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(loadBtn);
+    row.innerHTML =
+      '<td>' + name + '</td>' +
+      '<td class="mono">' + viPath + '</td>';
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function fetchRegisteredTemplates() {
+  const tbody = document.getElementById('lv-registered-body');
+  try {
+    const resp = await fetch('/api/labview/registered-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML =
+        '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      showRegisteredMsg('加载失败: ' + err, false);
+      return;
+    }
+    renderRegisteredTemplates(Array.isArray(data) ? data : []);
+    document.getElementById('lv-registered-msg').hidden = true;
+  } catch (e) {
+    tbody.innerHTML =
+      '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    showRegisteredMsg('加载失败: ' + e.message, false);
   }
 }
 
@@ -319,5 +438,6 @@ document.getElementById('lv-register-btn').addEventListener('click', registerViT
 fetchStatus();
 fetchTasks();
 loadLabviewConfig();
+fetchRegisteredTemplates();
 setInterval(fetchStatus, POLL_MS);
 setInterval(fetchTasks, POLL_MS);
