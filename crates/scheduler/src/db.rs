@@ -40,5 +40,10 @@ pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     sqlx::raw_sql(include_str!("../migrations/005_vi_run_queue.sql"))
         .execute(&pool)
         .await?;
+    apply_migration(
+        &pool,
+        include_str!("../migrations/006_vi_drop_path_unique.sql"),
+    )
+    .await?;
     Ok(pool)
 }

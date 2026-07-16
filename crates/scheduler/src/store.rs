@@ -114,6 +114,22 @@ pub enum QueueReplaceError {
     Db(sqlx::Error),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ViTemplatePatch {
+    pub name: Option<String>,
+    pub inputs: Option<serde_json::Value>,
+    pub show_front_panel: Option<bool>,
+    pub timeout_secs: Option<Option<i64>>,
+}
+
+#[derive(Debug)]
+pub enum TransferError {
+    NotFound,
+    AgentNotFound,
+    SameAgent,
+    Db(sqlx::Error),
+}
+
 #[derive(Debug, Clone)]
 pub struct ViTemplateEnriched {
     pub template: ViTemplate,
@@ -549,6 +565,149 @@ impl Store {
         Ok(row.map(|r| r.into_screenshot()))
     }
 
+    pub async fn insert_vi_template(
+        &self,
+        name: &str,
+        agent_id: &str,
+        origin_agent_id: &str,
+        vi_path: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        inputs: &serde_json::Value,
+        show_front_panel: bool,
+        timeout_secs: Option<i64>,
+    ) -> Result<ViTemplate, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let row = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            INSERT INTO vi_templates (
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING
+                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            "#,
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(agent_id)
+        .bind(origin_agent_id)
+        .bind(vi_path)
+        .bind(cli_path)
+        .bind(getinfo_path)
+        .bind(&inputs_json)
+        .bind(i64::from(show_front_panel))
+        .bind(timeout_secs)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_vi_template())
+    }
+
+    pub async fn patch_vi_template(
+        &self,
+        id: &str,
+        patch: ViTemplatePatch,
+    ) -> Result<Option<ViTemplate>, sqlx::Error> {
+        let current = match self.get_vi_template(id).await? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let name = patch.name.unwrap_or(current.name);
+        let inputs_json = match patch.inputs {
+            Some(inputs) => serde_json::to_string(&inputs)
+                .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?,
+            None => current.inputs_json,
+        };
+        let show_front_panel = patch.show_front_panel.unwrap_or(current.show_front_panel);
+        let timeout_secs = match patch.timeout_secs {
+            Some(v) => v,
+            None => current.timeout_secs,
+        };
+        sqlx::query(
+            r#"
+            UPDATE vi_templates
+            SET name = ?, inputs_json = ?, show_front_panel = ?, timeout_secs = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&name)
+        .bind(&inputs_json)
+        .bind(i64::from(show_front_panel))
+        .bind(timeout_secs)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_vi_template(id).await
+    }
+
+    pub async fn transfer_vi_template(
+        &self,
+        id: &str,
+        target_agent_id: &str,
+        cli_path: &str,
+        getinfo_path: &str,
+        vi_path: Option<&str>,
+    ) -> Result<ViTemplate, TransferError> {
+        let source = self
+            .get_vi_template(id)
+            .await
+            .map_err(TransferError::Db)?
+            .ok_or(TransferError::NotFound)?;
+
+        if source.agent_id == target_agent_id {
+            return Err(TransferError::SameAgent);
+        }
+
+        if self
+            .get_agent(target_agent_id)
+            .await
+            .map_err(TransferError::Db)?
+            .is_none()
+        {
+            return Err(TransferError::AgentNotFound);
+        }
+
+        let vi_path = vi_path.unwrap_or(&source.vi_path);
+
+        let mut tx = self.pool.begin().await.map_err(TransferError::Db)?;
+
+        sqlx::query(
+            r#"
+            UPDATE vi_templates
+            SET agent_id = ?, vi_path = ?, cli_path = ?, getinfo_path = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(target_agent_id)
+        .bind(vi_path)
+        .bind(cli_path)
+        .bind(getinfo_path)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(TransferError::Db)?;
+
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(TransferError::Db)?;
+
+        tx.commit().await.map_err(TransferError::Db)?;
+
+        self.get_vi_template(id)
+            .await
+            .map_err(TransferError::Db)?
+            .ok_or(TransferError::NotFound)
+    }
+
+    /// Thin wrapper for callers not yet migrated to `insert_vi_template`.
     pub async fn upsert_vi_template(
         &self,
         name: &str,
@@ -561,56 +720,23 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<(ViTemplate, bool), sqlx::Error> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM vi_templates WHERE agent_id = ? AND vi_path = ?",
-        )
-        .bind(agent_id)
-        .bind(vi_path)
-        .fetch_optional(&self.pool)
-        .await?;
-        let created = existing.is_none();
-
-        let id = existing
-            .map(|(id,)| id)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = Utc::now().to_rfc3339();
-        let inputs_json = serde_json::to_string(inputs)
-            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
-        let row = sqlx::query_as::<_, ViTemplateRow>(
-            r#"
-            INSERT INTO vi_templates (
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+        let template = self
+            .insert_vi_template(
+                name,
+                agent_id,
+                origin_agent_id,
+                vi_path,
+                cli_path,
+                getinfo_path,
+                inputs,
+                show_front_panel,
+                timeout_secs,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agent_id, vi_path) DO UPDATE SET
-                name = excluded.name,
-                cli_path = excluded.cli_path,
-                getinfo_path = excluded.getinfo_path,
-                inputs_json = excluded.inputs_json,
-                show_front_panel = excluded.show_front_panel,
-                timeout_secs = excluded.timeout_secs
-            RETURNING
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
-            "#,
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(agent_id)
-        .bind(origin_agent_id)
-        .bind(vi_path)
-        .bind(cli_path)
-        .bind(getinfo_path)
-        .bind(&inputs_json)
-        .bind(i64::from(show_front_panel))
-        .bind(timeout_secs)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((row.into_vi_template(), created))
+            .await?;
+        Ok((template, true))
     }
 
+    /// Thin wrapper for callers not yet migrated to `transfer_vi_template`.
     pub async fn upsert_vi_template_distribute(
         &self,
         name: &str,
@@ -623,55 +749,20 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<(ViTemplate, bool), sqlx::Error> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM vi_templates WHERE agent_id = ? AND vi_path = ?",
-        )
-        .bind(agent_id)
-        .bind(vi_path)
-        .fetch_optional(&self.pool)
-        .await?;
-        let created = existing.is_none();
-
-        let id = existing
-            .map(|(id,)| id)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = Utc::now().to_rfc3339();
-        let inputs_json = serde_json::to_string(inputs)
-            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
-        let row = sqlx::query_as::<_, ViTemplateRow>(
-            r#"
-            INSERT INTO vi_templates (
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+        let template = self
+            .insert_vi_template(
+                name,
+                agent_id,
+                origin_agent_id,
+                vi_path,
+                cli_path,
+                getinfo_path,
+                inputs,
+                show_front_panel,
+                timeout_secs,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agent_id, vi_path) DO UPDATE SET
-                name = excluded.name,
-                origin_agent_id = excluded.origin_agent_id,
-                cli_path = excluded.cli_path,
-                getinfo_path = excluded.getinfo_path,
-                inputs_json = excluded.inputs_json,
-                show_front_panel = excluded.show_front_panel,
-                timeout_secs = excluded.timeout_secs
-            RETURNING
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
-            "#,
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(agent_id)
-        .bind(origin_agent_id)
-        .bind(vi_path)
-        .bind(cli_path)
-        .bind(getinfo_path)
-        .bind(&inputs_json)
-        .bind(i64::from(show_front_panel))
-        .bind(timeout_secs)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((row.into_vi_template(), created))
+            .await?;
+        Ok((template, true))
     }
 
     pub async fn create_vi_template(
@@ -685,20 +776,18 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<ViTemplate, sqlx::Error> {
-        let (template, _) = self
-            .upsert_vi_template(
-                name,
-                agent_id,
-                agent_id,
-                vi_path,
-                cli_path,
-                getinfo_path,
-                inputs,
-                show_front_panel,
-                timeout_secs,
-            )
-            .await?;
-        Ok(template)
+        self.insert_vi_template(
+            name,
+            agent_id,
+            agent_id,
+            vi_path,
+            cli_path,
+            getinfo_path,
+            inputs,
+            show_front_panel,
+            timeout_secs,
+        )
+        .await
     }
 
     pub async fn list_vi_templates(
@@ -1302,8 +1391,8 @@ mod tests {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let inputs = serde_json::json!([]);
-        let (got, created) = store
-            .upsert_vi_template(
+        let got = store
+            .insert_vi_template(
                 "Add",
                 &agent.id,
                 &agent.id,
@@ -1316,20 +1405,93 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(created);
         assert_eq!(got.origin_agent_id, agent.id);
     }
 
     #[tokio::test]
-    async fn vi_template_upsert_same_path_keeps_origin() {
+    async fn insert_allows_same_path_twice() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let first = store
+            .insert_vi_template(
+                "First",
+                &agent.id,
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let second = store
+            .insert_vi_template(
+                "Second",
+                &agent.id,
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli2.exe",
+                r"C:\getinfo2.vi",
+                &inputs,
+                true,
+                Some(10),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(first.id, second.id);
+        let listed = store.list_vi_templates(Some(&agent.id)).await.unwrap();
+        assert_eq!(listed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn patch_renames_template() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let tpl = store
+            .create_vi_template(
+                "OldName",
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let patched = store
+            .patch_vi_template(
+                &tpl.id,
+                ViTemplatePatch {
+                    name: Some("NewName".into()),
+                    ..ViTemplatePatch::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(patched.name, "NewName");
+
+        let got = store.get_vi_template(&tpl.id).await.unwrap().unwrap();
+        assert_eq!(got.name, "NewName");
+    }
+
+    #[tokio::test]
+    async fn transfer_moves_id_and_clears_queue() {
         let store = test_store().await;
         let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
         let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
-        let inputs = serde_json::json!([{"name":"a","value":1}]);
-        let (created, _) = store
-            .upsert_vi_template(
-                "Orig",
-                &agent_a.id,
+        let inputs = serde_json::json!([]);
+        let tpl = store
+            .create_vi_template(
+                "MoveMe",
                 &agent_a.id,
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
@@ -1340,29 +1502,70 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(created.origin_agent_id, agent_a.id);
+        let template_id = tpl.id.clone();
 
-        let updated_inputs = serde_json::json!([{"name":"a","value":2}]);
-        let (updated, was_created) = store
-            .upsert_vi_template(
-                "Updated",
-                &agent_a.id,
+        store
+            .replace_vi_run_queue(&agent_a.id, &[template_id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(store.list_vi_run_queue(&agent_a.id).await.unwrap().len(), 1);
+
+        let transferred = store
+            .transfer_vi_template(
+                &template_id,
                 &agent_b.id,
-                r"C:\x\Add.vi",
-                r"C:\cli2.exe",
-                r"C:\getinfo2.vi",
-                &updated_inputs,
-                true,
-                Some(60),
+                r"C:\cli-b.exe",
+                r"C:\getinfo-b.vi",
+                None,
             )
             .await
             .unwrap();
-        assert!(!was_created);
-        assert_eq!(updated.origin_agent_id, agent_a.id);
-        assert_eq!(updated.name, "Updated");
-        assert_eq!(updated.inputs_json, updated_inputs.to_string());
-        assert!(updated.show_front_panel);
-        assert_eq!(updated.timeout_secs, Some(60));
+
+        assert_eq!(transferred.id, template_id);
+        assert_eq!(transferred.agent_id, agent_b.id);
+        assert_eq!(transferred.origin_agent_id, agent_a.id);
+        assert_eq!(transferred.cli_path, r"C:\cli-b.exe");
+        assert_eq!(transferred.getinfo_path, r"C:\getinfo-b.vi");
+
+        let on_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
+        assert!(on_a.is_empty());
+        assert!(store.list_vi_run_queue(&agent_a.id).await.unwrap().is_empty());
+
+        let on_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].id, template_id);
+    }
+
+    #[tokio::test]
+    async fn transfer_to_self_errors() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let inputs = serde_json::json!([]);
+        let tpl = store
+            .create_vi_template(
+                "Stay",
+                &agent.id,
+                r"C:\x\Add.vi",
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                &inputs,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let err = store
+            .transfer_vi_template(
+                &tpl.id,
+                &agent.id,
+                r"C:\cli.exe",
+                r"C:\getinfo.vi",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::SameAgent));
     }
 
     #[tokio::test]
@@ -1372,7 +1575,7 @@ mod tests {
         let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
         let inputs = serde_json::json!([]);
         store
-            .upsert_vi_template(
+            .insert_vi_template(
                 "A",
                 &agent_a.id,
                 &agent_a.id,
@@ -1386,7 +1589,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_vi_template(
+            .insert_vi_template(
                 "B",
                 &agent_b.id,
                 &agent_b.id,
@@ -1410,89 +1613,6 @@ mod tests {
 
         let all = store.list_vi_templates(None).await.unwrap();
         assert_eq!(all.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn vi_template_unique_agent_path() {
-        let store = test_store().await;
-        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
-        let inputs = serde_json::json!([]);
-        store
-            .upsert_vi_template(
-                "First",
-                &agent.id,
-                &agent.id,
-                r"C:\x\Add.vi",
-                r"C:\cli.exe",
-                r"C:\getinfo.vi",
-                &inputs,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .upsert_vi_template(
-                "Second",
-                &agent.id,
-                &agent.id,
-                r"C:\x\Add.vi",
-                r"C:\cli2.exe",
-                r"C:\getinfo2.vi",
-                &inputs,
-                true,
-                Some(10),
-            )
-            .await
-            .unwrap();
-
-        let listed = store.list_vi_templates(Some(&agent.id)).await.unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "Second");
-    }
-
-    #[tokio::test]
-    async fn vi_template_distribute_upsert_sets_origin_on_conflict() {
-        let store = test_store().await;
-        let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
-        let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
-        let inputs = serde_json::json!([]);
-        let (on_b, created) = store
-            .upsert_vi_template(
-                "Local",
-                &agent_b.id,
-                &agent_b.id,
-                r"C:\x\Add.vi",
-                r"C:\cli.exe",
-                r"C:\getinfo.vi",
-                &inputs,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-        assert!(created);
-        assert_eq!(on_b.origin_agent_id, agent_b.id);
-
-        let (distributed, was_created) = store
-            .upsert_vi_template_distribute(
-                "FromA",
-                &agent_b.id,
-                &agent_a.id,
-                r"C:\x\Add.vi",
-                r"C:\cli2.exe",
-                r"C:\getinfo2.vi",
-                &inputs,
-                true,
-                Some(45),
-            )
-            .await
-            .unwrap();
-        assert!(!was_created);
-        assert_eq!(distributed.origin_agent_id, agent_a.id);
-        assert_eq!(distributed.name, "FromA");
-        assert!(distributed.show_front_panel);
-        assert_eq!(distributed.timeout_secs, Some(45));
     }
 
     #[tokio::test]
