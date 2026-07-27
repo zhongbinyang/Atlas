@@ -4,3 +4,8 @@
 **/*.db
 
 .superpowers/
+
+.tmp/
+.vscode/
+*.pdf
+
