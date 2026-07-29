@@ -155,6 +155,7 @@ pub struct ViTemplateView {
     pub cli_path: String,
     pub getinfo_path: String,
     pub inputs: serde_json::Value,
+    pub outputs: serde_json::Value,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub created_at: String,
@@ -171,6 +172,8 @@ impl TryFrom<ViTemplateEnriched> for ViTemplateView {
     fn try_from(e: ViTemplateEnriched) -> Result<Self, Self::Error> {
         let inputs: serde_json::Value = serde_json::from_str(&e.template.inputs_json)
             .map_err(|err| format!("invalid inputs_json: {err}"))?;
+        let outputs: serde_json::Value = serde_json::from_str(&e.template.outputs_json)
+            .map_err(|err| format!("invalid outputs_json: {err}"))?;
         Ok(Self {
             id: e.template.id,
             name: e.template.name,
@@ -181,6 +184,7 @@ impl TryFrom<ViTemplateEnriched> for ViTemplateView {
             cli_path: e.template.cli_path,
             getinfo_path: e.template.getinfo_path,
             inputs,
+            outputs,
             show_front_panel: e.template.show_front_panel,
             timeout_secs: e.template.timeout_secs,
             created_at: e.template.created_at,
@@ -217,6 +221,8 @@ pub struct CreateViTemplateRequest {
     pub cli_path: String,
     pub getinfo_path: String,
     pub inputs: serde_json::Value,
+    #[serde(default = "default_empty_array")]
+    pub outputs: serde_json::Value,
     pub name: String,
     #[serde(default)]
     pub show_front_panel: bool,
@@ -248,6 +254,7 @@ pub struct ViRunQueueItemView {
     pub kind: String,
     pub vi_path: String,
     pub inputs: serde_json::Value,
+    pub outputs: serde_json::Value,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub enabled: bool,
@@ -285,6 +292,8 @@ pub struct ReplaceViRunQueueItem {
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
     let inputs: serde_json::Value = serde_json::from_str(&item.inputs_json)
         .map_err(|err| format!("invalid inputs_json: {err}"))?;
+    let outputs: serde_json::Value = serde_json::from_str(&item.outputs_json)
+        .map_err(|err| format!("invalid outputs_json: {err}"))?;
     let limits: serde_json::Value = serde_json::from_str(&item.limits_json)
         .map_err(|err| format!("invalid limits_json: {err}"))?;
     Ok(ViRunQueueItemView {
@@ -295,6 +304,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         kind: item.kind,
         vi_path: item.vi_path,
         inputs,
+        outputs,
         show_front_panel: item.show_front_panel,
         timeout_secs: item.timeout_secs,
         enabled: item.enabled,
@@ -823,6 +833,9 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     if !req.inputs.is_array() {
         return Some("inputs must be an array");
     }
+    if !req.outputs.is_array() {
+        return Some("outputs must be an array");
+    }
     if req.timeout_secs == Some(0) {
         return Some("timeout_secs must be greater than 0");
     }
@@ -992,6 +1005,7 @@ async fn create_vi_template(
             &cli_path,
             &getinfo_path,
             &req.inputs,
+            &req.outputs,
             req.show_front_panel,
             req.timeout_secs,
         )

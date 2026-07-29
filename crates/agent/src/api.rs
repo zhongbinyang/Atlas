@@ -91,6 +91,8 @@ struct LabviewRegisterTemplateRequest {
     #[serde(default)]
     inputs: Option<Value>,
     #[serde(default)]
+    outputs: Option<Value>,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     show_front_panel: bool,
@@ -515,6 +517,18 @@ async fn labview_register_template(
         None => Value::Array(vec![]),
     };
 
+    let outputs = match req.outputs {
+        Some(Value::Array(arr)) => Value::Array(arr),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "outputs must be an array" })),
+            )
+                .into_response();
+        }
+        None => Value::Array(vec![]),
+    };
+
     let agent_id = match crate::register::resolve_agent_id(
         &s.http_client,
         &s.center_url,
@@ -547,6 +561,7 @@ async fn labview_register_template(
         "cli_path": s.labview_cli.display().to_string(),
         "getinfo_path": s.labview_getinfo.display().to_string(),
         "inputs": inputs,
+        "outputs": outputs,
         "name": req.name.trim(),
         "show_front_panel": req.show_front_panel,
         "timeout_secs": req.timeout_secs,
@@ -814,6 +829,7 @@ async fn general_delay_register(
         "cli_path": "",
         "getinfo_path": "",
         "inputs": crate::general::delay_inputs(req.delay_ms),
+        "outputs": crate::general::delay_outputs(),
         "name": req.name.trim(),
         "show_front_panel": false,
         "timeout_secs": null,

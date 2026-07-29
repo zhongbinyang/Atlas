@@ -165,6 +165,9 @@ function showLvMsg(text, ok) {
   msg.className = ok ? 'msg ok' : 'msg err';
 }
 
+/** Last inspected / loaded LabVIEW outputs schema (registered with template). */
+let lvOutputs = [];
+
 function isJsonScalar(value) {
   return value !== null && typeof value === 'object';
 }
@@ -274,7 +277,8 @@ async function inspectVi() {
       return;
     }
     renderInputsTable(data.inputs || []);
-    showLvMsg('参数已加载', true);
+    lvOutputs = Array.isArray(data.outputs) ? data.outputs : [];
+    showLvMsg('参数已加载（入参 ' + (data.inputs || []).length + ' / 出参 ' + lvOutputs.length + '）', true);
   } catch (e) {
     showLvMsg('查询失败: ' + e.message, false);
   }
@@ -362,6 +366,7 @@ async function registerViTemplate() {
       body: JSON.stringify(Object.assign({
         vi_path: viPath,
         inputs: inputs,
+        outputs: lvOutputs,
         name: name,
       }, opts)),
     });
@@ -372,24 +377,17 @@ async function registerViTemplate() {
       return;
     }
     showLvMsg('已注册: ' + (data.name || data.id), true);
-    refreshTemplateLists();
+    await loadSeqRegistered();
   } catch (e) {
     showLvMsg('注册失败: ' + e.message, false);
   }
-}
-
-function showCenterAllMsg(text, ok) {
-  const msg = document.getElementById('lv-center-all-msg');
-  if (!msg) return;
-  msg.hidden = false;
-  msg.textContent = text;
-  msg.className = ok ? 'msg ok' : 'msg err';
 }
 
 function loadTemplateToEditor(t) {
   document.getElementById('lv-vi-path').value = t.vi_path || '';
   document.getElementById('lv-name').value = t.name || '';
   renderInputsTable(t.inputs || []);
+  lvOutputs = Array.isArray(t.outputs) ? t.outputs : [];
   document.getElementById('lv-show-fp').checked = !!t.show_front_panel;
   const timeoutEl = document.getElementById('lv-timeout');
   if (t.timeout_secs != null && t.timeout_secs > 0) {
@@ -400,36 +398,6 @@ function loadTemplateToEditor(t) {
   document.getElementById('lv-json-raw').textContent = JSON.stringify(t, null, 2);
   document.getElementById('lv-run-out').hidden = true;
   showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
-}
-
-async function renameRegisteredTemplate(t) {
-  const current = t.name || '';
-  const next = prompt('重命名', current);
-  if (next == null) return;
-  const name = String(next).trim();
-  if (!name) {
-    showCenterAllMsg('名称不能为空', false);
-    return;
-  }
-  if (name === current) return;
-  showCenterAllMsg('重命名中…', true);
-  try {
-    const resp = await fetch('/api/labview/templates/' + encodeURIComponent(t.id), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name }),
-    });
-    const data = await resp.json().catch(function () { return {}; });
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showCenterAllMsg('重命名失败: ' + err, false);
-      return;
-    }
-    showCenterAllMsg('已重命名: ' + (data.name || name), true);
-    await refreshTemplateLists();
-  } catch (e) {
-    showCenterAllMsg('重命名失败: ' + e.message, false);
-  }
 }
 
 function delayMsFromInputs(inputs) {
@@ -443,143 +411,8 @@ function delayMsFromInputs(inputs) {
   return null;
 }
 
-async function trialRegisteredTemplate(t) {
-  if (t.kind === 'delay' || t.vi_path === '__builtin__/delay') {
-    const ms = delayMsFromInputs(t.inputs);
-    if (ms == null) {
-      showCenterAllMsg('模板缺少 delay_ms', false);
-      return;
-    }
-    showCenterAllMsg('延迟试跑中: ' + (t.name || t.id) + '…', true);
-    try {
-      const resp = await fetch('/api/general/delay/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delay_ms: ms }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        const err = data.error && (data.error.message || data.error) || resp.status;
-        showCenterAllMsg('试跑失败: ' + err, false);
-        return;
-      }
-      showCenterAllMsg('试跑完成: ' + (t.name || t.id) + ' (' + ms + ' ms)', true);
-    } catch (e) {
-      showCenterAllMsg('试跑失败: ' + e.message, false);
-    }
-    return;
-  }
-  const viPath = t.vi_path;
-  if (!viPath) {
-    showCenterAllMsg('模板缺少 VI 路径', false);
-    return;
-  }
-  const opts = { show_front_panel: !!t.show_front_panel };
-  if (t.timeout_secs != null && t.timeout_secs > 0) {
-    opts.timeout_secs = t.timeout_secs;
-  }
-  showCenterAllMsg('试跑中: ' + (t.name || t.id) + '…', true);
-  const outEl = document.getElementById('lv-run-out');
-  outEl.hidden = false;
-  outEl.textContent = '…';
-  try {
-    const resp = await fetch('/api/labview/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        vi_path: viPath,
-        inputs: t.inputs || [],
-        show_front_panel: opts.show_front_panel,
-        timeout_secs: opts.timeout_secs,
-      }),
-    });
-    const data = await resp.json();
-    outEl.textContent = JSON.stringify(data, null, 2);
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showCenterAllMsg('试跑失败: ' + err, false);
-      return;
-    }
-    showCenterAllMsg('试跑完成: ' + (t.name || t.id), true);
-  } catch (e) {
-    outEl.textContent = e.message;
-    showCenterAllMsg('试跑失败: ' + e.message, false);
-  }
-}
-
-function renderCenterAllTemplates(templates) {
-  const tbody = document.getElementById('lv-center-all-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (!templates || templates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">中心暂无已注册功能</td></tr>';
-    return;
-  }
-  for (let i = 0; i < templates.length; i++) {
-    const t = templates[i];
-    const row = document.createElement('tr');
-    const originCol = escapeHtml(t.origin_agent_name || '—');
-    row.innerHTML =
-      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
-      '<td>' + escapeHtml(t.name || t.id || '—') + '</td>' +
-      '<td>' + originCol + '</td>' +
-      '<td class="mono">' + escapeHtml(t.vi_path || '—') + '</td>' +
-      '<td class="inputs-cell-host"></td>';
-    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
-    const trialBtn = document.createElement('button');
-    trialBtn.type = 'button';
-    trialBtn.textContent = '试跑';
-    trialBtn.addEventListener('click', function () {
-      trialRegisteredTemplate(t);
-    });
-    const renameBtn = document.createElement('button');
-    renameBtn.type = 'button';
-    renameBtn.textContent = '重命名';
-    renameBtn.addEventListener('click', function () {
-      renameRegisteredTemplate(t);
-    });
-    const loadBtn = document.createElement('button');
-    loadBtn.type = 'button';
-    loadBtn.textContent = '加载到编辑区';
-    loadBtn.addEventListener('click', function () {
-      loadTemplateToEditor(t);
-    });
-    const actions = document.createElement('td');
-    actions.appendChild(trialBtn);
-    actions.appendChild(document.createTextNode(' '));
-    actions.appendChild(renameBtn);
-    actions.appendChild(document.createTextNode(' '));
-    actions.appendChild(loadBtn);
-    row.appendChild(actions);
-    tbody.appendChild(row);
-  }
-}
-
-async function fetchCenterAllTemplates() {
-  const tbody = document.getElementById('lv-center-all-body');
-  if (!tbody) return;
-  try {
-    const resp = await fetch('/api/labview/all-templates');
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      tbody.innerHTML =
-        '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
-      showCenterAllMsg('加载失败: ' + err, false);
-      return;
-    }
-    renderCenterAllTemplates(Array.isArray(data) ? data : []);
-    const msg = document.getElementById('lv-center-all-msg');
-    if (msg && msg.className.indexOf('err') === -1) msg.hidden = true;
-  } catch (e) {
-    tbody.innerHTML =
-      '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
-    showCenterAllMsg('加载失败: ' + e.message, false);
-  }
-}
-
 async function refreshTemplateLists() {
-  await Promise.all([fetchCenterAllTemplates(), loadSeqRegistered()]);
+  await loadSeqRegistered();
 }
 
 document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
@@ -610,8 +443,6 @@ function showPage(page) {
     loadSequencePage();
   } else if (page === 'general') {
     fetchGeneralDelayTemplates();
-  } else if (page === 'workbench') {
-    fetchCenterAllTemplates();
   }
 }
 
@@ -694,31 +525,175 @@ function applyStepResults(steps) {
   }
 }
 
-async function editLimitsAt(index) {
-  if (seqRunning || seqPaused) return;
+let specEditIndex = null;
+
+function outputNamesFromSchema(outputs) {
+  if (!Array.isArray(outputs)) return [];
+  const names = [];
+  for (let i = 0; i < outputs.length; i++) {
+    const o = outputs[i];
+    if (!o) continue;
+    if (typeof o === 'string' && o.trim()) names.push(o.trim());
+    else if (o.name && String(o.name).trim()) names.push(String(o.name).trim());
+  }
+  return names;
+}
+
+function resolveStepOutputNames(item) {
+  let names = outputNamesFromSchema(item && item.outputs);
+  if (names.length) return names;
+  const tid = item && item.vi_template_id;
+  if (tid == null) return [];
+  for (let i = 0; i < seqRegistered.length; i++) {
+    if (String(seqRegistered[i].id) === String(tid)) {
+      return outputNamesFromSchema(seqRegistered[i].outputs);
+    }
+  }
+  return [];
+}
+
+function renderSpecModalRows(limits, outputNames) {
+  const tbody = document.getElementById('spec-modal-body');
+  tbody.innerHTML = '';
+  const rows = Array.isArray(limits) && limits.length ? limits : [{ output: '', min: null, max: null, unit: '' }];
+  for (let i = 0; i < rows.length; i++) {
+    const lim = rows[i] || {};
+    const tr = document.createElement('tr');
+    const select = document.createElement('select');
+    select.className = 'spec-output-select';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = outputNames.length ? '选择输出…' : '手动输入';
+    select.appendChild(blank);
+    for (let j = 0; j < outputNames.length; j++) {
+      const opt = document.createElement('option');
+      opt.value = outputNames[j];
+      opt.textContent = outputNames[j];
+      if (lim.output === outputNames[j]) opt.selected = true;
+      select.appendChild(opt);
+    }
+    const custom = document.createElement('option');
+    custom.value = '__custom__';
+    custom.textContent = '自定义…';
+    select.appendChild(custom);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'spec-output-custom mono';
+    nameInput.placeholder = '输出名';
+    nameInput.value = lim.output || '';
+    nameInput.hidden = outputNames.indexOf(lim.output) >= 0 || !lim.output;
+    if (lim.output && outputNames.indexOf(lim.output) < 0) {
+      select.value = '__custom__';
+      nameInput.hidden = false;
+    }
+    select.addEventListener('change', function () {
+      if (select.value === '__custom__') {
+        nameInput.hidden = false;
+        nameInput.focus();
+      } else {
+        nameInput.hidden = true;
+        nameInput.value = select.value;
+      }
+    });
+    const outCell = document.createElement('td');
+    outCell.appendChild(select);
+    outCell.appendChild(nameInput);
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.step = 'any';
+    minInput.className = 'spec-min mono';
+    minInput.value = lim.min == null ? '' : String(lim.min);
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.step = 'any';
+    maxInput.className = 'spec-max mono';
+    maxInput.value = lim.max == null ? '' : String(lim.max);
+    const unitInput = document.createElement('input');
+    unitInput.type = 'text';
+    unitInput.className = 'spec-unit mono';
+    unitInput.value = lim.unit || '';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.textContent = '删';
+    rm.addEventListener('click', function () {
+      tr.remove();
+      if (!tbody.children.length) renderSpecModalRows([], outputNames);
+    });
+    tr.appendChild(outCell);
+    const tdMin = document.createElement('td'); tdMin.appendChild(minInput); tr.appendChild(tdMin);
+    const tdMax = document.createElement('td'); tdMax.appendChild(maxInput); tr.appendChild(tdMax);
+    const tdUnit = document.createElement('td'); tdUnit.appendChild(unitInput); tr.appendChild(tdUnit);
+    const tdRm = document.createElement('td'); tdRm.appendChild(rm); tr.appendChild(tdRm);
+    tbody.appendChild(tr);
+  }
+}
+
+function collectSpecModalLimits() {
+  const rows = document.querySelectorAll('#spec-modal-body tr');
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const tr = rows[i];
+    const select = tr.querySelector('.spec-output-select');
+    const custom = tr.querySelector('.spec-output-custom');
+    let name = '';
+    if (select && select.value && select.value !== '__custom__') name = select.value;
+    else if (custom) name = custom.value.trim();
+    if (!name) continue;
+    const minRaw = tr.querySelector('.spec-min').value.trim();
+    const maxRaw = tr.querySelector('.spec-max').value.trim();
+    const unit = tr.querySelector('.spec-unit').value.trim();
+    const lim = { output: name, min: null, max: null };
+    if (minRaw !== '') lim.min = Number(minRaw);
+    if (maxRaw !== '') lim.max = Number(maxRaw);
+    if (unit) lim.unit = unit;
+    out.push(lim);
+  }
+  return out;
+}
+
+function openSpecEditor(index) {
   const item = seqSelected[index];
   if (!item) return;
-  const current = Array.isArray(item.limits) ? item.limits : [];
-  const raw = prompt(
-    '编辑 Spec 限值 (JSON 数组，字段 output/min/max/unit):',
-    JSON.stringify(current, null, 2)
-  );
-  if (raw == null) return;
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    showSeqMsg('Spec JSON 无效: ' + e.message, false);
-    return;
-  }
-  if (!Array.isArray(parsed)) {
-    showSeqMsg('Spec 必须是 JSON 数组', false);
-    return;
-  }
-  item.limits = parsed;
+  specEditIndex = index;
+  const names = resolveStepOutputNames(item);
+  const hint = document.getElementById('spec-modal-hint');
+  hint.textContent = names.length
+    ? ('可选输出: ' + names.join(', '))
+    : '该步骤尚未注册输出参数；可手动填写输出名，或重新注册模板后再设置 Spec。';
+  renderSpecModalRows(item.limits || [], names);
+  document.getElementById('spec-modal').hidden = false;
+}
+
+function closeSpecModal() {
+  document.getElementById('spec-modal').hidden = true;
+  specEditIndex = null;
+}
+
+async function editLimitsAt(index) {
+  if (seqRunning || seqPaused) return;
+  openSpecEditor(index);
+}
+
+document.getElementById('spec-add-row-btn').addEventListener('click', function () {
+  if (specEditIndex == null) return;
+  const item = seqSelected[specEditIndex];
+  const names = resolveStepOutputNames(item);
+  const current = collectSpecModalLimits();
+  current.push({ output: '', min: null, max: null, unit: '' });
+  renderSpecModalRows(current, names);
+});
+
+document.getElementById('spec-cancel-btn').addEventListener('click', closeSpecModal);
+
+document.getElementById('spec-save-btn').addEventListener('click', async function () {
+  if (specEditIndex == null) return;
+  const item = seqSelected[specEditIndex];
+  if (!item) { closeSpecModal(); return; }
+  item.limits = collectSpecModalLimits();
+  closeSpecModal();
   renderSeqSelected();
   await saveQueue();
-}
+});
 
 async function loadSequencePage() {
   await Promise.all([loadSeqRegistered(), loadQueue()]);
@@ -1290,31 +1265,16 @@ function renderGeneralDelayTemplates(templates) {
       '<td>' + escapeHtml(t.name || '—') + '</td>' +
       '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>' +
       '<td class="mono">' + escapeHtml(ms != null ? String(ms) : '—') + '</td>';
-    const trialBtn = document.createElement('button');
-    trialBtn.type = 'button';
-    trialBtn.textContent = '试跑';
-    trialBtn.addEventListener('click', function () { trialGeneralDelayTemplate(t); });
-    const renameBtn = document.createElement('button');
-    renameBtn.type = 'button';
-    renameBtn.textContent = '重命名';
-    renameBtn.addEventListener('click', async function () {
-      await renameRegisteredTemplate(t);
-      await fetchGeneralDelayTemplates();
-    });
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
-    loadBtn.textContent = '加载';
+    loadBtn.textContent = '加载到编辑区';
     loadBtn.addEventListener('click', function () {
       document.getElementById('gen-delay-name').value = t.name || '';
       const dms = delayMsFromInputs(t.inputs);
       document.getElementById('gen-delay-ms').value = dms != null ? String(dms) : '1000';
-      showGenDelayMsg('已加载: ' + (t.name || t.id), true);
+      showGenDelayMsg('已加载到编辑区: ' + (t.name || t.id), true);
     });
     const actions = document.createElement('td');
-    actions.appendChild(trialBtn);
-    actions.appendChild(document.createTextNode(' '));
-    actions.appendChild(renameBtn);
-    actions.appendChild(document.createTextNode(' '));
     actions.appendChild(loadBtn);
     row.appendChild(actions);
     tbody.appendChild(row);

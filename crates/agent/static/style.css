@@ -578,12 +578,66 @@ th {
   word-break: break-word;
 }
 
-#lv-center-all-section {
-  margin-top: 1.5rem;
-}
-
 .muted-hint {
   color: var(--muted);
   font-size: 0.85rem;
   margin: 0.25rem 0 0.75rem;
+}
+
+.spec-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(21, 32, 43, 0.45);
+  padding: 1rem;
+}
+
+.spec-modal[hidden] {
+  display: none;
+}
+
+.spec-modal-card {
+  width: min(40rem, 100%);
+  max-height: min(80vh, 40rem);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem 1.1rem;
+  box-shadow: 0 12px 32px rgba(21, 32, 43, 0.22);
+}
+
+.spec-modal-card h3 {
+  margin: 0 0 0.35rem;
+}
+
+.spec-edit-table {
+  width: 100%;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.spec-edit-table th,
+.spec-edit-table td {
+  padding: 0.35rem 0.4rem;
+  vertical-align: middle;
+}
+
+.spec-edit-table select,
+.spec-edit-table input {
+  width: 100%;
+  max-width: 9rem;
+}
+
+.spec-output-custom {
+  margin-top: 0.25rem;
+}
+
+.spec-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }

@@ -88,6 +88,7 @@ pub struct ViTemplate {
     pub cli_path: String,
     pub getinfo_path: String,
     pub inputs_json: String,
+    pub outputs_json: String,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub created_at: String,
@@ -114,6 +115,7 @@ pub struct ViRunQueueItem {
     pub kind: String,
     pub vi_path: String,
     pub inputs_json: String,
+    pub outputs_json: String,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub enabled: bool,
@@ -595,22 +597,25 @@ impl Store {
         cli_path: &str,
         getinfo_path: &str,
         inputs: &serde_json::Value,
+        outputs: &serde_json::Value,
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<ViTemplate, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let inputs_json = serde_json::to_string(inputs)
             .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let outputs_json = serde_json::to_string(outputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("outputs json: {e}")))?;
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             INSERT INTO vi_templates (
                 name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+                inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING
                 id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+                inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             "#,
         )
         .bind(name)
@@ -620,6 +625,7 @@ impl Store {
         .bind(cli_path)
         .bind(getinfo_path)
         .bind(&inputs_json)
+        .bind(&outputs_json)
         .bind(i64::from(show_front_panel))
         .bind(timeout_secs)
         .bind(&now)
@@ -640,7 +646,7 @@ impl Store {
             r#"
             SELECT
                 id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+                inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE name = $1
             "#,
@@ -727,6 +733,8 @@ impl Store {
         let vi_path = vi_path.unwrap_or(&source.vi_path);
         let inputs: serde_json::Value = serde_json::from_str(&source.inputs_json)
             .map_err(|e| TransferError::Db(sqlx::Error::Protocol(format!("inputs json: {e}"))))?;
+        let outputs: serde_json::Value = serde_json::from_str(&source.outputs_json)
+            .map_err(|e| TransferError::Db(sqlx::Error::Protocol(format!("outputs json: {e}"))))?;
 
         self.insert_vi_template(
             &source.name,
@@ -736,6 +744,7 @@ impl Store {
             cli_path,
             getinfo_path,
             &inputs,
+            &outputs,
             source.show_front_panel,
             source.timeout_secs,
         )
@@ -811,6 +820,7 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<ViTemplate, sqlx::Error> {
+        let outputs = serde_json::json!([]);
         self.insert_vi_template(
             name,
             origin_agent_id,
@@ -819,6 +829,7 @@ impl Store {
             cli_path,
             getinfo_path,
             inputs,
+            &outputs,
             show_front_panel,
             timeout_secs,
         )
@@ -834,7 +845,7 @@ impl Store {
             r#"
             SELECT
                 id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+                inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE ($1::text IS NULL OR origin_agent_id = $1)
               AND ($2::text IS NULL OR kind = $2)
@@ -857,7 +868,7 @@ impl Store {
             r#"
             SELECT
                 t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
-                t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                t.getinfo_path, t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
                 t.created_at, o.name AS origin_agent_name
             FROM vi_templates t
             LEFT JOIN agents o ON o.id = t.origin_agent_id
@@ -881,7 +892,7 @@ impl Store {
             r#"
             SELECT
                 t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
-                t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                t.getinfo_path, t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
                 t.created_at, o.name AS origin_agent_name
             FROM vi_templates t
             LEFT JOIN agents o ON o.id = t.origin_agent_id
@@ -899,7 +910,7 @@ impl Store {
             r#"
             SELECT
                 id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
-                inputs_json, show_front_panel, timeout_secs, created_at
+                inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE id = $1
             "#,
@@ -915,7 +926,7 @@ impl Store {
             r#"
             SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
                    t.name AS template_name, t.kind, t.vi_path,
-                   t.inputs_json, t.show_front_panel, t.timeout_secs,
+                   t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
                    q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note
             FROM vi_run_queue_items q
             JOIN vi_templates t ON t.id = q.vi_template_id
@@ -1126,6 +1137,7 @@ struct ViTemplateRow {
     cli_path: String,
     getinfo_path: String,
     inputs_json: String,
+    outputs_json: String,
     show_front_panel: i64,
     timeout_secs: Option<i64>,
     created_at: String,
@@ -1142,6 +1154,7 @@ struct ViRunQueueItemRow {
     kind: String,
     vi_path: String,
     inputs_json: String,
+    outputs_json: String,
     show_front_panel: i64,
     timeout_secs: Option<i64>,
     enabled: bool,
@@ -1163,6 +1176,7 @@ impl ViRunQueueItemRow {
             kind: self.kind,
             vi_path: self.vi_path,
             inputs_json: self.inputs_json,
+            outputs_json: self.outputs_json,
             show_front_panel: self.show_front_panel != 0,
             timeout_secs: self.timeout_secs,
             enabled: self.enabled,
@@ -1184,6 +1198,7 @@ struct ViTemplateEnrichedRow {
     cli_path: String,
     getinfo_path: String,
     inputs_json: String,
+    outputs_json: String,
     show_front_panel: i64,
     timeout_secs: Option<i64>,
     created_at: String,
@@ -1201,6 +1216,7 @@ impl ViTemplateRow {
             cli_path: self.cli_path,
             getinfo_path: self.getinfo_path,
             inputs_json: self.inputs_json,
+            outputs_json: self.outputs_json,
             show_front_panel: self.show_front_panel != 0,
             timeout_secs: self.timeout_secs,
             created_at: self.created_at,
@@ -1220,6 +1236,7 @@ impl ViTemplateEnrichedRow {
                 cli_path: self.cli_path,
                 getinfo_path: self.getinfo_path,
                 inputs_json: self.inputs_json,
+                outputs_json: self.outputs_json,
                 show_front_panel: self.show_front_panel != 0,
                 timeout_secs: self.timeout_secs,
                 created_at: self.created_at,
@@ -1420,6 +1437,7 @@ mod tests {
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
                 &inputs,
+                &serde_json::json!([]),
                 false,
                 None,
             )
@@ -1442,6 +1460,7 @@ mod tests {
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
                 &inputs,
+                &serde_json::json!([]),
                 false,
                 None,
             )
@@ -1456,6 +1475,7 @@ mod tests {
                 r"C:\cli2.exe",
                 r"C:\getinfo2.vi",
                 &inputs,
+                &serde_json::json!([]),
                 true,
                 Some(10),
             )
@@ -1652,6 +1672,7 @@ mod tests {
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
                 &inputs,
+                &serde_json::json!([]),
                 false,
                 None,
             )
@@ -1666,6 +1687,7 @@ mod tests {
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
                 &inputs,
+                &serde_json::json!([]),
                 false,
                 None,
             )

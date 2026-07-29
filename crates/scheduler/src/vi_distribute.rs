@@ -126,6 +126,7 @@ mod tests {
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
                 &inputs,
+                &serde_json::json!([]),
                 true,
                 Some(30),
             )

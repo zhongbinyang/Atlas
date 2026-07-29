@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS vi_templates (
   cli_path TEXT NOT NULL,
   getinfo_path TEXT NOT NULL,
   inputs_json TEXT NOT NULL,
+  outputs_json TEXT NOT NULL DEFAULT '[]',
   show_front_panel BIGINT NOT NULL DEFAULT 0,
   timeout_secs BIGINT,
   created_at TEXT NOT NULL,

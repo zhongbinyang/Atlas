@@ -45,6 +45,15 @@ pub fn delay_inputs(delay_ms: u64) -> Value {
     }])
 }
 
+/// Output schema registered with delay templates (matches run_delay_ms result keys).
+pub fn delay_outputs() -> Value {
+    serde_json::json!([
+        { "name": "ok", "className": "Boolean", "value": true },
+        { "name": "kind", "className": "String", "value": KIND_DELAY },
+        { "name": "delay_ms", "className": "Digital", "value": 0 }
+    ])
+}
+
 pub fn is_delay_template(kind: Option<&str>, vi_path: &str) -> bool {
     kind == Some(KIND_DELAY) || vi_path == DELAY_VI_PATH
 }

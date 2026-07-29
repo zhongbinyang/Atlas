@@ -58,6 +58,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/010_vi_run_queue_step_meta.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/011_vi_template_outputs.sql"),
+    )
+    .await?;
     Ok(())
 }
 
