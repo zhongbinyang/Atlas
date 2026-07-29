@@ -363,16 +363,14 @@ pub async fn run_sequence(
     cli: &Path,
     getinfo: &Path,
     items: &[QueueItemForRun],
+    opts: SequenceRunOpts,
 ) -> SequenceResponse {
     let cli = cli.to_path_buf();
     let getinfo = getinfo.to_path_buf();
     let items = items.to_vec();
     run_sequence_with_opts(
         &items,
-        SequenceRunOpts {
-            sn: None,
-            work_order: None,
-        },
+        opts,
         |item| {
             let cli = cli.clone();
             let getinfo = getinfo.clone();

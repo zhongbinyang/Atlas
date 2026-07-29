@@ -21,7 +21,7 @@ use crate::labview::{
     normalize_fs_path, run_cli,
     LabviewError, LabviewParam,
 };
-use crate::labview_sequence::{queue_items_for_run, run_sequence};
+use crate::labview_sequence::{queue_items_for_run, run_sequence, SequenceRunOpts};
 use crate::metrics::MetricsSampler;
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
@@ -60,6 +60,25 @@ struct LabviewRunRequest {
     #[serde(default)]
     show_front_panel: bool,
     timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RunSequenceRequest {
+    #[serde(default)]
+    sn: Option<String>,
+    #[serde(default)]
+    work_order: Option<String>,
+}
+
+fn normalize_run_sequence_opt(value: Option<String>) -> Option<String> {
+    value.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 #[derive(Deserialize)]
@@ -826,7 +845,17 @@ async fn general_delay_templates(State(s): State<AppState>) -> impl IntoResponse
     }
 }
 
-async fn labview_run_sequence(State(s): State<AppState>) -> impl IntoResponse {
+async fn labview_run_sequence(
+    State(s): State<AppState>,
+    body: Option<Json<RunSequenceRequest>>,
+) -> impl IntoResponse {
+    let run_opts = body
+        .map(|Json(req)| SequenceRunOpts {
+            sn: normalize_run_sequence_opt(req.sn),
+            work_order: normalize_run_sequence_opt(req.work_order),
+        })
+        .unwrap_or_default();
+
     if let Err("busy") = s.slot.try_acquire().await {
         return (
             StatusCode::CONFLICT,
@@ -893,7 +922,7 @@ async fn labview_run_sequence(State(s): State<AppState>) -> impl IntoResponse {
             .into_response();
     }
 
-    let resp = run_sequence(&s.labview_cli, &s.labview_getinfo, &items).await;
+    let resp = run_sequence(&s.labview_cli, &s.labview_getinfo, &items, run_opts).await;
     s.slot.release().await;
     (StatusCode::OK, Json(resp)).into_response()
 }
@@ -1583,6 +1612,61 @@ mod tests {
             .method("POST")
             .uri("/api/labview/run-sequence")
             .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "run queue is empty");
+    }
+
+    #[tokio::test]
+    async fn labview_run_sequence_optional_body_empty_queue_still_400() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "agent-uuid-1",
+                "name": "test-host",
+                "ip": "127.0.0.1",
+                "port": 8080,
+                "status": "online",
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "busy": false,
+                "last_seen_at": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/vi-run-queue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/run-sequence")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "sn": "  ",
+                    "work_order": "WO-1"
+                }))
+                .unwrap(),
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
