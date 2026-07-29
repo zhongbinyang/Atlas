@@ -1,8 +1,8 @@
-# 调度中心 + Agent
+# ATLAS 光模块测试监控系统
 
-Rust 工作区：中心 **调度服务**（端口 **26630**）与 Windows **Agent** 节点（端口 **26631**）。调度中心用 SQLite 保存 Agent、任务模板与任务，轮询 Agent 状态并下发 shell 命令。两端均提供中文 WebUI 与 REST API。
+Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 SQLite 保存机台、VI 模板与任务，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。
 
-WebUI 采用「产线工控清爽」壳层：调度中心以 hash 路由展示 **机台卡片**（`#/machines`）、**Agent 详情**（`#/agents/{id}`）与 **已注册功能**（`#/functions`）；Agent 端仍为 VI / 序列工作台。两端共享同一套 CSS 设计令牌（`static_tokens` 测试锁定 `:root` 一致）。
+WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能**；Agent 为紧凑状态条 + VI / 序列工作台。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
 
 ## 安全提示
 
@@ -84,9 +84,9 @@ WebUI 采用「产线工控清爽」壳层：调度中心以 hash 路由展示 *
 | 位置 | 路由 / 分区 | 说明 |
 |------|-------------|------|
 | Agent WebUI（`:26631`） | VI / **序列** | VI 工作台：inspect、试跑、**注册到中心**；**序列** 页双列表编排队列并 **按序执行** |
-| 调度中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
-| 调度中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览 + **截图** / **历史** / **文件** |
-| 调度中心 WebUI | `#/functions` | **已注册功能**：按机台筛选；**重命名** / **分发** / **删除**（无中心注册） |
+| ATLAS 中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
+| ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览 + **截图** / **历史** / **文件** |
+| ATLAS 中心 WebUI | `#/functions` | **已注册功能**：按机台筛选；**重命名** / **分发** / **删除**（无中心注册） |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。Shell 任务 API 仍存在，但中心 WebUI **不再提供**「作业」界面。
 
@@ -112,7 +112,7 @@ $env:SCHEDULER_DATABASE_URL = "sqlite:data/scheduler.db"
 cargo run -p scheduler
 ```
 
-浏览器打开 `http://127.0.0.1:26630` 进入调度中心 WebUI。
+浏览器打开 `http://127.0.0.1:26630` 进入 ATLAS 中心 WebUI。
 
 **终端 B — Agent（Windows）：**
 
@@ -131,7 +131,7 @@ cargo run -p agent
 
 ## 桌面截图
 
-调度中心 WebUI 的 Agent **详情页**（`#/agents/{id}`）提供 **截图** / **历史** 操作：
+ATLAS 中心 WebUI 的 Agent **详情页**（`#/agents/{id}`）提供 **截图** / **历史** 操作：
 
 - **截图**：调度中心代理请求在线 Agent 的 `GET /api/screenshot`，捕获成功后归档并弹窗预览 PNG。
 - **历史**：分页查看该 Agent 已归档截图（时间、大小、查看）。
@@ -146,7 +146,7 @@ cargo run -p agent
 
 ## 文件浏览
 
-调度中心 WebUI 的 Agent **详情页**提供 **文件** 操作，只读浏览 Agent 配置根目录下的文件树：
+ATLAS 中心 WebUI 的 Agent **详情页**提供 **文件** 操作，只读浏览 Agent 配置根目录下的文件树：
 
 - **列表与导航**：面包屑进入子目录；目录行可 **打开**，文件名与大小列于表格。
 - **预览与下载**：仅 **`.txt`**、**`.gif`**（扩展名大小写不敏感）支持 **预览** 与 **下载**；其它扩展名仅列名，无内容操作。
