@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>调度中心</title>
+  <title>ATLAS — 光模块测试监控</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
@@ -12,7 +12,11 @@
 <body>
   <header class="topbar">
     <div class="topbar-brand">
-      <h1 class="brand">调度中心</h1>
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-block">
+        <h1 class="brand">ATLAS</h1>
+        <p class="brand-sub">光模块测试监控</p>
+      </div>
       <nav class="view-tabs" aria-label="主分区">
         <button type="button" id="nav-machines" class="tab active" data-route="machines">机台</button>
         <button type="button" id="nav-functions" class="tab" data-route="functions">已注册功能</button>
@@ -36,7 +40,7 @@
           <button type="button" id="agent-detail-back" class="btn-sm">返回机台</button>
           <h2 id="agent-detail-name" class="view-title">—</h2>
         </div>
-        <div id="agent-detail-status" class="agent-status-bar"></div>
+        <div id="agent-detail-status" class="status-rail"></div>
         <div id="agent-detail-actions" class="detail-actions"></div>
       </section>
     </div>

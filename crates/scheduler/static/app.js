@@ -470,7 +470,7 @@ function renderAgents() {
     const kind = agentStatusKind(a);
     const card = document.createElement('button');
     card.type = 'button';
-    card.className = 'agent-card' + (kind === 'offline' ? ' agent-card-offline' : '');
+    card.className = 'agent-card agent-card-' + kind;
     card.innerHTML =
       '<div class="agent-card-title">' + escapeHtml(a.name) + '</div>' +
       '<div class="agent-card-meta mono">' + escapeHtml(a.ip + ':' + a.port) + '</div>' +
@@ -493,6 +493,7 @@ function renderAgentDetail(agentId) {
   }
   document.getElementById('agent-detail-name').textContent = a.name;
   const bar = document.getElementById('agent-detail-status');
+  bar.className = 'status-rail';
   const seen = a.last_seen_at ? escapeHtml(a.last_seen_at) : '—';
   bar.innerHTML =
     '<div><span class="label">状态</span><div><span class="dot ' + agentStatusKind(a) + '"></span> ' +

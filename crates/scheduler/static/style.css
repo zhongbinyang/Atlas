@@ -21,7 +21,23 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(180deg, #e8eef4 0%, var(--bg) 28%),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 23px,
+      rgba(21, 32, 43, 0.035) 23px,
+      rgba(21, 32, 43, 0.035) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 23px,
+      rgba(21, 32, 43, 0.035) 23px,
+      rgba(21, 32, 43, 0.035) 24px
+    );
   color: var(--text);
   font-family: var(--font);
   line-height: 1.5;
@@ -45,12 +61,41 @@ body {
   flex-wrap: wrap;
 }
 
+.brand-mark {
+  width: 4px;
+  height: 2.25rem;
+  border-radius: 1px;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: markPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes markPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark { animation: none; }
+  .view-active { animation: none; }
+  .agent-card { transition: none; }
+}
+
+.brand-block { display: flex; flex-direction: column; gap: 0.05rem; }
 .brand {
   font-family: var(--font-brand);
   font-weight: 700;
-  color: var(--accent);
-  font-size: 1.35rem;
+  letter-spacing: 0.04em;
+  font-size: 1.5rem;
+  color: var(--text);
   margin: 0;
+  line-height: 1.1;
+}
+.brand-sub {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .view-tabs {
@@ -121,6 +166,7 @@ body {
   text-align: left;
   background: var(--panel);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem;
   cursor: pointer;
@@ -135,7 +181,10 @@ body {
   background: var(--panel);
 }
 
+.agent-card-ok { border-left-color: var(--ok); }
+.agent-card-busy { border-left-color: var(--busy); }
 .agent-card-offline {
+  border-left-color: var(--muted);
   opacity: 0.72;
 }
 
@@ -197,21 +246,21 @@ body {
   margin-left: 0;
 }
 
-.agent-status-bar {
+.status-rail {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem 1rem;
   padding: 0.85rem 1rem;
-  margin-bottom: 1rem;
-  background: var(--surface);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  margin-bottom: 1rem;
 }
-
-.agent-status-bar .label {
+.status-rail .label {
   display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--muted);
   margin-bottom: 0.2rem;
 }
