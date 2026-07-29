@@ -113,10 +113,6 @@ pub struct SequenceTemplate {
     pub created_by_agent_id: String,
     pub created_at: String,
     pub updated_at: String,
-    pub last_run_overall: Option<String>,
-    pub last_run_sn: Option<String>,
-    pub last_run_work_order: Option<String>,
-    pub last_run_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,23 +136,6 @@ pub struct SequenceTemplateEnriched {
     pub template: SequenceTemplate,
     pub created_by_agent_name: Option<String>,
     pub step_count: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SequenceTemplateLastStep {
-    pub position: i64,
-    pub template_source: String,
-    pub vi_template_id: Option<i64>,
-    pub general_template_id: Option<i64>,
-    pub name: String,
-    pub kind: String,
-    pub ok: bool,
-    pub status: String,
-    pub measured_json: Option<String>,
-    pub limits_json: Option<String>,
-    pub result_json: Option<String>,
-    pub error_text: Option<String>,
-    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -802,8 +781,7 @@ impl Store {
               (name, note, created_by_agent_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING
-              id, name, note, created_by_agent_id, created_at, updated_at,
-              last_run_overall, last_run_sn, last_run_work_order, last_run_at
+              id, name, note, created_by_agent_id, created_at, updated_at
             "#,
         )
         .bind(name)
@@ -846,7 +824,6 @@ impl Store {
             r#"
             SELECT
               t.id, t.name, t.note, t.created_by_agent_id, t.created_at, t.updated_at,
-              t.last_run_overall, t.last_run_sn, t.last_run_work_order, t.last_run_at,
               a.name AS created_by_agent_name,
               COUNT(s.id) AS step_count
             FROM sequence_templates t
@@ -865,8 +842,7 @@ impl Store {
         let row = sqlx::query_as::<_, SequenceTemplateRow>(
             r#"
             SELECT
-              id, name, note, created_by_agent_id, created_at, updated_at,
-              last_run_overall, last_run_sn, last_run_work_order, last_run_at
+              id, name, note, created_by_agent_id, created_at, updated_at
             FROM sequence_templates
             WHERE id = $1
             "#,
@@ -898,6 +874,14 @@ impl Store {
         Ok(rows.into_iter().map(|r| r.into_step()).collect())
     }
 
+    pub async fn delete_sequence_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM sequence_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn load_sequence_template_to_agent(
         &self,
         sequence_template_id: i64,
@@ -922,84 +906,6 @@ impl Store {
             })
             .collect();
         self.replace_vi_run_queue(agent_id, &items).await
-    }
-
-    pub async fn replace_sequence_template_last_run(
-        &self,
-        sequence_template_id: i64,
-        overall: &str,
-        sn: Option<&str>,
-        work_order: Option<&str>,
-        steps: &[SequenceTemplateLastStep],
-    ) -> Result<(), sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            r#"
-            UPDATE sequence_templates
-            SET last_run_overall = $1, last_run_sn = $2, last_run_work_order = $3, last_run_at = $4, updated_at = $4
-            WHERE id = $5
-            "#,
-        )
-        .bind(overall)
-        .bind(sn)
-        .bind(work_order)
-        .bind(&now)
-        .bind(sequence_template_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("DELETE FROM sequence_template_last_steps WHERE sequence_template_id = $1")
-            .bind(sequence_template_id)
-            .execute(&mut *tx)
-            .await?;
-        for step in steps {
-            sqlx::query(
-                r#"
-                INSERT INTO sequence_template_last_steps
-                  (sequence_template_id, position, template_source, vi_template_id, general_template_id,
-                   name, kind, ok, status, measured_json, limits_json, result_json, error_text, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                "#,
-            )
-            .bind(sequence_template_id)
-            .bind(step.position)
-            .bind(&step.template_source)
-            .bind(step.vi_template_id)
-            .bind(step.general_template_id)
-            .bind(&step.name)
-            .bind(&step.kind)
-            .bind(step.ok)
-            .bind(&step.status)
-            .bind(step.measured_json.as_deref())
-            .bind(step.limits_json.as_deref())
-            .bind(step.result_json.as_deref())
-            .bind(step.error_text.as_deref())
-            .bind(&step.created_at)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub async fn list_sequence_template_last_steps(
-        &self,
-        sequence_template_id: i64,
-    ) -> Result<Vec<SequenceTemplateLastStep>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, SequenceTemplateLastStepRow>(
-            r#"
-            SELECT
-              position, template_source, vi_template_id, general_template_id,
-              name, kind, ok, status, measured_json, limits_json, result_json, error_text, created_at
-            FROM sequence_template_last_steps
-            WHERE sequence_template_id = $1
-            ORDER BY position ASC, id ASC
-            "#,
-        )
-        .bind(sequence_template_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| r.into_last_step()).collect())
     }
 
     pub async fn insert_vi_template(
@@ -1685,10 +1591,6 @@ struct SequenceTemplateRow {
     created_by_agent_id: String,
     created_at: String,
     updated_at: String,
-    last_run_overall: Option<String>,
-    last_run_sn: Option<String>,
-    last_run_work_order: Option<String>,
-    last_run_at: Option<String>,
 }
 
 impl SequenceTemplateRow {
@@ -1700,10 +1602,6 @@ impl SequenceTemplateRow {
             created_by_agent_id: self.created_by_agent_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
-            last_run_overall: self.last_run_overall,
-            last_run_sn: self.last_run_sn,
-            last_run_work_order: self.last_run_work_order,
-            last_run_at: self.last_run_at,
         }
     }
 }
@@ -1751,10 +1649,6 @@ struct SequenceTemplateEnrichedRow {
     created_by_agent_id: String,
     created_at: String,
     updated_at: String,
-    last_run_overall: Option<String>,
-    last_run_sn: Option<String>,
-    last_run_work_order: Option<String>,
-    last_run_at: Option<String>,
     created_by_agent_name: Option<String>,
     step_count: i64,
 }
@@ -1769,50 +1663,9 @@ impl SequenceTemplateEnrichedRow {
                 created_by_agent_id: self.created_by_agent_id,
                 created_at: self.created_at,
                 updated_at: self.updated_at,
-                last_run_overall: self.last_run_overall,
-                last_run_sn: self.last_run_sn,
-                last_run_work_order: self.last_run_work_order,
-                last_run_at: self.last_run_at,
             },
             created_by_agent_name: self.created_by_agent_name,
             step_count: self.step_count,
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct SequenceTemplateLastStepRow {
-    position: i64,
-    template_source: String,
-    vi_template_id: Option<i64>,
-    general_template_id: Option<i64>,
-    name: String,
-    kind: String,
-    ok: bool,
-    status: String,
-    measured_json: Option<String>,
-    limits_json: Option<String>,
-    result_json: Option<String>,
-    error_text: Option<String>,
-    created_at: String,
-}
-
-impl SequenceTemplateLastStepRow {
-    fn into_last_step(self) -> SequenceTemplateLastStep {
-        SequenceTemplateLastStep {
-            position: self.position,
-            template_source: self.template_source,
-            vi_template_id: self.vi_template_id,
-            general_template_id: self.general_template_id,
-            name: self.name,
-            kind: self.kind,
-            ok: self.ok,
-            status: self.status,
-            measured_json: self.measured_json,
-            limits_json: self.limits_json,
-            result_json: self.result_json,
-            error_text: self.error_text,
-            created_at: self.created_at,
         }
     }
 }

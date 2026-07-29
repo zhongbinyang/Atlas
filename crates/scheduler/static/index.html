@@ -116,12 +116,6 @@
       <section id="sequence-templates-section">
         <h2 class="view-title">序列模板</h2>
         <p id="sequence-templates-msg" class="msg" hidden></p>
-        <div class="form-grid vi-agent-row">
-          <label for="sequence-target-agent">加载到机台</label>
-          <select id="sequence-target-agent">
-            <option value="">请选择机台</option>
-          </select>
-        </div>
         <div class="table-scroll">
           <table>
             <thead>
@@ -130,13 +124,11 @@
                 <th>名称</th>
                 <th>步骤数</th>
                 <th>来源机台</th>
-                <th>最近结果</th>
-                <th>最近时间</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="sequence-templates-body">
-              <tr><td colspan="7" class="empty">暂无序列模板</td></tr>
+              <tr><td colspan="5" class="empty">暂无序列模板</td></tr>
             </tbody>
           </table>
         </div>
@@ -226,19 +218,6 @@
       <div class="modal-body">
         <pre id="file-preview-pre" hidden></pre>
         <img id="file-preview-img" alt="预览" hidden>
-      </div>
-    </div>
-  </div>
-
-  <div id="sequence-last-run-modal" class="modal" hidden>
-    <div class="modal-backdrop" data-close="sequence-last-run-modal"></div>
-    <div class="modal-panel modal-panel-wide">
-      <div class="modal-header">
-        <h2 id="sequence-last-run-title">最近一次结果</h2>
-        <button id="sequence-last-run-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <pre id="sequence-last-run-pre" class="mono"></pre>
       </div>
     </div>
   </div>

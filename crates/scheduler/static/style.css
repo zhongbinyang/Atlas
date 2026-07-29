@@ -634,12 +634,6 @@ pre {
   font-size: 1rem;
 }
 
-#sequence-last-run-pre {
-  max-height: 70vh;
-  overflow: auto;
-  margin: 0;
-}
-
 #view-functions .table-scroll {
   margin-top: 0.25rem;
 }

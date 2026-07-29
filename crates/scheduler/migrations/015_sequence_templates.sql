@@ -4,11 +4,7 @@ CREATE TABLE IF NOT EXISTS sequence_templates (
   note TEXT NOT NULL DEFAULT '',
   created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_run_overall TEXT,
-  last_run_sn TEXT,
-  last_run_work_order TEXT,
-  last_run_at TEXT
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sequence_template_steps (

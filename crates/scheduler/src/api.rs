@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
     Agent, CreateTaskParams, GeneralTemplateEnriched, QueueReplaceError, Screenshot,
-    SequenceTemplateEnriched, SequenceTemplateLastStep, SequenceTemplateStep, Store, Task,
-    TaskTemplate, UpdateTemplateParams, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
+    SequenceTemplateEnriched, SequenceTemplateStep, Store, Task, TaskTemplate,
+    UpdateTemplateParams, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
     ViTemplatePatch,
 };
 use crate::vi_distribute::{copy_template, TransferApiError};
@@ -199,10 +199,6 @@ pub struct SequenceTemplateListItemView {
     pub created_at: String,
     pub updated_at: String,
     pub step_count: i64,
-    pub last_run_overall: Option<String>,
-    pub last_run_sn: Option<String>,
-    pub last_run_work_order: Option<String>,
-    pub last_run_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,38 +211,7 @@ pub struct SequenceTemplateDetailView {
     pub created_at: String,
     pub updated_at: String,
     pub step_count: i64,
-    pub last_run_overall: Option<String>,
-    pub last_run_sn: Option<String>,
-    pub last_run_work_order: Option<String>,
-    pub last_run_at: Option<String>,
     pub steps: Vec<SequenceTemplateStepView>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequenceTemplateLastStepView {
-    pub position: i64,
-    pub template_source: String,
-    pub vi_template_id: Option<i64>,
-    pub general_template_id: Option<i64>,
-    pub name: String,
-    pub kind: String,
-    pub ok: bool,
-    pub status: String,
-    pub measured: Option<serde_json::Value>,
-    pub limits: Option<serde_json::Value>,
-    pub result: Option<serde_json::Value>,
-    pub error: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequenceTemplateLastRunView {
-    pub sequence_template_id: i64,
-    pub overall: Option<String>,
-    pub sn: Option<String>,
-    pub work_order: Option<String>,
-    pub ran_at: Option<String>,
-    pub steps: Vec<SequenceTemplateLastStepView>,
 }
 
 fn agent_display_name(name: Option<String>) -> String {
@@ -330,41 +295,7 @@ fn sequence_template_list_item_view(t: SequenceTemplateEnriched) -> SequenceTemp
         created_at: t.template.created_at,
         updated_at: t.template.updated_at,
         step_count: t.step_count,
-        last_run_overall: t.template.last_run_overall,
-        last_run_sn: t.template.last_run_sn,
-        last_run_work_order: t.template.last_run_work_order,
-        last_run_at: t.template.last_run_at,
     }
-}
-
-fn sequence_template_last_step_view(step: SequenceTemplateLastStep) -> Result<SequenceTemplateLastStepView, String> {
-    Ok(SequenceTemplateLastStepView {
-        position: step.position,
-        template_source: step.template_source,
-        vi_template_id: step.vi_template_id,
-        general_template_id: step.general_template_id,
-        name: step.name,
-        kind: step.kind,
-        ok: step.ok,
-        status: step.status,
-        measured: step
-            .measured_json
-            .as_deref()
-            .map(|s| parse_json_text(s, "measured_json"))
-            .transpose()?,
-        limits: step
-            .limits_json
-            .as_deref()
-            .map(|s| parse_json_text(s, "limits_json"))
-            .transpose()?,
-        result: step
-            .result_json
-            .as_deref()
-            .map(|s| parse_json_text(s, "result_json"))
-            .transpose()?,
-        error: step.error_text,
-        created_at: step.created_at,
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,31 +321,6 @@ pub struct CreateSequenceTemplateRequest {
 #[derive(Debug, Deserialize)]
 pub struct LoadSequenceTemplateToAgentRequest {
     pub agent_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SaveSequenceTemplateLastRunRequest {
-    pub overall: String,
-    pub sn: Option<String>,
-    pub work_order: Option<String>,
-    #[serde(default)]
-    pub steps: Vec<SaveSequenceTemplateLastStepRequest>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SaveSequenceTemplateLastStepRequest {
-    pub position: i64,
-    pub template_source: String,
-    pub vi_template_id: Option<i64>,
-    pub general_template_id: Option<i64>,
-    pub name: String,
-    pub kind: String,
-    pub ok: bool,
-    pub status: String,
-    pub measured: Option<serde_json::Value>,
-    pub limits: Option<serde_json::Value>,
-    pub result: Option<serde_json::Value>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -728,15 +634,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/sequence-templates/{id}",
-            get(get_sequence_template),
+            get(get_sequence_template).delete(delete_sequence_template),
         )
         .route(
             "/api/sequence-templates/{id}/load-to-agent",
             post(load_sequence_template_to_agent),
-        )
-        .route(
-            "/api/sequence-templates/{id}/last-run",
-            get(get_sequence_template_last_run).post(save_sequence_template_last_run),
         )
         .route(
             "/api/agents/{id}/screenshots",
@@ -1687,10 +1589,6 @@ async fn get_sequence_template(
         created_at: template.created_at,
         updated_at: template.updated_at,
         step_count: step_views.len() as i64,
-        last_run_overall: template.last_run_overall,
-        last_run_sn: template.last_run_sn,
-        last_run_work_order: template.last_run_work_order,
-        last_run_at: template.last_run_at,
         steps: step_views,
     };
     (StatusCode::OK, Json(view)).into_response()
@@ -1735,129 +1633,21 @@ async fn load_sequence_template_to_agent(
     }
 }
 
-async fn get_sequence_template_last_run(
+async fn delete_sequence_template(
     State(s): State<AppState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let template = match s.store.get_sequence_template(id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    error: "sequence template not found".into(),
-                }),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!("get sequence template last run template: {e}");
-            return db_error().into_response();
-        }
-    };
-    let steps = match s.store.list_sequence_template_last_steps(id).await {
-        Ok(steps) => steps,
-        Err(e) => {
-            tracing::error!("list sequence template last steps: {e}");
-            return db_error().into_response();
-        }
-    };
-    let views: Result<Vec<_>, _> = steps.into_iter().map(sequence_template_last_step_view).collect();
-    match views {
-        Ok(steps) => (
-            StatusCode::OK,
-            Json(SequenceTemplateLastRunView {
-                sequence_template_id: id,
-                overall: template.last_run_overall,
-                sn: template.last_run_sn,
-                work_order: template.last_run_work_order,
-                ran_at: template.last_run_at,
-                steps,
-            }),
-        )
-            .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorBody { error: e })).into_response(),
-    }
-}
-
-async fn save_sequence_template_last_run(
-    State(s): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<SaveSequenceTemplateLastRunRequest>,
-) -> impl IntoResponse {
-    if req.overall.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
+    match s.store.delete_sequence_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
             Json(ErrorBody {
-                error: "overall is required".into(),
-            }),
-        )
-            .into_response();
-    }
-    let existing = match s.store.get_sequence_template(id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    error: "sequence template not found".into(),
-                }),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!("get sequence template before save last run: {e}");
-            return db_error().into_response();
-        }
-    };
-    let now = chrono::Utc::now().to_rfc3339();
-    let mut steps = Vec::with_capacity(req.steps.len());
-    for step in req.steps {
-        steps.push(SequenceTemplateLastStep {
-            position: step.position,
-            template_source: step.template_source,
-            vi_template_id: step.vi_template_id,
-            general_template_id: step.general_template_id,
-            name: step.name,
-            kind: step.kind,
-            ok: step.ok,
-            status: step.status,
-            measured_json: step.measured.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
-            limits_json: step.limits.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
-            result_json: step.result.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
-            error_text: step.error,
-            created_at: now.clone(),
-        });
-    }
-    match s
-        .store
-        .replace_sequence_template_last_run(
-            id,
-            req.overall.trim(),
-            req.sn.as_deref(),
-            req.work_order.as_deref(),
-            &steps,
-        )
-        .await
-    {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(SequenceTemplateLastRunView {
-                sequence_template_id: id,
-                overall: Some(req.overall.trim().to_string()),
-                sn: req.sn.or(existing.last_run_sn),
-                work_order: req.work_order.or(existing.last_run_work_order),
-                ran_at: Some(now),
-                steps: steps
-                    .into_iter()
-                    .map(sequence_template_last_step_view)
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap_or_default(),
+                error: "sequence template not found".into(),
             }),
         )
             .into_response(),
         Err(e) => {
-            tracing::error!("save sequence template last run: {e}");
+            tracing::error!("delete sequence template: {e}");
             db_error().into_response()
         }
     }

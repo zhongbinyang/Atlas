@@ -63,10 +63,30 @@ fn check_limit(rule: &LimitRule, outputs: &Value) -> StepJudge {
     StepJudge::Pass
 }
 
+/// Resolve an output value from either map form (`{"sum": 20}`) or LabVIEW
+/// array form (`{"outputs":[{"name":"sum","value":20}]}`).
+pub fn lookup_output_value<'a>(outputs: &'a Value, key: &str) -> Option<&'a Value> {
+    let candidates = [
+        outputs.get("outputs"),
+        Some(outputs),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(v) = candidate.get(key) {
+            return Some(v);
+        }
+        if let Some(arr) = candidate.as_array() {
+            for item in arr {
+                if item.get("name").and_then(|n| n.as_str()) == Some(key) {
+                    return item.get("value");
+                }
+            }
+        }
+    }
+    None
+}
+
 fn lookup_number(outputs: &Value, key: &str) -> Result<f64, String> {
-    let root = outputs.get("outputs").unwrap_or(outputs);
-    let v = root
-        .get(key)
+    let v = lookup_output_value(outputs, key)
         .ok_or_else(|| format!("missing output `{key}`"))?;
     v.as_f64()
         .or_else(|| v.as_i64().map(|n| n as f64))
@@ -75,10 +95,8 @@ fn lookup_number(outputs: &Value, key: &str) -> Result<f64, String> {
 }
 
 pub fn extract_sn_from_outputs(outputs: &Value) -> Option<String> {
-    let root = outputs.get("outputs").unwrap_or(outputs);
-
     for key in ["SN", "sn"] {
-        if let Some(v) = root.get(key) {
+        if let Some(v) = lookup_output_value(outputs, key) {
             let s = if let Some(s) = v.as_str() {
                 s.to_string()
             } else if let Some(n) = v.as_i64() {
@@ -202,5 +220,40 @@ mod tests {
             judge_limits(&limits, &json!({"a": 0.5, "b": 2.0})),
             StepJudge::Fail { .. }
         ));
+    }
+
+    #[test]
+    fn extract_sn_from_labview_outputs_array() {
+        assert_eq!(
+            extract_sn_from_outputs(&json!({
+                "outputs": [
+                    {"name": "sum", "value": 1},
+                    {"name": "SN", "value": "ABC123"}
+                ]
+            })).as_deref(),
+            Some("ABC123")
+        );
+    }
+
+    #[test]
+    fn labview_outputs_array_form_lookup() {
+        let body = json!({
+            "action": "run",
+            "outputs": [
+                {"className": "Digital", "name": "sum", "value": 20},
+                {"className": "String", "name": "output", "value": "hello world!!!"}
+            ]
+        });
+        let limits = vec![LimitRule {
+            output: "sum".into(),
+            min: Some(0.0),
+            max: Some(100.0),
+            unit: None,
+        }];
+        assert!(matches!(judge_limits(&limits, &body), StepJudge::Pass));
+        assert_eq!(
+            lookup_output_value(&body, "output").and_then(|v| v.as_str()),
+            Some("hello world!!!")
+        );
     }
 }

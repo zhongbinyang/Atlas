@@ -187,10 +187,27 @@ body {
 .seq-spec-cell .seq-spec-btn {
   font-size: 0.78rem;
   padding: 0.2rem 0.45rem;
-  max-width: 7rem;
+  max-width: 8.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.seq-inputs-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 7.5rem;
+}
+
+.seq-inputs-edit-btn {
+  white-space: nowrap;
+}
+
+.inputs-cell-host {
+  max-width: 8rem;
+  overflow: hidden;
+  vertical-align: middle;
 }
 
 .seq-fail-cell select {
@@ -658,6 +675,10 @@ th {
   padding-bottom: 6px;
 }
 
+#seq-inputs-modal {
+  z-index: 3010;
+}
+
 .spec-modal {
   position: fixed;
   inset: 0;
@@ -709,12 +730,6 @@ th {
 .spec-edit-table input.seq-input-edit {
   max-width: none;
   width: 100%;
-}
-
-.seq-inputs-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
 }
 
 .seq-template-section {

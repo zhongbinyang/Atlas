@@ -562,11 +562,11 @@ function setSeqControlsDisabled(disabled) {
 }
 
 function formatSpecSummary(limits) {
-  if (!Array.isArray(limits) || limits.length === 0) return '未设置';
+  if (!Array.isArray(limits) || limits.length === 0) return '编辑 Spec';
   if (limits.length === 1 && limits[0] && limits[0].output) {
-    return '1 项 · ' + limits[0].output;
+    return 'Spec · ' + limits[0].output;
   }
-  return limits.length + ' 项';
+  return 'Spec · ' + limits.length + ' 项';
 }
 
 function formatStepStatus(status) {
@@ -734,6 +734,8 @@ function collectSpecModalLimits() {
 function openSpecEditor(index) {
   const item = seqSelected[index];
   if (!item) return;
+  closeSeqInputsModal();
+  if (inputsPopoverEl) inputsPopoverEl.hidden = true;
   specEditIndex = index;
   const names = resolveStepOutputNames(item);
   const hint = document.getElementById('spec-modal-hint');
@@ -878,14 +880,14 @@ async function loadSequenceTemplates() {
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
     seqTemplates = Array.isArray(data) ? data : [];
     renderSequenceTemplates();
     updateSequenceTemplateBinding();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
@@ -894,7 +896,7 @@ function renderSequenceTemplates() {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (!seqTemplates.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无中心序列模板</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无中心序列模板</td></tr>';
     return;
   }
   for (let i = 0; i < seqTemplates.length; i++) {
@@ -905,21 +907,14 @@ function renderSequenceTemplates() {
       '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
       '<td>' + escapeHtml(t.name || '—') + (isActive ? ' <span class="kind-badge kind-general">当前</span>' : '') + '</td>' +
       '<td class="mono">' + escapeHtml(String(t.step_count || 0)) + '</td>' +
-      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>' +
-      '<td>' + escapeHtml(t.last_run_overall || '—') + '</td>';
+      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>';
     const actions = document.createElement('td');
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
     loadBtn.textContent = '加载到当前队列';
     loadBtn.disabled = seqRunning || seqPaused;
     loadBtn.addEventListener('click', function () { loadSequenceTemplateToQueue(t); });
-    const runBtn = document.createElement('button');
-    runBtn.type = 'button';
-    runBtn.textContent = '查看结果';
-    runBtn.addEventListener('click', function () { viewSequenceTemplateLastRun(t.id); });
     actions.appendChild(loadBtn);
-    actions.appendChild(document.createTextNode(' '));
-    actions.appendChild(runBtn);
     row.appendChild(actions);
     tbody.appendChild(row);
   }
@@ -1045,17 +1040,17 @@ function renderSeqSelected() {
 function renderSeqInputsCell(host, item, index) {
   if (!host) return;
   host.innerHTML = '';
+  host.classList.add('inputs-cell-host');
   const wrap = document.createElement('div');
   wrap.className = 'seq-inputs-cell';
-  const summaryHost = document.createElement('span');
-  attachInputsHover(summaryHost, item.inputs);
-  wrap.appendChild(summaryHost);
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
-  editBtn.className = 'btn-sm';
-  editBtn.textContent = '编辑';
+  editBtn.className = 'btn-sm seq-inputs-edit-btn';
+  editBtn.textContent = '编辑入参';
+  editBtn.title = formatInputsPretty(item.inputs);
   editBtn.disabled = seqRunning || seqPaused;
-  editBtn.addEventListener('click', function () {
+  editBtn.addEventListener('click', function (ev) {
+    ev.stopPropagation();
     openSeqInputsEditor(index);
   });
   wrap.appendChild(editBtn);
@@ -1115,6 +1110,8 @@ function openSeqInputsEditor(index) {
   const body = document.getElementById('seq-inputs-modal-body');
   const hint = document.getElementById('seq-inputs-modal-hint');
   if (!item || !modal || !body || !hint) return;
+  closeSpecModal();
+  if (inputsPopoverEl) inputsPopoverEl.hidden = true;
   seqInputsEditIndex = index;
   hint.textContent = (item.name || '步骤') + ' · 修改后只影响当前序列步骤';
   body.innerHTML = '';
@@ -1284,11 +1281,11 @@ function renderSeqResults(data) {
       errEl.textContent = step.error;
       row.appendChild(errEl);
     }
-    if (step.ok && step.result != null) {
+    if (step.result != null) {
       const details = document.createElement('details');
       details.className = 'seq-step-details';
       const summary = document.createElement('summary');
-      summary.textContent = '结果 JSON';
+      summary.textContent = '原始返回 JSON';
       const pre = document.createElement('pre');
       pre.className = 'mono lv-pre';
       pre.textContent = JSON.stringify(step.result, null, 2);
@@ -1381,35 +1378,6 @@ async function loadSequenceTemplateToQueue(tpl) {
     showSeqMsg('已加载模板: ' + (tpl.name || tpl.id), true);
   } catch (e) {
     showSeqMsg('加载模板失败: ' + e.message, false);
-  }
-}
-
-async function viewSequenceTemplateLastRun(id) {
-  if (!id) {
-    showSeqMsg('当前没有已绑定模板', false);
-    return;
-  }
-  try {
-    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(id) + '/last-run');
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showSeqMsg('查看结果失败: ' + err, false);
-      return;
-    }
-    if (!data.steps || !data.steps.length) {
-      showSeqMsg('该模板还没有已保存结果', false);
-      return;
-    }
-    renderSeqResults({ steps: data.steps });
-    updateSeqOverall({
-      overall: data.overall || '—',
-      sn: data.sn || '',
-      work_order: data.work_order || '',
-    });
-    showSeqMsg('已加载模板最近一次结果', true);
-  } catch (e) {
-    showSeqMsg('查看结果失败: ' + e.message, false);
   }
 }
 
@@ -1640,11 +1608,7 @@ async function fetchGeneralTemplates() {
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
 const seqSaveTemplateBtn = document.getElementById('seq-save-template-btn');
-const seqViewLastRunBtn = document.getElementById('seq-view-last-run-btn');
 if (seqSaveTemplateBtn) seqSaveTemplateBtn.addEventListener('click', saveCurrentQueueAsSequenceTemplate);
-if (seqViewLastRunBtn) seqViewLastRunBtn.addEventListener('click', function () {
-  viewSequenceTemplateLastRun(seqActiveTemplateId);
-});
 const seqContinueBtn = document.getElementById('seq-continue-btn');
 const seqAbortBtn = document.getElementById('seq-abort-btn');
 if (seqContinueBtn) seqContinueBtn.addEventListener('click', continueSequence);

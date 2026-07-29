@@ -246,7 +246,6 @@
           <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
           <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
           <button id="seq-save-template-btn" type="button">保存为模板</button>
-          <button id="seq-view-last-run-btn" type="button">查看已保存结果</button>
           <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
           <button id="seq-continue-btn" type="button" disabled>继续</button>
           <button id="seq-abort-btn" type="button" disabled>中止</button>
@@ -264,12 +263,11 @@
                   <th>名称</th>
                   <th>步骤数</th>
                   <th>来源机台</th>
-                  <th>最近结果</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody id="seq-templates-body">
-                <tr><td colspan="6" class="empty">加载中…</td></tr>
+                <tr><td colspan="5" class="empty">加载中…</td></tr>
               </tbody>
             </table>
           </div>

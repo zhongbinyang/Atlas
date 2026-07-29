@@ -171,7 +171,6 @@ async function fetchAgents() {
   agents = await resp.json();
   renderAgents();
   updateViTemplatesAgentFilter();
-  updateSequenceTargetAgents();
 }
 
 function formatByteSize(bytes) {
@@ -581,20 +580,6 @@ function showViTemplatesMsg(text, ok) {
   showMsg(document.getElementById('vi-templates-msg'), text, ok);
 }
 
-function updateSequenceTargetAgents() {
-  const sel = document.getElementById('sequence-target-agent');
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">请选择机台</option>';
-  for (const a of agents) {
-    const opt = document.createElement('option');
-    opt.value = a.id;
-    opt.textContent = a.name + ' (' + a.ip + ')';
-    sel.appendChild(opt);
-  }
-  if (prev && agents.some(a => a.id === prev)) sel.value = prev;
-}
-
 function showSequenceTemplatesMsg(text, ok) {
   showMsg(document.getElementById('sequence-templates-msg'), text, ok);
 }
@@ -787,13 +772,13 @@ async function fetchSequenceTemplates() {
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
     sequenceTemplates = Array.isArray(data) ? data : [];
     renderSequenceTemplates();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
@@ -802,7 +787,7 @@ function renderSequenceTemplates() {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (!sequenceTemplates.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无序列模板</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无序列模板</td></tr>';
     return;
   }
   for (const t of sequenceTemplates) {
@@ -811,78 +796,41 @@ function renderSequenceTemplates() {
       '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
       '<td>' + escapeHtml(t.name || '—') + '</td>' +
       '<td class="mono">' + escapeHtml(String(t.step_count || 0)) + '</td>' +
-      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>' +
-      '<td>' + escapeHtml(t.last_run_overall || '—') + '</td>' +
-      '<td>' + escapeHtml(t.last_run_at || '—') + '</td>';
+      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>';
     const actions = document.createElement('td');
-    const loadBtn = document.createElement('button');
-    loadBtn.type = 'button';
-    loadBtn.className = 'btn-sm';
-    loadBtn.textContent = '加载到机台';
-    loadBtn.addEventListener('click', () => loadSequenceTemplateToAgent(t));
-    const viewBtn = document.createElement('button');
-    viewBtn.type = 'button';
-    viewBtn.className = 'btn-sm';
-    viewBtn.textContent = '查看结果';
-    viewBtn.addEventListener('click', () => openSequenceLastRun(t));
-    actions.appendChild(loadBtn);
-    actions.appendChild(document.createTextNode(' '));
-    actions.appendChild(viewBtn);
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn-sm';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', () => deleteSequenceTemplate(t));
+    actions.appendChild(delBtn);
     row.appendChild(actions);
     tbody.appendChild(row);
   }
 }
 
-async function loadSequenceTemplateToAgent(t) {
-  const sel = document.getElementById('sequence-target-agent');
-  const agentId = sel && sel.value ? sel.value : '';
-  if (!agentId) {
-    showSequenceTemplatesMsg('请先选择目标机台', false);
-    return;
-  }
-  showSequenceTemplatesMsg('加载中…', true);
+async function deleteSequenceTemplate(t) {
+  const label = t.name || t.id || '此模板';
+  if (!confirm('确定删除序列模板「' + label + '」？')) return;
+  showSequenceTemplatesMsg('删除中…', true);
   try {
-    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id) + '/load-to-agent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: agentId }),
+    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id), {
+      method: 'DELETE',
     });
+    if (resp.ok || resp.status === 204) {
+      showSequenceTemplatesMsg('已删除', true);
+      await fetchSequenceTemplates();
+      return;
+    }
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      showSequenceTemplatesMsg('加载失败: ' + (data.error || resp.status), false);
-      return;
-    }
-    showSequenceTemplatesMsg('已加载到机台: ' + (t.name || t.id), true);
+    showSequenceTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
   } catch (e) {
-    showSequenceTemplatesMsg('加载失败: ' + e.message, false);
-  }
-}
-
-function openSequenceLastRunModal(title, payload) {
-  document.getElementById('sequence-last-run-title').textContent = title;
-  document.getElementById('sequence-last-run-pre').textContent = JSON.stringify(payload, null, 2);
-  document.getElementById('sequence-last-run-modal').hidden = false;
-}
-
-async function openSequenceLastRun(t) {
-  try {
-    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id) + '/last-run');
-    const data = await resp.json();
-    if (!resp.ok) {
-      showSequenceTemplatesMsg('查看结果失败: ' + ((data && data.error) || resp.status), false);
-      return;
-    }
-    openSequenceLastRunModal('最近一次结果 · ' + (t.name || t.id), data);
-  } catch (e) {
-    showSequenceTemplatesMsg('查看结果失败: ' + e.message, false);
+    showSequenceTemplatesMsg('删除失败: ' + e.message, false);
   }
 }
 
 document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
 document.getElementById('vi-templates-source-filter').addEventListener('change', fetchViTemplates);
-document.getElementById('sequence-last-run-close').addEventListener('click', function () {
-  document.getElementById('sequence-last-run-modal').hidden = true;
-});
 
 applyRoute(parseRoute());
 setInterval(refreshCurrent, POLL_MS);

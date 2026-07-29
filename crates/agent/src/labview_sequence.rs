@@ -119,10 +119,9 @@ fn measured_from_limits(limits: &[LimitRule], outputs: &Value) -> Option<Value> 
     if limits.is_empty() {
         return None;
     }
-    let root = outputs.get("outputs").unwrap_or(outputs);
     let mut map = serde_json::Map::new();
     for rule in limits {
-        if let Some(v) = root.get(&rule.output) {
+        if let Some(v) = crate::limits::lookup_output_value(outputs, &rule.output) {
             map.insert(rule.output.clone(), v.clone());
         }
     }
