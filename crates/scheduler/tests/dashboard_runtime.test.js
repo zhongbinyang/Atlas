@@ -5,7 +5,9 @@ const {
   createLatestTaskRunner,
   createRequestDeduper,
   createRefreshController,
+  createSafeEventHandler,
   reconcileKeyedChildren,
+  startDashboard,
 } = require('../static/dashboard-runtime.js');
 
 function deferred() {
@@ -137,6 +139,44 @@ test('latest task runner consumes entry-point rejection and reports it', async (
 
   await assert.doesNotReject(runRoute('machines'));
   assert.deepEqual(errors, ['route failed']);
+});
+
+test('safe event handler does not pass the browser event to its async task', async () => {
+  const calls = [];
+  const handler = createSafeEventHandler(async (...args) => {
+    calls.push(args);
+  });
+
+  await handler({ type: 'change' });
+
+  assert.deepEqual(calls, [[]]);
+});
+
+test('safe event handler consumes async rejection and reports it', async () => {
+  const errors = [];
+  const handler = createSafeEventHandler(
+    async () => {
+      throw new Error('filter failed');
+    },
+    { onError: (error) => errors.push(error.message) },
+  );
+
+  await assert.doesNotReject(handler({ type: 'change' }));
+  assert.deepEqual(errors, ['filter failed']);
+});
+
+test('dashboard refresh starts without waiting for the initial route to settle', () => {
+  const initialRoute = deferred();
+  let starts = 0;
+
+  const pending = startDashboard(
+    () => initialRoute.promise,
+    { start: () => { starts += 1; } },
+  );
+
+  assert.equal(starts, 1);
+  assert.equal(pending, initialRoute.promise);
+  initialRoute.resolve();
 });
 
 test('refresh controller schedules the next refresh only after the current one settles', async () => {

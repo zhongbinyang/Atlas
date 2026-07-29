@@ -954,8 +954,12 @@ async function deleteSequenceTemplate(t) {
   }
 }
 
-document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
-document.getElementById('vi-templates-source-filter').addEventListener('change', fetchViTemplates);
+const refreshViTemplatesFromFilter = dashboardRuntime.createSafeEventHandler(
+  () => fetchViTemplates(),
+  { onError: (error) => console.error('template filter refresh failed', error) },
+);
+document.getElementById('vi-templates-agent-filter').addEventListener('change', refreshViTemplatesFromFilter);
+document.getElementById('vi-templates-source-filter').addEventListener('change', refreshViTemplatesFromFilter);
 
 const refreshController = dashboardRuntime.createRefreshController({
   delayMs: POLL_MS,
@@ -964,4 +968,4 @@ const refreshController = dashboardRuntime.createRefreshController({
   onError: (error) => console.error('automatic refresh failed', error),
 });
 
-applyCurrentRoute().finally(() => refreshController.start());
+dashboardRuntime.startDashboard(applyCurrentRoute, refreshController);

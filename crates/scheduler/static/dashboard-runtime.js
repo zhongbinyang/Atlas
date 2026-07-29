@@ -5,6 +5,23 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  function createSafeEventHandler(task, options) {
+    const onError = options?.onError || function () {};
+    return function handleEvent() {
+      return Promise.resolve()
+        .then(() => task())
+        .catch((error) => {
+          onError(error);
+        });
+    };
+  }
+
+  function startDashboard(loadInitialRoute, refreshController) {
+    const initialRoute = loadInitialRoute();
+    refreshController.start();
+    return initialRoute;
+  }
+
   function createLatestTaskRunner(task, options) {
     const onError = options?.onError || function () {};
     let generation = 0;
@@ -140,6 +157,8 @@
     createLatestTaskRunner,
     createRequestDeduper,
     createRefreshController,
+    createSafeEventHandler,
     reconcileKeyedChildren,
+    startDashboard,
   };
 });

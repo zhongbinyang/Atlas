@@ -71,4 +71,20 @@ fn scheduler_dashboard_loads_self_scheduling_refresh_runtime() {
         !app.contains("setInterval(refreshCurrent, POLL_MS)"),
         "the overlapping interval refresh must be removed"
     );
+    assert!(
+        !app.contains("addEventListener('change', fetchViTemplates)"),
+        "filter events must not pass Event as the template commit guard"
+    );
+    assert!(
+        app.contains("dashboardRuntime.createSafeEventHandler"),
+        "filter events must use the rejection-safe event adapter"
+    );
+    assert!(
+        app.contains("dashboardRuntime.startDashboard(applyCurrentRoute, refreshController)"),
+        "automatic refresh must start without awaiting the initial route"
+    );
+    assert!(
+        !app.contains("applyCurrentRoute().finally"),
+        "automatic refresh start must not depend on initial route settlement"
+    );
 }
