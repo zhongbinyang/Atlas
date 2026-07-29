@@ -703,6 +703,16 @@ function showSequenceTemplatesMsg(text, ok) {
   showMsg(document.getElementById('sequence-templates-msg'), text, ok);
 }
 
+function clearLoadError(el) {
+  if (!el || !el.classList.contains('err')) return;
+  el.hidden = true;
+  el.textContent = '';
+}
+
+function loadErrorMessage(error) {
+  return error && error.message ? error.message : String(error);
+}
+
 function templateSourceLabel(source) {
   return source === 'general' ? '通用' : 'VI';
 }
@@ -726,31 +736,45 @@ function templateConfigSummary(t) {
   return (t.vi_path || '—') + timeout;
 }
 
-async function fetchViTemplates(shouldCommit = () => true) {
+async function requestViTemplates() {
   const agentFilterEl = document.getElementById('vi-templates-agent-filter');
   const sourceFilterEl = document.getElementById('vi-templates-source-filter');
   const agentId = agentFilterEl && agentFilterEl.value ? agentFilterEl.value : '';
   const source = sourceFilterEl && sourceFilterEl.value ? sourceFilterEl.value : '';
   const query = agentId ? ('?agent_id=' + encodeURIComponent(agentId)) : '';
-  const reqs = [];
-  if (!source || source === 'labview') reqs.push(fetch('/api/vi-templates' + query));
-  if (!source || source === 'general') reqs.push(fetch('/api/general-templates' + query));
-  const responses = await Promise.all(reqs);
-  if (!shouldCommit()) return;
-  const merged = [];
-  for (const resp of responses) {
-    if (!resp.ok) continue;
-    const data = await resp.json();
-    if (!shouldCommit()) return;
-    if (!Array.isArray(data)) continue;
-    const inferredSource = resp.url.indexOf('/api/general-templates') >= 0 ? 'general' : 'labview';
-    for (const item of data) {
-      merged.push(Object.assign({}, item, { _source: inferredSource }));
-    }
+  const requests = [];
+  if (!source || source === 'labview') {
+    requests.push({ source: 'labview', response: fetch('/api/vi-templates' + query) });
   }
-  if (!shouldCommit()) return;
-  viTemplates = merged;
-  renderViTemplates();
+  if (!source || source === 'general') {
+    requests.push({ source: 'general', response: fetch('/api/general-templates' + query) });
+  }
+  const groups = await Promise.all(requests.map(async (request) => {
+    const resp = await request.response;
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (!Array.isArray(data)) throw new Error('响应格式无效');
+    return data.map((item) => Object.assign({}, item, { _source: request.source }));
+  }));
+  return groups.flat();
+}
+
+const loadViTemplates = dashboardRuntime.createLatestResourceLoader({
+  load: requestViTemplates,
+  commit: (templates) => {
+    viTemplates = templates;
+    renderViTemplates();
+    clearLoadError(document.getElementById('vi-templates-msg'));
+  },
+  onError: (error) => showViTemplatesMsg('加载失败: ' + loadErrorMessage(error), false),
+});
+
+function isFunctionsRoute() {
+  return parseRoute().name === 'functions';
+}
+
+function fetchViTemplates(shouldCommit = isFunctionsRoute) {
+  return loadViTemplates(shouldCommit);
 }
 
 function renderViTemplates() {
@@ -886,25 +910,30 @@ async function deleteTemplate(t) {
   return deleteViTemplate(t);
 }
 
-async function fetchSequenceTemplates(shouldCommit = () => true) {
-  const tbody = document.getElementById('sequence-templates-body');
-  if (!tbody) return;
-  try {
-    const resp = await fetch('/api/sequence-templates');
-    if (!shouldCommit()) return;
-    const data = await resp.json();
-    if (!shouldCommit()) return;
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
-      return;
-    }
-    sequenceTemplates = Array.isArray(data) ? data : [];
+async function requestSequenceTemplates() {
+  const resp = await fetch('/api/sequence-templates');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const data = await resp.json();
+  if (!Array.isArray(data)) throw new Error('响应格式无效');
+  return data;
+}
+
+const loadSequenceTemplates = dashboardRuntime.createLatestResourceLoader({
+  load: requestSequenceTemplates,
+  commit: (templates) => {
+    sequenceTemplates = templates;
     renderSequenceTemplates();
-  } catch (e) {
-    if (!shouldCommit()) return;
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
-  }
+    clearLoadError(document.getElementById('sequence-templates-msg'));
+  },
+  onError: (error) => showSequenceTemplatesMsg('加载失败: ' + loadErrorMessage(error), false),
+});
+
+function isSequencesRoute() {
+  return parseRoute().name === 'sequences';
+}
+
+function fetchSequenceTemplates(shouldCommit = isSequencesRoute) {
+  return loadSequenceTemplates(shouldCommit);
 }
 
 function renderSequenceTemplates() {

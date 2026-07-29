@@ -87,4 +87,34 @@ fn scheduler_dashboard_loads_self_scheduling_refresh_runtime() {
         !app.contains("applyCurrentRoute().finally"),
         "automatic refresh start must not depend on initial route settlement"
     );
+    assert!(
+        app.matches("dashboardRuntime.createLatestResourceLoader")
+            .count()
+            >= 2,
+        "template resources must use shared latest-generation loaders"
+    );
+    assert!(
+        app.contains("function fetchViTemplates(shouldCommit = isFunctionsRoute)"),
+        "non-route VI reload entries must still require the functions route"
+    );
+    assert!(
+        app.contains("function fetchSequenceTemplates(shouldCommit = isSequencesRoute)"),
+        "non-route sequence reload entries must still require the sequences route"
+    );
+    assert!(
+        !app.contains("if (!resp.ok) continue;"),
+        "template requests must not partially commit after a failed response"
+    );
+    assert!(
+        !app.contains("tbody.innerHTML = '<tr><td colspan=\"5\" class=\"empty\">加载失败:"),
+        "sequence load failures must not replace the last successful table"
+    );
+    assert!(
+        app.contains("showViTemplatesMsg('加载失败: '"),
+        "VI template load failures must use the existing message area"
+    );
+    assert!(
+        app.contains("showSequenceTemplatesMsg('加载失败: '"),
+        "sequence load failures must use the existing message area"
+    );
 }

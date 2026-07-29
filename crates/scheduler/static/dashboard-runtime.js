@@ -37,6 +37,32 @@
     };
   }
 
+  function createLatestResourceLoader(options) {
+    const onError = options.onError || function () {};
+    let generation = 0;
+
+    return function loadLatest(guard) {
+      const currentGeneration = ++generation;
+      const canCommit = typeof guard === 'function' ? guard : () => true;
+      const isCurrent = () => currentGeneration === generation && canCommit();
+
+      return Promise.resolve()
+        .then(options.load)
+        .then(
+          (value) => {
+            if (!isCurrent()) return false;
+            options.commit(value);
+            return true;
+          },
+          (error) => {
+            if (!isCurrent()) return false;
+            onError(error);
+            return false;
+          },
+        );
+    };
+  }
+
   function createRequestDeduper(request) {
     let activeRequest = null;
 
@@ -154,6 +180,7 @@
   }
 
   return {
+    createLatestResourceLoader,
     createLatestTaskRunner,
     createRequestDeduper,
     createRefreshController,

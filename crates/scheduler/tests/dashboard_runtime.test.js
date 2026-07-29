@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   createLatestTaskRunner,
+  createLatestResourceLoader,
   createRequestDeduper,
   createRefreshController,
   createSafeEventHandler,
@@ -139,6 +140,109 @@ test('latest task runner consumes entry-point rejection and reports it', async (
 
   await assert.doesNotReject(runRoute('machines'));
   assert.deepEqual(errors, ['route failed']);
+});
+
+function createQueuedResourceLoader() {
+  const requests = [];
+  const commits = [];
+  const errors = [];
+  const loadLatest = createLatestResourceLoader({
+    load: () => {
+      const request = deferred();
+      requests.push(request);
+      return request.promise;
+    },
+    commit: (value) => commits.push(value),
+    onError: (error) => errors.push(error.message),
+  });
+  return { requests, commits, errors, loadLatest };
+}
+
+test('latest resource loader prevents an older filter response from replacing a newer response', async () => {
+  const loader = createQueuedResourceLoader();
+  const oldFilter = loader.loadLatest();
+  await flushPromises();
+  const newFilter = loader.loadLatest();
+  await flushPromises();
+
+  loader.requests[1].resolve('new result');
+  await newFilter;
+  loader.requests[0].resolve('old result');
+  await oldFilter;
+
+  assert.deepEqual(loader.commits, ['new result']);
+});
+
+test('latest resource loader shares invalidation across route and filter entry points', async () => {
+  const loader = createQueuedResourceLoader();
+  const loadFromRoute = (guard) => loader.loadLatest(guard);
+  const loadFromFilter = () => loader.loadLatest();
+  const routeLoad = loadFromRoute(() => true);
+  await flushPromises();
+  const filterLoad = loadFromFilter();
+  await flushPromises();
+
+  loader.requests[1].resolve('filter result');
+  await filterLoad;
+  loader.requests[0].resolve('route result');
+  await routeLoad;
+
+  assert.deepEqual(loader.commits, ['filter result']);
+});
+
+test('latest resource loader checks the route guard before committing', async () => {
+  const loader = createQueuedResourceLoader();
+  let routeIsCurrent = true;
+  const routeLoad = loader.loadLatest(() => routeIsCurrent);
+  await flushPromises();
+
+  routeIsCurrent = false;
+  loader.requests[0].resolve('stale route result');
+  await routeLoad;
+
+  assert.deepEqual(loader.commits, []);
+});
+
+test('resource loader retains the last commit after an HTTP 500 failure', async () => {
+  let attempt = 0;
+  const commits = [];
+  const errors = [];
+  const loadLatest = createLatestResourceLoader({
+    load: async () => {
+      attempt += 1;
+      if (attempt === 1) return ['stable'];
+      throw new Error('HTTP 500');
+    },
+    commit: (value) => commits.push(value),
+    onError: (error) => errors.push(error.message),
+  });
+
+  await loadLatest();
+  await assert.doesNotReject(loadLatest());
+
+  assert.deepEqual(commits, [['stable']]);
+  assert.deepEqual(errors, ['HTTP 500']);
+});
+
+test('resource loader retains the last commit after JSON parsing fails', async () => {
+  let attempt = 0;
+  const commits = [];
+  const errors = [];
+  const loadLatest = createLatestResourceLoader({
+    load: async () => {
+      attempt += 1;
+      if (attempt === 1) return ['stable'];
+      throw new SyntaxError('invalid JSON');
+    },
+    commit: (value) => commits.push(value),
+    onError: (error) => errors.push(error.message),
+  });
+
+  await loadLatest();
+  await assert.doesNotReject(loadLatest());
+
+  assert.deepEqual(commits, [['stable']]);
+  assert.deepEqual(errors, ['invalid JSON']);
 });
 
 test('safe event handler does not pass the browser event to its async task', async () => {
