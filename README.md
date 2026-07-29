@@ -1,8 +1,8 @@
-# ATLAS 光模块测试监控系统
+# ATLAS 测试机台编排系统
 
-Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `10.102.30.18/atlas`）保存机台、VI 模板与任务，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。
+Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `10.102.30.18/atlas`）保存机台、VI/通用功能模板、序列模板与任务，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。
 
-WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能**；Agent 为紧凑状态条 + VI / 序列工作台。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
+WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能** / **序列模板**；Agent 为紧凑状态条 + **VI** / **通用** / **序列** 工作台。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
 
 ## 安全提示
 
@@ -56,46 +56,50 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 
 - **仅 Agent 机台**安装 LabVIEW 与外部工具 **`labview-runner-cli`**（安装与用法见 [`C:\Users\zhong\test06\README.md`](file:///C:/Users/zhong/test06/README.md)）。
 - 将 `labview-runner-cli.exe` 与 `getinfo.vi` 部署到 Agent 本机（默认目录 `C:\labview-runner-cli\`），或通过 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 覆盖路径。
-- 调度中心 **不** 在本机调用 LabVIEW；VI **注册 / inspect / 试跑** 仅在 Agent WebUI；中心 `#/functions` 仅管理已注册模板（重命名 / 分发 / 删除）。
+- 调度中心 **不** 在本机调用 LabVIEW；VI **注册 / inspect / 试跑** 仅在 Agent WebUI；中心 `#/functions` 仅管理已注册模板（重命名 / 删除），`#/sequences` 管理序列模板（删除）。
 
 ### 工作流
 
 1. **查询参数（inspect）**：对目标 VI 绝对路径调用 `labview-runner-cli --action inspect`，返回 inputs/outputs JSON；在 WebUI 表格中编辑各参数的默认 `value`（`name` / `className` 只读）。
 2. **试跑（run）**：用当前 inputs 同步执行 `--action run`，返回 outputs JSON；可选「显示前面板」与 CLI `--timeout`（秒）。
-3. **注册**：**仅在 Agent WebUI** 填写 **显示名称**（必填），将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 PostgreSQL 表 `vi_templates`，由数据库分配 **自增 ID**，并记录 **来源机台**（`origin_agent_id`）与 **类型**（`kind`：`labview` / `delay`）。若已存在 **同名且入参相同** 的模板则拒绝注册（HTTP 409）。同一 Agent 可注册同路径但不同名称/入参的多条记录。中心 WebUI **不提供** VI 登记 / inspect / 试跑表单。
-4. **通用·延迟**：Agent 顶栏「**通用**」页可配置 **延迟毫秒**、试跑（本机 sleep）并 **注册到中心**；可与 VI 一并加入序列按序执行。
+3. **注册**：**仅在 Agent WebUI** 填写 **显示名称**（必填），将 VI 路径、inputs/outputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 PostgreSQL 表 `vi_templates`，由数据库分配 **自增 ID**，并记录 **来源机台**（`origin_agent_id`）与 **类型**（`kind`：通常 `labview`）。若已存在 **同名且入参相同** 的模板则拒绝注册（HTTP 409）。同一 Agent 可注册同路径但不同名称/入参的多条记录。中心 WebUI **不提供** VI 登记 / inspect / 试跑表单。
+4. **通用功能**：Agent 顶栏「**通用**」页可配置 **延迟毫秒**、试跑（本机 sleep）并 **注册到中心**（写入 `general_templates`，与 VI 分表）；可与 VI 一并加入序列按序执行。中心「已注册功能」分 **VI** / **通用** 两组展示。
 5. **下发（API）**：`POST /api/vi-templates/{id}/dispatch` 仍可将模板拼成 `cmd` 入队 Shell 任务队列；中心 WebUI **不再暴露**「作业」界面，任务结果请通过 API 或 Agent 侧查看。
 
 ### 已注册列表（中心一份）
 
-1. **Agent**：在「VI」工作台 **注册到中心** 后，「**中心全部功能**」列表出现该 VI；可 **试跑**、**重命名**、**加载到编辑区**；入参列悬停查看完整 JSON。无「本机已注册」副本列表。
-2. **调度中心**：顶栏「**已注册功能**」（`#/functions`）；列含 **ID**、**类型**、**来源机台**、VI 路径、入参、超时；支持 **修改（重命名）**、**删除**（无中心侧注册/试跑）。
+1. **Agent**：在「VI」工作台 **注册到中心** 后，「**中心 VI 功能**」列表出现该项；可 **试跑**、**重命名**、**加载到编辑区**；入参列悬停查看完整 JSON。无「本机已注册」副本列表。「通用」页同理维护「中心通用功能」。
+2. **调度中心**：顶栏「**已注册功能**」（`#/functions`）；VI 与通用分栏；列含 **ID**、**类型**、**来源机台**、路径/入参、超时；支持 **修改（重命名）**、**删除**（无中心侧注册/试跑）。
 3. **同路径多份**：同一 VI 路径可在同一或不同机台重复注册，每条记录拥有独立 `id` / 显示名称；**不会** 按路径合并覆盖。
 
 ### 执行序列（Agent）
 
-1. **Agent「序列」页**：左「**中心全部功能**」→ 右「选定」（同一模板可重复加入；支持拖拽与上下移动排序）。
-2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；可选用任意中心模板；增删改序后自动 `PUT` 保存。
-3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`breakpoint`（执行**前**暂停）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec 上下限；API 字段名 `limits`，库表 `limits_json`）。
-4. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
-5. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI 运行栏提供 SN/工单、开始/继续/中止与总体结果。
-6. **阶段 1 限制**：暂停期间可 **中止**；**无法** 取消正在执行的 continue / LabVIEW 步骤。断点会话仅存于 Agent 内存，**Agent 重启后会丢失**。
+1. **Agent「序列」页**：左「**中心全部功能**」（可搜索名称/ID/机台，按 LabVIEW/通用筛选）→ 右「**执行顺序**」（同一模板可重复加入；支持拖拽与上下移动排序）。
+2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；步骤可引用 `vi_template_id` 或 `general_template_id`；每步可覆盖 **入参**（`inputs_json`）；增删改序 / 改元数据后自动 `PUT` 保存。
+3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`breakpoint`（执行**前**暂停）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec 上下限；API 字段名 `limits`，库表 `limits_json`）、`inputs`（步骤级入参覆盖）。
+4. **主表与详情**：主表列收窄为 `# / 启用 / 断点 / 名称 / 类型 / 结果 / 操作`；点「**详情**」展开编辑入参 / Spec / Fail 策略，并查看实测与原始返回 JSON。失败或断点暂停时自动展开对应步骤。
+5. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order", "sequence_template_id" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
+6. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI **吸底运行栏** 提供 SN/工单、保存为模板、开始/继续/中止与总体结果。
+7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
+8. **运行结果**：不落库「最近一次结果」；完成后结果展示在步骤行/详情中，并写入 Agent 日志（`sequence_run` / `sequence run finished`）。可用 `RUST_LOG=info`（或更细）查看。
+9. **阶段 1 限制**：暂停期间可 **中止**；**无法** 取消正在执行的 continue / LabVIEW 步骤。断点会话仅存于 Agent 内存，**Agent 重启后会丢失**。
 
 ### WebUI 入口
 
 | 位置 | 路由 / 分区 | 说明 |
 |------|-------------|------|
-| Agent WebUI（`:26631`） | VI / **通用** / **序列** | VI 工作台；**通用·延迟**（试跑/注册）；**序列** 混排 VI 与延迟 |
+| Agent WebUI（`:26631`） | VI / **通用** / **序列** | VI 工作台；通用功能（试跑/注册）；序列混排 VI+通用，模板保存/加载 |
 | ATLAS 中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
 | ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览 + **截图** / **历史** / **文件** |
-| ATLAS 中心 WebUI | `#/functions` | **已注册功能**：按 **来源机台** 筛选；**ID / 类型** + 入参悬停；**修改** / **删除** |
+| ATLAS 中心 WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**修改** / **删除** |
+| ATLAS 中心 WebUI | `#/sequences` | **序列模板**：浏览步骤数/来源机台；**删除** |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。Shell 任务 API 仍存在，但中心 WebUI **不再提供**「作业」界面。
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/all-templates`（中心全量，工作台与序列共用），`GET/PUT /api/labview/run-queue`（代理中心队列；项含 `enabled`/`breakpoint`/`fail_policy`/`limits`），`POST /api/labview/run-sequence`（可选 `sn`/`work_order`；串行执行、逐步判定），`POST /api/labview/run-sequence/continue|abort`（断点续跑/中止）。
-- 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/PATCH/DELETE /api/vi-templates`（注册 `name` 必填；列表 `?agent_id=` 按 **来源机台** 筛选），`POST /api/vi-templates/{id}/distribute`（API 仍可用；WebUI 不再暴露），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`，`GET /api/labview/all-templates`，`GET /api/general/all-templates`，`GET/PUT /api/labview/run-queue`（代理中心队列；项含 `enabled`/`breakpoint`/`fail_policy`/`limits`/`inputs` 与 VI/通用模板引用），`POST /api/labview/run-sequence`（可选 `sn`/`work_order`/`sequence_template_id`），`POST /api/labview/run-sequence/continue|abort`，`GET/POST /api/sequence-templates`（列模板 / 保存当前队列），`POST /api/sequence-templates/{id}/load`（加载到本机队列）。
+- 中心：`GET/POST/PATCH/DELETE /api/vi-templates`，`GET/POST/DELETE /api/general-templates`，`GET/POST /api/sequence-templates`，`GET/DELETE /api/sequence-templates/{id}`，`POST /api/sequence-templates/{id}/load-to-agent`（供 Agent 代理加载；中心 WebUI 不再暴露），`GET/PUT /api/agents/{id}/vi-run-queue`，`POST /api/vi-templates/{id}/distribute|dispatch`（API 仍可用；WebUI 不再暴露分发）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
@@ -166,13 +170,14 @@ ATLAS 中心 WebUI 的 Agent **详情页**提供 **文件** 操作，只读浏�
 3. **机台卡片 → 详情**：点击卡片进入 `#/agents/{id}`；**返回机台** 回到卡片网格。
 4. **桌面截图**：在 Agent 详情点击 **截图**，弹窗显示主屏 PNG；点击 **历史** 可浏览已归档记录。
 5. **文件浏览**：将 Agent 的 `AGENT_FILES_ROOT` 指向样例结果目录；在 Agent 详情点击 **文件**，浏览根下 `Log.txt` 与进入 `EyeDiagram/35` 预览 `CH1.gif`，并验证下载。
-6. **已注册功能页**：打开 `#/functions`；按机台筛选；查看名称/**来源机台**/路径/入参；可 **修改** 名称、**删除** 模板。
-7. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
-   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「中心全部功能」出现该项且可试跑；入参列可悬停查看。
+6. **已注册功能页**：打开 `#/functions`；按机台筛选；查看 VI / 通用分栏、名称/**来源机台**/路径/入参；可 **修改** 名称、**删除** 模板。
+7. **序列模板页**：打开 `#/sequences`；可见已保存序列模板；可 **删除**。
+8. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
+   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「中心 VI 功能」出现该项且可试跑；入参列可悬停查看。
    - 中心 `#/functions`：模板表可见刚注册项，**来源机台** 为注册 Agent。
-   - Agent「序列」：左侧为中心全部功能，可添加其他机台注册的模板到本机队列并按序执行（本机须能访问对应 VI 路径）。
+   - Agent「序列」：左侧可搜索/筛选中心功能，添加到本机队列；编辑步骤详情（入参/Spec/Fail）；**开始** 后结果出现在步骤行；可 **保存为模板** 并在中心 `#/sequences` 看到。
    - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
-8. **Shell 任务（API 仅）**：中心 WebUI 无「作业」界面；如需验证队列，使用 `POST /api/templates`、`POST /api/tasks` 等 API（见设计规格）。
+9. **Shell 任务（API 仅）**：中心 WebUI 无「作业」界面；如需验证队列，使用 `POST /api/templates`、`POST /api/tasks` 等 API（见设计规格）。
 
 ## 测试
 
