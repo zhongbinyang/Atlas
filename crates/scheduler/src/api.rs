@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
     Agent, CreateTaskParams, QueueReplaceError, Screenshot, Store, Task, TaskTemplate,
-    UpdateTemplateParams, ViRunQueueItem, ViTemplateEnriched, ViTemplatePatch,
+    UpdateTemplateParams, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched, ViTemplatePatch,
 };
 use crate::vi_distribute::{copy_template, TransferApiError};
 
@@ -1495,13 +1495,20 @@ async fn put_vi_run_queue(
     Path(id): Path<String>,
     Json(req): Json<ReplaceViRunQueueRequest>,
 ) -> impl IntoResponse {
-    let template_ids: Vec<i64> = req
+    let items: Vec<ViRunQueueReplaceItem> = req
         .items
         .into_iter()
-        .map(|item| item.vi_template_id)
+        .map(|item| ViRunQueueReplaceItem {
+            vi_template_id: item.vi_template_id,
+            enabled: true,
+            breakpoint: false,
+            fail_policy: "stop".into(),
+            limits_json: "[]".into(),
+            note: "".into(),
+        })
         .collect();
 
-    match s.store.replace_vi_run_queue(&id, &template_ids).await {
+    match s.store.replace_vi_run_queue(&id, &items).await {
         Ok(items) => match vi_run_queue_views(items) {
             Ok(views) => (
                 StatusCode::OK,

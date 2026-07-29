@@ -94,6 +94,16 @@ pub struct ViTemplate {
 }
 
 #[derive(Debug, Clone)]
+pub struct ViRunQueueReplaceItem {
+    pub vi_template_id: i64,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String, // "stop" | "continue"
+    pub limits_json: String,   // JSON array text
+    pub note: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ViRunQueueItem {
     pub id: String,
     pub agent_id: String,
@@ -106,6 +116,18 @@ pub struct ViRunQueueItem {
     pub inputs_json: String,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String,
+    pub limits_json: String,
+    pub note: String,
+}
+
+fn normalize_fail_policy(fail_policy: &str) -> &'static str {
+    match fail_policy {
+        "continue" => "continue",
+        _ => "stop",
+    }
 }
 
 #[derive(Debug)]
@@ -893,7 +915,8 @@ impl Store {
             r#"
             SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
                    t.name AS template_name, t.kind, t.vi_path,
-                   t.inputs_json, t.show_front_panel, t.timeout_secs
+                   t.inputs_json, t.show_front_panel, t.timeout_secs,
+                   q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note
             FROM vi_run_queue_items q
             JOIN vi_templates t ON t.id = q.vi_template_id
             WHERE q.agent_id = $1
@@ -909,20 +932,20 @@ impl Store {
     pub async fn replace_vi_run_queue(
         &self,
         agent_id: &str,
-        template_ids: &[i64],
+        items: &[ViRunQueueReplaceItem],
     ) -> Result<Vec<ViRunQueueItem>, QueueReplaceError> {
         if self.get_agent(agent_id).await.map_err(QueueReplaceError::Db)?.is_none() {
             return Err(QueueReplaceError::AgentNotFound);
         }
 
-        for &template_id in template_ids {
+        for item in items {
             let template = self
-                .get_vi_template(template_id)
+                .get_vi_template(item.vi_template_id)
                 .await
                 .map_err(QueueReplaceError::Db)?;
             if template.is_none() {
                 return Err(QueueReplaceError::BadTemplate {
-                    vi_template_id: template_id,
+                    vi_template_id: item.vi_template_id,
                 });
             }
         }
@@ -936,19 +959,27 @@ impl Store {
             .map_err(QueueReplaceError::Db)?;
 
         let now = Utc::now().to_rfc3339();
-        for (position, &template_id) in template_ids.iter().enumerate() {
+        for (position, item) in items.iter().enumerate() {
             let id = Uuid::new_v4().to_string();
+            let fail_policy = normalize_fail_policy(&item.fail_policy);
             sqlx::query(
                 r#"
-                INSERT INTO vi_run_queue_items (id, agent_id, vi_template_id, position, created_at)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO vi_run_queue_items
+                  (id, agent_id, vi_template_id, position, created_at,
+                   enabled, breakpoint, fail_policy, limits_json, note)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 "#,
             )
             .bind(&id)
             .bind(agent_id)
-            .bind(template_id)
+            .bind(item.vi_template_id)
             .bind(position as i64)
             .bind(&now)
+            .bind(item.enabled)
+            .bind(item.breakpoint)
+            .bind(fail_policy)
+            .bind(&item.limits_json)
+            .bind(&item.note)
             .execute(&mut *tx)
             .await
             .map_err(QueueReplaceError::Db)?;
@@ -1113,6 +1144,11 @@ struct ViRunQueueItemRow {
     inputs_json: String,
     show_front_panel: i64,
     timeout_secs: Option<i64>,
+    enabled: bool,
+    breakpoint: bool,
+    fail_policy: String,
+    limits_json: String,
+    note: String,
 }
 
 impl ViRunQueueItemRow {
@@ -1129,6 +1165,11 @@ impl ViRunQueueItemRow {
             inputs_json: self.inputs_json,
             show_front_panel: self.show_front_panel != 0,
             timeout_secs: self.timeout_secs,
+            enabled: self.enabled,
+            breakpoint: self.breakpoint,
+            fail_policy: self.fail_policy,
+            limits_json: self.limits_json,
+            note: self.note,
         }
     }
 }
@@ -1530,7 +1571,7 @@ mod tests {
         let template_id = tpl.id;
 
         store
-            .replace_vi_run_queue(&agent_a.id, &[template_id])
+            .replace_vi_run_queue(&agent_a.id, &default_queue_items(&[template_id]))
             .await
             .unwrap();
         assert_eq!(store.list_vi_run_queue(&agent_a.id).await.unwrap().len(), 1);
@@ -1681,6 +1722,20 @@ mod tests {
             .unwrap()
     }
 
+    fn default_queue_items(template_ids: &[i64]) -> Vec<ViRunQueueReplaceItem> {
+        template_ids
+            .iter()
+            .map(|&vi_template_id| ViRunQueueReplaceItem {
+                vi_template_id,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits_json: "[]".into(),
+                note: "".into(),
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn vi_run_queue_replace_and_list_order() {
         let store = test_store().await;
@@ -1691,7 +1746,7 @@ mod tests {
         let replaced = store
             .replace_vi_run_queue(
                 &agent.id,
-                &[tpl_b.id, tpl_a.id, tpl_b.id],
+                &default_queue_items(&[tpl_b.id, tpl_a.id, tpl_b.id]),
             )
             .await
             .unwrap();
@@ -1723,7 +1778,7 @@ mod tests {
         let tpl_b = vi_template_for_agent(&store, &agent_b.id, "B", r"C:\b.vi").await;
 
         let replaced = store
-            .replace_vi_run_queue(&agent_a.id, &[tpl_b.id])
+            .replace_vi_run_queue(&agent_a.id, &default_queue_items(&[tpl_b.id]))
             .await
             .unwrap();
         assert_eq!(replaced.len(), 1);
@@ -1740,7 +1795,7 @@ mod tests {
         let agent = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
 
         let err = store
-            .replace_vi_run_queue(&agent.id, &[999_999_999])
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[999_999_999]))
             .await
             .unwrap_err();
         assert!(matches!(err, QueueReplaceError::BadTemplate { .. }));
@@ -1754,7 +1809,7 @@ mod tests {
         let tpl = vi_template_for_agent(&store, &agent.id, "T", r"C:\t.vi").await;
 
         store
-            .replace_vi_run_queue(&agent.id, &[tpl.id])
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[tpl.id]))
             .await
             .unwrap();
         assert_eq!(store.list_vi_run_queue(&agent.id).await.unwrap().len(), 1);
@@ -1762,5 +1817,28 @@ mod tests {
         assert!(store.delete_vi_template(tpl.id).await.unwrap());
         assert!(store.get_vi_template(tpl.id).await.unwrap().is_none());
         assert!(store.list_vi_run_queue(&agent.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_persists_step_meta() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let tpl = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
+
+        let items = vec![ViRunQueueReplaceItem {
+            vi_template_id: tpl.id,
+            enabled: false,
+            breakpoint: true,
+            fail_policy: "continue".into(),
+            limits_json: r#"[{"output":"Power_dBm","min":-5.0,"max":3.0,"unit":"dBm"}]"#.into(),
+            note: "ch1".into(),
+        }];
+        let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].enabled);
+        assert!(listed[0].breakpoint);
+        assert_eq!(listed[0].fail_policy, "continue");
+        assert!(listed[0].limits_json.contains("Power_dBm"));
+        assert_eq!(listed[0].note, "ch1");
     }
 }
