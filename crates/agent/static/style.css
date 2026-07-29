@@ -140,6 +140,76 @@ body {
   margin-top: 0.5rem;
 }
 
+.seq-run-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.seq-run-bar label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.seq-run-bar input[type="text"] {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  min-width: 10rem;
+}
+
+#seq-overall {
+  margin-left: auto;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.seq-selected-table {
+  font-size: 0.82rem;
+}
+
+.seq-check-cell {
+  text-align: center;
+  width: 2.5rem;
+}
+
+.seq-spec-cell .seq-spec-btn {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seq-fail-cell select {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.seq-result-cell,
+.seq-measured-cell {
+  font-size: 0.78rem;
+  max-width: 6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .seq-row {
   cursor: grab;
 }

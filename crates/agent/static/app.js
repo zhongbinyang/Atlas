@@ -592,6 +592,8 @@ document.getElementById('lv-vi-path').addEventListener('blur', defaultLvNameFrom
 let seqRegistered = [];
 let seqSelected = [];
 let seqRunning = false;
+let seqPaused = false;
+let seqStepResults = {};
 let seqDragIndex = null;
 
 function showPage(page) {
@@ -627,14 +629,95 @@ function showSeqMsg(text, ok) {
 }
 
 function setSeqControlsDisabled(disabled) {
-  seqRunning = disabled;
-  document.getElementById('seq-run-btn').disabled = disabled;
+  seqRunning = disabled && !seqPaused;
+  const runBtn = document.getElementById('seq-run-btn');
+  const contBtn = document.getElementById('seq-continue-btn');
+  const abortBtn = document.getElementById('seq-abort-btn');
+  const snEl = document.getElementById('seq-sn');
+  const woEl = document.getElementById('seq-work-order');
+  if (runBtn) runBtn.disabled = disabled || seqPaused || !seqSelected.length;
+  if (contBtn) contBtn.disabled = !seqPaused;
+  if (abortBtn) abortBtn.disabled = !seqPaused;
+  if (snEl) snEl.disabled = disabled || seqPaused;
+  if (woEl) woEl.disabled = disabled || seqPaused;
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
-    btn.disabled = disabled;
+    if (btn.classList.contains('seq-spec-btn')) return;
+    btn.disabled = disabled || seqPaused;
+  });
+  document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
+    el.disabled = disabled || seqPaused;
   });
   document.querySelectorAll('#seq-selected-body tr[data-index]').forEach(function (row) {
-    row.draggable = !disabled;
+    row.draggable = !disabled && !seqPaused;
   });
+}
+
+function formatSpecSummary(limits) {
+  if (!Array.isArray(limits) || limits.length === 0) return '未设置';
+  if (limits.length === 1 && limits[0] && limits[0].output) {
+    return '1 项 · ' + limits[0].output;
+  }
+  return limits.length + ' 项';
+}
+
+function formatStepStatus(status) {
+  const map = { pass: '通过', fail: '失败', ok: 'OK', error: '错误', skipped: '跳过' };
+  return map[status] || status || '—';
+}
+
+function formatMeasuredSummary(measured) {
+  if (measured == null) return '—';
+  try {
+    const raw = JSON.stringify(measured);
+    return raw.length <= 32 ? raw : raw.slice(0, 32) + '…';
+  } catch (e) {
+    return String(measured);
+  }
+}
+
+function updateSeqOverall(data) {
+  const el = document.getElementById('seq-overall');
+  if (!el) return;
+  const parts = [];
+  if (data && data.overall) parts.push('总体: ' + data.overall);
+  if (data && data.sn) parts.push('SN: ' + data.sn);
+  el.textContent = parts.join(' · ');
+}
+
+function applyStepResults(steps) {
+  seqStepResults = {};
+  if (!Array.isArray(steps)) return;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const pos = step.position != null ? step.position : i;
+    seqStepResults[pos] = step;
+  }
+}
+
+async function editLimitsAt(index) {
+  if (seqRunning || seqPaused) return;
+  const item = seqSelected[index];
+  if (!item) return;
+  const current = Array.isArray(item.limits) ? item.limits : [];
+  const raw = prompt(
+    '编辑 Spec 限值 (JSON 数组，字段 output/min/max/unit):',
+    JSON.stringify(current, null, 2)
+  );
+  if (raw == null) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    showSeqMsg('Spec JSON 无效: ' + e.message, false);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    showSeqMsg('Spec 必须是 JSON 数组', false);
+    return;
+  }
+  item.limits = parsed;
+  renderSeqSelected();
+  await saveQueue();
 }
 
 async function loadSequencePage() {
@@ -676,7 +759,7 @@ function renderSeqRegistered() {
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.textContent = '添加';
-    addBtn.disabled = seqRunning;
+    addBtn.disabled = seqRunning || seqPaused;
     addBtn.addEventListener('click', function () {
       addToQueue(t);
     });
@@ -717,42 +800,100 @@ function renderSeqSelected() {
   const tbody = document.getElementById('seq-selected-body');
   tbody.innerHTML = '';
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">队列为空，从左侧添加</td></tr>';
-    document.getElementById('seq-run-btn').disabled = seqRunning;
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">队列为空，从左侧添加</td></tr>';
+    setSeqControlsDisabled(false);
     return;
   }
   for (let i = 0; i < seqSelected.length; i++) {
     const item = seqSelected[i];
     const row = document.createElement('tr');
     row.setAttribute('data-index', String(i));
-    row.draggable = !seqRunning;
+    row.draggable = !seqRunning && !seqPaused;
     row.className = 'seq-row';
+    const pos = item.position != null ? item.position : i;
+    const stepResult = seqStepResults[pos];
     const name = escapeHtml(item.name || item.vi_template_id || '—');
     const idCol = escapeHtml(String(item.vi_template_id ?? '—'));
+    const kind = escapeHtml(item.kind || 'labview');
+    const enabled = item.enabled !== false;
+    const breakpoint = !!item.breakpoint;
+    const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
+    const limits = Array.isArray(item.limits) ? item.limits : [];
+
     row.innerHTML =
       '<td class="mono">' + (i + 1) + '</td>' +
+      '<td class="seq-check-cell"></td>' +
+      '<td class="seq-check-cell"></td>' +
       '<td class="mono">' + idCol + '</td>' +
       '<td>' + name + '</td>' +
-      '<td class="inputs-cell-host"></td>';
+      '<td class="mono">' + kind + '</td>' +
+      '<td class="inputs-cell-host"></td>' +
+      '<td class="seq-spec-cell"></td>' +
+      '<td class="seq-fail-cell"></td>' +
+      '<td class="seq-result-cell mono">' + escapeHtml(stepResult ? formatStepStatus(stepResult.status) : '—') + '</td>' +
+      '<td class="seq-measured-cell mono">' + escapeHtml(stepResult ? formatMeasuredSummary(stepResult.measured) : '—') + '</td>';
+
     attachInputsHover(row.querySelector('.inputs-cell-host'), item.inputs);
+
+    const enabledCb = document.createElement('input');
+    enabledCb.type = 'checkbox';
+    enabledCb.checked = enabled;
+    enabledCb.title = '启用';
+    enabledCb.disabled = seqRunning || seqPaused;
+    enabledCb.addEventListener('change', async function () {
+      item.enabled = enabledCb.checked;
+      await saveQueue();
+    });
+    row.querySelector('.seq-check-cell').appendChild(enabledCb);
+
+    const bpCb = document.createElement('input');
+    bpCb.type = 'checkbox';
+    bpCb.checked = breakpoint;
+    bpCb.title = '断点';
+    bpCb.disabled = seqRunning || seqPaused;
+    bpCb.addEventListener('change', async function () {
+      item.breakpoint = bpCb.checked;
+      await saveQueue();
+    });
+    row.querySelectorAll('.seq-check-cell')[1].appendChild(bpCb);
+
+    const specBtn = document.createElement('button');
+    specBtn.type = 'button';
+    specBtn.className = 'seq-spec-btn';
+    specBtn.textContent = formatSpecSummary(limits);
+    specBtn.title = '点击编辑 Spec';
+    specBtn.disabled = seqRunning || seqPaused;
+    specBtn.addEventListener('click', function () { editLimitsAt(i); });
+    row.querySelector('.seq-spec-cell').appendChild(specBtn);
+
+    const failSel = document.createElement('select');
+    failSel.innerHTML = '<option value="stop">停止</option><option value="continue">继续</option>';
+    failSel.value = failPolicy;
+    failSel.disabled = seqRunning || seqPaused;
+    failSel.addEventListener('change', async function () {
+      item.fail_policy = failSel.value === 'continue' ? 'continue' : 'stop';
+      await saveQueue();
+    });
+    row.querySelector('.seq-fail-cell').appendChild(failSel);
+
     const actions = document.createElement('td');
     actions.className = 'seq-row-actions';
     const upBtn = document.createElement('button');
     upBtn.type = 'button';
     upBtn.textContent = '↑';
     upBtn.title = '上移';
-    upBtn.disabled = seqRunning || i === 0;
+    upBtn.disabled = seqRunning || seqPaused || i === 0;
     upBtn.addEventListener('click', function () { moveQueueItem(i, -1); });
     const downBtn = document.createElement('button');
     downBtn.type = 'button';
     downBtn.textContent = '↓';
     downBtn.title = '下移';
-    downBtn.disabled = seqRunning || i === seqSelected.length - 1;
+    downBtn.disabled = seqRunning || seqPaused || i === seqSelected.length - 1;
     downBtn.addEventListener('click', function () { moveQueueItem(i, 1); });
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.textContent = '移除';
-    removeBtn.disabled = seqRunning;
+    removeBtn.disabled = seqRunning || seqPaused;
     removeBtn.addEventListener('click', function () { removeFromQueue(i); });
     actions.appendChild(upBtn);
     actions.appendChild(document.createTextNode(' '));
@@ -767,13 +908,20 @@ function renderSeqSelected() {
     row.addEventListener('dragend', onSeqDragEnd);
     tbody.appendChild(row);
   }
-  document.getElementById('seq-run-btn').disabled = seqRunning || !seqSelected.length;
+  setSeqControlsDisabled(seqRunning);
 }
 
 async function saveQueue() {
   const body = {
     items: seqSelected.map(function (item) {
-      return { vi_template_id: item.vi_template_id };
+      return {
+        vi_template_id: item.vi_template_id,
+        enabled: item.enabled !== false,
+        breakpoint: !!item.breakpoint,
+        fail_policy: item.fail_policy === 'continue' ? 'continue' : 'stop',
+        limits: Array.isArray(item.limits) ? item.limits : [],
+        note: item.note || '',
+      };
     }),
   };
   try {
@@ -810,8 +958,14 @@ async function addToQueue(template) {
   seqSelected.push({
     vi_template_id: templateId,
     name: template.name || templateId,
+    kind: template.kind || 'labview',
     vi_path: template.vi_path || '',
     inputs: template.inputs || [],
+    enabled: true,
+    breakpoint: false,
+    fail_policy: 'stop',
+    limits: [],
+    note: '',
   });
   renderSeqSelected();
   await saveQueue();
@@ -833,7 +987,7 @@ async function moveQueueItem(index, delta) {
 }
 
 function onSeqDragStart(e) {
-  if (seqRunning) {
+  if (seqRunning || seqPaused) {
     e.preventDefault();
     return;
   }
@@ -858,7 +1012,7 @@ async function onSeqDrop(e) {
   e.preventDefault();
   const targetRow = e.currentTarget;
   targetRow.classList.remove('seq-drag-over');
-  if (seqDragIndex == null || seqRunning) return;
+  if (seqDragIndex == null || seqRunning || seqPaused) return;
   const dropIndex = parseInt(targetRow.getAttribute('data-index'), 10);
   if (seqDragIndex === dropIndex) return;
   const item = seqSelected.splice(seqDragIndex, 1)[0];
@@ -922,31 +1076,116 @@ function renderSeqResults(data) {
   container.appendChild(list);
 }
 
+function handleSequenceResponse(data) {
+  applyStepResults(data.steps);
+  updateSeqOverall(data);
+  if (data.sn) {
+    const snEl = document.getElementById('seq-sn');
+    if (snEl) snEl.value = data.sn;
+  }
+  renderSeqResults(data);
+  renderSeqSelected();
+  if (data.pause) {
+    seqPaused = true;
+    showSeqMsg('断点暂停: ' + (data.pause.message || 'breakpoint'), true);
+    setSeqControlsDisabled(false);
+    return 'paused';
+  }
+  seqPaused = false;
+  if (data.overall === 'aborted') {
+    showSeqMsg('已中止', false);
+    return 'aborted';
+  }
+  if (data.stopped) {
+    showSeqMsg('执行中止于第 ' + ((data.failed_at != null ? data.failed_at : 0) + 1) + ' 步', false);
+    return 'stopped';
+  }
+  if (data.overall === 'pass' || data.overall === 'ok') {
+    showSeqMsg('全部执行成功', true);
+    return 'done';
+  }
+  showSeqMsg('执行完成 · 总体: ' + (data.overall || '—'), data.overall === 'pass');
+  return 'done';
+}
+
 async function runSequence() {
-  if (seqRunning || !seqSelected.length) return;
+  if ((seqRunning && !seqPaused) || !seqSelected.length) return;
+  seqPaused = false;
   setSeqControlsDisabled(true);
   document.getElementById('seq-results').innerHTML = '';
   showSeqMsg('执行中…', true);
+  const snRaw = document.getElementById('seq-sn').value.trim();
+  const woRaw = document.getElementById('seq-work-order').value.trim();
+  const payload = {};
+  if (snRaw) payload.sn = snRaw;
+  if (woRaw) payload.work_order = woRaw;
   try {
-    const resp = await fetch('/api/labview/run-sequence', { method: 'POST' });
+    const resp = await fetch('/api/labview/run-sequence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('执行失败: ' + err, false);
       return;
     }
-    renderSeqResults(data);
-    if (data.stopped) {
-      showSeqMsg('执行中止于第 ' + ((data.failed_at != null ? data.failed_at : 0) + 1) + ' 步', false);
-    } else {
-      showSeqMsg('全部执行成功', true);
+    const outcome = handleSequenceResponse(data);
+    if (outcome !== 'paused') {
+      setSeqControlsDisabled(false);
     }
   } catch (e) {
     showSeqMsg('执行失败: ' + e.message, false);
-  } finally {
     setSeqControlsDisabled(false);
+  } finally {
     renderSeqRegistered();
-    renderSeqSelected();
+  }
+}
+
+async function continueSequence() {
+  if (!seqPaused) return;
+  setSeqControlsDisabled(true);
+  showSeqMsg('继续执行…', true);
+  try {
+    const resp = await fetch('/api/labview/run-sequence/continue', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('继续失败: ' + err, false);
+      seqPaused = false;
+      setSeqControlsDisabled(false);
+      return;
+    }
+    const outcome = handleSequenceResponse(data);
+    if (outcome !== 'paused') {
+      setSeqControlsDisabled(false);
+    }
+  } catch (e) {
+    showSeqMsg('继续失败: ' + e.message, false);
+    seqPaused = false;
+    setSeqControlsDisabled(false);
+  }
+}
+
+async function abortSequence() {
+  if (!seqPaused) return;
+  showSeqMsg('中止中…', true);
+  try {
+    const resp = await fetch('/api/labview/run-sequence/abort', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('中止失败: ' + err, false);
+      return;
+    }
+    handleSequenceResponse(data);
+    seqPaused = false;
+    setSeqControlsDisabled(false);
+  } catch (e) {
+    showSeqMsg('中止失败: ' + e.message, false);
+    seqPaused = false;
+    setSeqControlsDisabled(false);
   }
 }
 
@@ -1119,6 +1358,10 @@ async function fetchGeneralDelayTemplates() {
 }
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+const seqContinueBtn = document.getElementById('seq-continue-btn');
+const seqAbortBtn = document.getElementById('seq-abort-btn');
+if (seqContinueBtn) seqContinueBtn.addEventListener('click', continueSequence);
+if (seqAbortBtn) seqAbortBtn.addEventListener('click', abortSequence);
 
 fetchStatus();
 loadLabviewConfig();

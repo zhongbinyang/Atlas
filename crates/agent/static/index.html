@@ -214,21 +214,33 @@
                 <thead>
                   <tr>
                     <th>#</th>
+                    <th>启用</th>
+                    <th>断点</th>
                     <th>ID</th>
                     <th>名称</th>
+                    <th>类型</th>
                     <th>入参</th>
+                    <th>Spec</th>
+                    <th>Fail策略</th>
+                    <th>结果</th>
+                    <th>实测</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="seq-selected-body">
-                  <tr><td colspan="5" class="empty">队列为空，从左侧添加</td></tr>
+                  <tr><td colspan="12" class="empty">队列为空，从左侧添加</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
         </div>
-        <div class="seq-actions">
-          <button id="seq-run-btn" type="button" class="btn-primary">按序执行</button>
+        <div class="seq-run-bar">
+          <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
+          <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
+          <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
+          <button id="seq-continue-btn" type="button" disabled>继续</button>
+          <button id="seq-abort-btn" type="button" disabled>中止</button>
+          <span id="seq-overall"></span>
         </div>
         <p id="seq-msg" class="msg" hidden></p>
         <div id="seq-results"></div>
