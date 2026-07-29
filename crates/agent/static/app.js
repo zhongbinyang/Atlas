@@ -10,7 +10,7 @@ async function fetchStatus() {
   document.getElementById('metric-memory').textContent = data.memory_percent.toFixed(1) + '%';
   const busyEl = document.getElementById('metric-busy');
   busyEl.textContent = data.busy ? '● 执行中' : '● 空闲';
-  busyEl.className = 'metric-busy ' + (data.busy ? 'is-busy' : 'is-idle');
+  busyEl.className = data.busy ? 'is-busy' : 'is-idle';
   document.getElementById('uptime').textContent = formatUptime(data.uptime_secs);
 }
 
@@ -85,20 +85,20 @@ async function registerNow() {
   const msg = document.getElementById('register-msg');
   msg.hidden = false;
   msg.textContent = '注册中…';
-  msg.className = 'msg';
+  msg.className = 'msg status-rail-msg';
   try {
     const resp = await fetch('/api/register-now', { method: 'POST' });
     const data = await resp.json();
     if (resp.ok) {
       msg.textContent = '注册成功';
-      msg.className = 'msg ok';
+      msg.className = 'msg status-rail-msg ok';
     } else {
       msg.textContent = '注册失败: ' + (data.error || resp.status);
-      msg.className = 'msg err';
+      msg.className = 'msg status-rail-msg err';
     }
   } catch (e) {
     msg.textContent = '注册失败: ' + e.message;
-    msg.className = 'msg err';
+    msg.className = 'msg status-rail-msg err';
   }
 }
 

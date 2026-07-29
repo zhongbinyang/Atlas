@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>产线 Agent</title>
+  <title>ATLAS — 测试机台</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
@@ -12,7 +12,11 @@
 <body>
   <header class="topbar">
     <div class="topbar-left">
-      <h1 class="brand">产线 Agent</h1>
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-block">
+        <h1 class="brand">ATLAS</h1>
+        <p class="brand-sub">测试机台</p>
+      </div>
       <nav class="page-tabs">
         <button type="button" class="tab active" data-page="workbench">VI</button>
         <button type="button" class="tab" data-page="sequence">序列</button>
@@ -22,36 +26,32 @@
   </header>
 
   <main class="page">
-    <section id="status-section" class="hero">
-      <div class="hero-meta">
-        <div>
-          <div class="label">主机名</div>
-          <div id="hostname" class="mono">—</div>
-        </div>
-        <div>
-          <div class="label">IP</div>
-          <div id="ip" class="mono">—</div>
-        </div>
-        <div>
-          <div class="label">运行时间</div>
-          <div id="uptime">—</div>
-        </div>
+    <section id="status-section" class="status-rail">
+      <div>
+        <span class="label">主机名</span>
+        <div id="hostname" class="mono">—</div>
       </div>
-      <div class="metrics">
-        <div class="metric">
-          <div class="label">CPU</div>
-          <div id="metric-cpu" class="metric-value mono">—</div>
-        </div>
-        <div class="metric">
-          <div class="label">内存</div>
-          <div id="metric-memory" class="metric-value mono">—</div>
-        </div>
-        <div class="metric">
-          <div class="label">忙碌</div>
-          <div id="metric-busy" class="metric-busy">—</div>
-        </div>
+      <div>
+        <span class="label">IP</span>
+        <div id="ip" class="mono">—</div>
       </div>
-      <p id="register-msg" class="msg" hidden></p>
+      <div>
+        <span class="label">运行时间</span>
+        <div id="uptime">—</div>
+      </div>
+      <div>
+        <span class="label">CPU</span>
+        <div id="metric-cpu" class="mono">—</div>
+      </div>
+      <div>
+        <span class="label">内存</span>
+        <div id="metric-memory" class="mono">—</div>
+      </div>
+      <div>
+        <span class="label">忙碌</span>
+        <div id="metric-busy">—</div>
+      </div>
+      <p id="register-msg" class="msg status-rail-msg" hidden></p>
     </section>
 
     <section id="tasks-section">
