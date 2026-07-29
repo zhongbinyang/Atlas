@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   createLatestTaskRunner,
   createLatestResourceLoader,
+  createMessageChannel,
   createRequestDeduper,
   createRefreshController,
   createSafeEventHandler,
@@ -19,6 +20,18 @@ function deferred() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function createMessageElement() {
+  const element = {
+    hidden: true,
+    textContent: '',
+    className: 'msg',
+  };
+  element.classList = {
+    contains: (name) => element.className.split(/\s+/).includes(name),
+  };
+  return element;
 }
 
 function createTimers() {
@@ -243,6 +256,59 @@ test('resource loader retains the last commit after JSON parsing fails', async (
 
   assert.deepEqual(commits, [['stable']]);
   assert.deepEqual(errors, ['invalid JSON']);
+});
+
+test('operation success and reload failure remain visible in separate channels', () => {
+  for (const operationText of ['已修改', '已删除', '序列已删除']) {
+    const operationElement = createMessageElement();
+    const loadElement = createMessageElement();
+    const operationMessages = createMessageChannel(operationElement);
+    const loadMessages = createMessageChannel(loadElement);
+
+    operationMessages.show(operationText, true);
+    loadMessages.show('加载失败: HTTP 500', false);
+
+    assert.equal(operationElement.textContent, operationText);
+    assert.equal(operationElement.className, 'msg ok');
+    assert.equal(loadElement.textContent, '加载失败: HTTP 500');
+    assert.equal(loadElement.className, 'msg err');
+  }
+});
+
+test('successful reload does not clear operation validation or failure', () => {
+  for (const operationText of ['名称不能为空', '修改失败', '删除失败', '序列删除失败']) {
+    const operationElement = createMessageElement();
+    const loadElement = createMessageElement();
+    const operationMessages = createMessageChannel(operationElement);
+    const loadMessages = createMessageChannel(loadElement);
+
+    operationMessages.show(operationText, false);
+    loadMessages.show('加载失败: invalid JSON', false);
+    loadMessages.clearError();
+
+    assert.equal(operationElement.hidden, false);
+    assert.equal(operationElement.textContent, operationText);
+    assert.equal(operationElement.className, 'msg err');
+  }
+});
+
+test('successful reload clears only its own resource load error', () => {
+  const operationElement = createMessageElement();
+  const viLoadElement = createMessageElement();
+  const sequenceLoadElement = createMessageElement();
+  const operationMessages = createMessageChannel(operationElement);
+  const viLoadMessages = createMessageChannel(viLoadElement);
+  const sequenceLoadMessages = createMessageChannel(sequenceLoadElement);
+
+  operationMessages.show('已删除', true);
+  viLoadMessages.show('VI 加载失败', false);
+  sequenceLoadMessages.show('序列加载失败', false);
+  viLoadMessages.clearError();
+
+  assert.equal(viLoadElement.hidden, true);
+  assert.equal(operationElement.textContent, '已删除');
+  assert.equal(sequenceLoadElement.textContent, '序列加载失败');
+  assert.equal(sequenceLoadElement.hidden, false);
 });
 
 test('safe event handler does not pass the browser event to its async task', async () => {

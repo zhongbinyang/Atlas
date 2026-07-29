@@ -695,18 +695,21 @@ function updateViTemplatesAgentFilter() {
   if (prev && agents.some(a => a.id === prev)) sel.value = prev;
 }
 
+const viTemplateOperationMessages =
+  dashboardRuntime.createMessageChannel(document.getElementById('vi-templates-msg'));
+const viTemplateLoadMessages =
+  dashboardRuntime.createMessageChannel(document.getElementById('vi-templates-load-msg'));
+const sequenceTemplateOperationMessages =
+  dashboardRuntime.createMessageChannel(document.getElementById('sequence-templates-msg'));
+const sequenceTemplateLoadMessages =
+  dashboardRuntime.createMessageChannel(document.getElementById('sequence-templates-load-msg'));
+
 function showViTemplatesMsg(text, ok) {
-  showMsg(document.getElementById('vi-templates-msg'), text, ok);
+  viTemplateOperationMessages.show(text, ok);
 }
 
 function showSequenceTemplatesMsg(text, ok) {
-  showMsg(document.getElementById('sequence-templates-msg'), text, ok);
-}
-
-function clearLoadError(el) {
-  if (!el || !el.classList.contains('err')) return;
-  el.hidden = true;
-  el.textContent = '';
+  sequenceTemplateOperationMessages.show(text, ok);
 }
 
 function loadErrorMessage(error) {
@@ -764,9 +767,9 @@ const loadViTemplates = dashboardRuntime.createLatestResourceLoader({
   commit: (templates) => {
     viTemplates = templates;
     renderViTemplates();
-    clearLoadError(document.getElementById('vi-templates-msg'));
+    viTemplateLoadMessages.clearError();
   },
-  onError: (error) => showViTemplatesMsg('加载失败: ' + loadErrorMessage(error), false),
+  onError: (error) => viTemplateLoadMessages.show('加载失败: ' + loadErrorMessage(error), false),
 });
 
 function isFunctionsRoute() {
@@ -923,9 +926,9 @@ const loadSequenceTemplates = dashboardRuntime.createLatestResourceLoader({
   commit: (templates) => {
     sequenceTemplates = templates;
     renderSequenceTemplates();
-    clearLoadError(document.getElementById('sequence-templates-msg'));
+    sequenceTemplateLoadMessages.clearError();
   },
-  onError: (error) => showSequenceTemplatesMsg('加载失败: ' + loadErrorMessage(error), false),
+  onError: (error) => sequenceTemplateLoadMessages.show('加载失败: ' + loadErrorMessage(error), false),
 });
 
 function isSequencesRoute() {

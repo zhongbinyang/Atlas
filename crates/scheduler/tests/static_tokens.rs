@@ -110,11 +110,47 @@ fn scheduler_dashboard_loads_self_scheduling_refresh_runtime() {
         "sequence load failures must not replace the last successful table"
     );
     assert!(
-        app.contains("showViTemplatesMsg('加载失败: '"),
-        "VI template load failures must use the existing message area"
+        !app.contains("showViTemplatesMsg('加载失败: '"),
+        "VI load failures must not overwrite operation messages"
     );
     assert!(
-        app.contains("showSequenceTemplatesMsg('加载失败: '"),
-        "sequence load failures must use the existing message area"
+        !app.contains("showSequenceTemplatesMsg('加载失败: '"),
+        "sequence load failures must not overwrite operation messages"
+    );
+    assert!(
+        index.contains(r#"id="vi-templates-load-msg" class="msg" hidden"#),
+        "VI templates need a dedicated load message"
+    );
+    assert!(
+        index.contains(r#"id="sequence-templates-load-msg" class="msg" hidden"#),
+        "sequence templates need a dedicated load message"
+    );
+    assert!(
+        app.contains("createMessageChannel(document.getElementById('vi-templates-msg'))"),
+        "VI operations must retain their original message element"
+    );
+    assert!(
+        app.contains("createMessageChannel(document.getElementById('sequence-templates-msg'))"),
+        "sequence operations must retain their original message element"
+    );
+    assert!(
+        app.contains("createMessageChannel(document.getElementById('vi-templates-load-msg'))"),
+        "VI loader must own only its load message"
+    );
+    assert!(
+        app.contains(
+            "createMessageChannel(document.getElementById('sequence-templates-load-msg'))"
+        ),
+        "sequence loader must own only its load message"
+    );
+    assert!(
+        app.contains("viTemplateLoadMessages.clearError()")
+            && app.contains("viTemplateLoadMessages.show('加载失败: '"),
+        "VI loader clear/error paths must use the load channel"
+    );
+    assert!(
+        app.contains("sequenceTemplateLoadMessages.clearError()")
+            && app.contains("sequenceTemplateLoadMessages.show('加载失败: '"),
+        "sequence loader clear/error paths must use the load channel"
     );
 }

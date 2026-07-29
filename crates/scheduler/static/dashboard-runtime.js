@@ -16,6 +16,22 @@
     };
   }
 
+  function createMessageChannel(element) {
+    return {
+      show(text, ok) {
+        element.hidden = false;
+        element.textContent = text;
+        element.className = ok ? 'msg ok' : 'msg err';
+      },
+      clearError() {
+        if (!element.classList.contains('err')) return;
+        element.hidden = true;
+        element.textContent = '';
+        element.className = 'msg';
+      },
+    };
+  }
+
   function startDashboard(loadInitialRoute, refreshController) {
     const initialRoute = loadInitialRoute();
     refreshController.start();
@@ -182,6 +198,7 @@
   return {
     createLatestResourceLoader,
     createLatestTaskRunner,
+    createMessageChannel,
     createRequestDeduper,
     createRefreshController,
     createSafeEventHandler,

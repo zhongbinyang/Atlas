@@ -201,3 +201,131 @@ git diff --check
   Rust 生产代码。
 - 仓库范围外 Rust fmt 基线差异仍存在；本次修改的 Rust 测试文件已单独通过
   `rustfmt --check`。
+
+---
+
+## 最终消息所有权修复（2026-07-29）
+
+### 问题核验
+
+提交 `83d5362` 中，VI/通用与 sequence loader 的 `onError`、成功后的
+`clearLoadError` 仍直接操作原 operation 消息元素：
+
+- 操作成功后 reload 失败会把“已修改/已删除”覆盖成“加载失败”；
+- 操作校验/请求失败后，较早 loader 成功会按 `.err` 清掉操作失败事实；
+- sequence 删除存在同样的交错时序问题。
+
+### RED
+
+先增加 `createMessageChannel` 期望行为测试，使用独立假 DOM 元素真实执行交错：
+
+- VI 编辑成功、VI/通用删除成功、sequence 删除成功与 reload 失败同时保留；
+- 名称校验、修改失败、删除失败、sequence 删除失败不会被 loader 成功清除；
+- 成功 reload 只清除自身资源 load error，不影响 operation 或另一资源。
+
+命令：
+
+```powershell
+node --test crates/scheduler/tests/dashboard_runtime.test.js
+```
+
+关键输出（exit 1）：
+
+```text
+tests 20
+pass 17
+fail 3
+TypeError: createMessageChannel is not a function
+```
+
+同时先更新 Rust 生产接线保护，要求 HTML 中存在两个独立 load 元素，app.js
+为四个元素分别创建通道，且 loader 只使用 load 通道。
+
+```powershell
+cargo test -p scheduler --test static_tokens
+```
+
+关键输出（exit 1）：
+
+```text
+test scheduler_dashboard_loads_self_scheduling_refresh_runtime ... FAILED
+VI load failures must not overwrite operation messages
+test result: FAILED. 1 passed; 1 failed
+```
+
+### GREEN 实现
+
+- `dashboard-runtime.js` 新增 `createMessageChannel(element)`：
+  - `show(text, ok)` 只写所属元素；
+  - `clearError()` 只在所属元素当前为 `.err` 时清空并恢复中性 `.msg`。
+- `index.html` 新增：
+  - `vi-templates-load-msg`
+  - `sequence-templates-load-msg`
+  两者只复用现有 `.msg` 视觉类，没有改动文案或视觉令牌。
+- `app.js` 建立四个独立所有者：
+  - `viTemplateOperationMessages` → 原 `vi-templates-msg`
+  - `viTemplateLoadMessages` → 新 `vi-templates-load-msg`
+  - `sequenceTemplateOperationMessages` → 原 `sequence-templates-msg`
+  - `sequenceTemplateLoadMessages` → 新 `sequence-templates-load-msg`
+- 编辑/删除/校验继续经原 `showViTemplatesMsg` /
+  `showSequenceTemplatesMsg` 写 operation 通道。
+- 两个 resource loader 的 commit/onError 仅调用各自 load 通道的
+  `clearError()` / `show()`。
+
+### GREEN 关键输出
+
+```text
+✔ operation success and reload failure remain visible in separate channels
+✔ successful reload does not clear operation validation or failure
+✔ successful reload clears only its own resource load error
+tests 20
+pass 20
+fail 0
+```
+
+Rust 接线：
+
+```text
+running 2 tests
+test scheduler_and_agent_share_design_tokens ... ok
+test scheduler_dashboard_loads_self_scheduling_refresh_runtime ... ok
+test result: ok. 2 passed; 0 failed
+```
+
+### 本轮验证
+
+```powershell
+node --test crates/scheduler/tests/dashboard_runtime.test.js
+node --check crates/scheduler/static/dashboard-runtime.js
+node --check crates/scheduler/static/app.js
+cargo test -p scheduler --test static_tokens
+cargo test -p scheduler
+git diff --check
+```
+
+结果：
+
+- Node：20 passed，0 failed。
+- JavaScript 语法：两份均 exit 0。
+- Rust 静态资源：2 passed，0 failed。
+- scheduler：62 个单元测试 + 2 个静态资源测试通过，0 failed。
+- `git diff --check`：exit 0。
+
+### 本轮文件与自审
+
+- `.superpowers/sdd/final-fix-report.md`
+- `crates/scheduler/static/dashboard-runtime.js`
+- `crates/scheduler/static/app.js`
+- `crates/scheduler/static/index.html`
+- `crates/scheduler/tests/dashboard_runtime.test.js`
+- `crates/scheduler/tests/static_tokens.rs`
+
+自审确认：
+
+- `rg` 显示 operation helper 只调用 operation 通道；
+- loader commit/onError 只调用对应 load 通道；
+- 不存在 `clearLoadError` 或 loader 调用 operation helper 的遗留路径；
+- 两个资源的 load 通道彼此独立；
+- API、路由、按钮文案、视觉令牌与 metrics 均未改动。
+
+顾虑仍只有仓库既有 Rust warnings 与范围外 fmt 基线差异。
