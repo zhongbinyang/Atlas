@@ -504,6 +504,9 @@ let seqDragIndex = null;
 let seqInputsEditIndex = -1;
 let seqTemplates = [];
 let seqActiveTemplateId = null;
+let seqExpandedIndexes = {};
+let seqRegisteredQuery = '';
+let seqRegisteredSource = 'all';
 
 function showPage(page) {
   const workbench = document.getElementById('page-workbench');
@@ -550,13 +553,13 @@ function setSeqControlsDisabled(disabled) {
   if (snEl) snEl.disabled = disabled || seqPaused;
   if (woEl) woEl.disabled = disabled || seqPaused;
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
-    if (btn.classList.contains('seq-spec-btn')) return;
+    if (btn.classList.contains('seq-detail-toggle')) return;
     btn.disabled = disabled || seqPaused;
   });
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
     el.disabled = disabled || seqPaused;
   });
-  document.querySelectorAll('#seq-selected-body tr[data-index]').forEach(function (row) {
+  document.querySelectorAll('#seq-selected-body tr.seq-row[data-index]').forEach(function (row) {
     row.draggable = !disabled && !seqPaused;
   });
 }
@@ -591,6 +594,12 @@ function updateSeqOverall(data) {
   if (data && data.overall) parts.push('总体: ' + data.overall);
   if (data && data.sn) parts.push('SN: ' + data.sn);
   el.textContent = parts.join(' · ');
+  el.classList.remove('seq-overall-pass', 'seq-overall-fail');
+  const overall = data && data.overall ? String(data.overall).toLowerCase() : '';
+  if (overall === 'pass' || overall === 'ok') el.classList.add('seq-overall-pass');
+  else if (overall === 'fail' || overall === 'failed' || overall === 'aborted' || overall === 'error') {
+    el.classList.add('seq-overall-fail');
+  }
 }
 
 function applyStepResults(steps) {
@@ -806,6 +815,23 @@ async function loadSeqRegistered() {
   }
 }
 
+function filteredSeqRegistered() {
+  const q = (seqRegisteredQuery || '').trim().toLowerCase();
+  return seqRegistered.filter(function (t) {
+    const source = t._source === 'general' ? 'general' : 'labview';
+    if (seqRegisteredSource !== 'all' && source !== seqRegisteredSource) return false;
+    if (!q) return true;
+    const hay = [
+      t.id,
+      t.name,
+      t.kind,
+      t.origin_agent_name,
+      t.origin_agent_id,
+    ].map(function (v) { return v == null ? '' : String(v).toLowerCase(); }).join(' ');
+    return hay.indexOf(q) >= 0;
+  });
+}
+
 function renderSeqRegistered() {
   const tbody = document.getElementById('seq-registered-body');
   tbody.innerHTML = '';
@@ -813,8 +839,13 @@ function renderSeqRegistered() {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无中心已注册功能</td></tr>';
     return;
   }
-  for (let i = 0; i < seqRegistered.length; i++) {
-    const t = seqRegistered[i];
+  const list = filteredSeqRegistered();
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">无匹配功能，请调整搜索或筛选</td></tr>';
+    return;
+  }
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
     const row = document.createElement('tr');
     const isGeneral = t._source === 'general';
     const typeLabel = isGeneral ? '通用' : 'VI';
@@ -920,11 +951,30 @@ function renderSequenceTemplates() {
   }
 }
 
+function resultBadgeHtml(stepResult) {
+  if (!stepResult) return '<span class="seq-result-badge">—</span>';
+  const status = stepResult.status || (stepResult.ok ? 'pass' : 'fail');
+  const cls = String(status).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return '<span class="seq-result-badge ' + escapeHtml(cls) + '">' +
+    escapeHtml(formatStepStatus(status)) + '</span>';
+}
+
+function toggleSeqDetail(index) {
+  if (seqExpandedIndexes[index]) delete seqExpandedIndexes[index];
+  else seqExpandedIndexes[index] = true;
+  renderSeqSelected();
+}
+
 function renderSeqSelected() {
   const tbody = document.getElementById('seq-selected-body');
   tbody.innerHTML = '';
+  const keep = {};
+  for (let i = 0; i < seqSelected.length; i++) {
+    if (seqExpandedIndexes[i]) keep[i] = true;
+  }
+  seqExpandedIndexes = keep;
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="empty">队列为空，从左侧添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空，从左侧添加</td></tr>';
     setSeqControlsDisabled(false);
     return;
   }
@@ -933,33 +983,26 @@ function renderSeqSelected() {
     const row = document.createElement('tr');
     row.setAttribute('data-index', String(i));
     row.draggable = !seqRunning && !seqPaused;
-    row.className = 'seq-row';
+    row.className = 'seq-row' + (seqExpandedIndexes[i] ? ' seq-row-expanded' : '');
     const pos = item.position != null ? item.position : i;
     const stepResult = seqStepResults[pos];
     const source = item.template_source === 'general' ? 'general' : 'labview';
     const templateId = source === 'general' ? item.general_template_id : item.vi_template_id;
     const name = escapeHtml(item.name || templateId || '—');
-    const idCol = escapeHtml(String(templateId ?? '—'));
     const kind = escapeHtml(item.kind || 'labview');
     const enabled = item.enabled !== false;
     const breakpoint = !!item.breakpoint;
     const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
     const limits = Array.isArray(item.limits) ? item.limits : [];
+    const expanded = !!seqExpandedIndexes[i];
 
     row.innerHTML =
       '<td class="mono">' + (i + 1) + '</td>' +
       '<td class="seq-check-cell"></td>' +
       '<td class="seq-check-cell"></td>' +
-      '<td class="mono">' + idCol + '</td>' +
       '<td>' + name + '</td>' +
       '<td class="mono">' + kind + '</td>' +
-      '<td class="inputs-cell-host"></td>' +
-      '<td class="seq-spec-cell"></td>' +
-      '<td class="seq-fail-cell"></td>' +
-      '<td class="seq-result-cell mono">' + escapeHtml(stepResult ? formatStepStatus(stepResult.status) : '—') + '</td>' +
-      '<td class="seq-measured-cell mono">' + escapeHtml(stepResult ? formatMeasuredSummary(stepResult.measured) : '—') + '</td>';
-
-    renderSeqInputsCell(row.querySelector('.inputs-cell-host'), item, i);
+      '<td class="seq-result-cell">' + resultBadgeHtml(stepResult) + '</td>';
 
     const enabledCb = document.createElement('input');
     enabledCb.type = 'checkbox';
@@ -983,27 +1026,16 @@ function renderSeqSelected() {
     });
     row.querySelectorAll('.seq-check-cell')[1].appendChild(bpCb);
 
-    const specBtn = document.createElement('button');
-    specBtn.type = 'button';
-    specBtn.className = 'seq-spec-btn';
-    specBtn.textContent = formatSpecSummary(limits);
-    specBtn.title = '点击编辑 Spec';
-    specBtn.disabled = seqRunning || seqPaused;
-    specBtn.addEventListener('click', function () { editLimitsAt(i); });
-    row.querySelector('.seq-spec-cell').appendChild(specBtn);
-
-    const failSel = document.createElement('select');
-    failSel.innerHTML = '<option value="stop">停止</option><option value="continue">继续</option>';
-    failSel.value = failPolicy;
-    failSel.disabled = seqRunning || seqPaused;
-    failSel.addEventListener('change', async function () {
-      item.fail_policy = failSel.value === 'continue' ? 'continue' : 'stop';
-      await saveQueue();
-    });
-    row.querySelector('.seq-fail-cell').appendChild(failSel);
-
     const actions = document.createElement('td');
     actions.className = 'seq-row-actions';
+    const detailBtn = document.createElement('button');
+    detailBtn.type = 'button';
+    detailBtn.className = 'btn-sm seq-detail-toggle';
+    detailBtn.textContent = expanded ? '收起' : '详情';
+    detailBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleSeqDetail(i);
+    });
     const upBtn = document.createElement('button');
     upBtn.type = 'button';
     upBtn.textContent = '↑';
@@ -1021,6 +1053,8 @@ function renderSeqSelected() {
     removeBtn.textContent = '移除';
     removeBtn.disabled = seqRunning || seqPaused;
     removeBtn.addEventListener('click', function () { removeFromQueue(i); });
+    actions.appendChild(detailBtn);
+    actions.appendChild(document.createTextNode(' '));
     actions.appendChild(upBtn);
     actions.appendChild(document.createTextNode(' '));
     actions.appendChild(downBtn);
@@ -1033,6 +1067,81 @@ function renderSeqSelected() {
     row.addEventListener('drop', onSeqDrop);
     row.addEventListener('dragend', onSeqDragEnd);
     tbody.appendChild(row);
+
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'seq-detail-row';
+    detailRow.hidden = !expanded;
+    const detailTd = document.createElement('td');
+    detailTd.colSpan = 7;
+    const panel = document.createElement('div');
+    panel.className = 'seq-detail-panel';
+
+    const meta = document.createElement('div');
+    meta.className = 'seq-detail-meta';
+    meta.innerHTML =
+      '<span>模板 ID <span class="mono">' + escapeHtml(String(templateId ?? '—')) + '</span></span>' +
+      '<span>来源 <span class="mono">' + escapeHtml(source) + '</span></span>';
+    panel.appendChild(meta);
+
+    const detailActions = document.createElement('div');
+    detailActions.className = 'seq-detail-actions';
+    const inputsHost = document.createElement('div');
+    inputsHost.className = 'inputs-cell-host';
+    renderSeqInputsCell(inputsHost, item, i);
+    detailActions.appendChild(inputsHost);
+
+    const specBtn = document.createElement('button');
+    specBtn.type = 'button';
+    specBtn.className = 'seq-spec-btn';
+    specBtn.textContent = formatSpecSummary(limits);
+    specBtn.title = '点击编辑 Spec';
+    specBtn.disabled = seqRunning || seqPaused;
+    specBtn.addEventListener('click', function () { editLimitsAt(i); });
+    detailActions.appendChild(specBtn);
+
+    const failWrap = document.createElement('label');
+    failWrap.className = 'seq-fail-cell';
+    failWrap.appendChild(document.createTextNode('Fail '));
+    const failSel = document.createElement('select');
+    failSel.innerHTML = '<option value="stop">停止</option><option value="continue">继续</option>';
+    failSel.value = failPolicy;
+    failSel.disabled = seqRunning || seqPaused;
+    failSel.addEventListener('change', async function () {
+      item.fail_policy = failSel.value === 'continue' ? 'continue' : 'stop';
+      await saveQueue();
+    });
+    failWrap.appendChild(failSel);
+    detailActions.appendChild(failWrap);
+    panel.appendChild(detailActions);
+
+    const measured = document.createElement('div');
+    measured.className = 'seq-detail-measured mono';
+    measured.textContent = '实测: ' + (stepResult ? formatMeasuredSummary(stepResult.measured) : '—');
+    panel.appendChild(measured);
+
+    if (stepResult && stepResult.error) {
+      const errEl = document.createElement('div');
+      errEl.className = 'seq-detail-error mono';
+      errEl.textContent = '错误: ' + stepResult.error;
+      panel.appendChild(errEl);
+    }
+
+    if (stepResult && stepResult.result != null) {
+      const details = document.createElement('details');
+      details.className = 'seq-step-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '原始返回 JSON';
+      const pre = document.createElement('pre');
+      pre.className = 'mono lv-pre';
+      pre.textContent = JSON.stringify(stepResult.result, null, 2);
+      details.appendChild(summary);
+      details.appendChild(pre);
+      panel.appendChild(details);
+    }
+
+    detailTd.appendChild(panel);
+    detailRow.appendChild(detailTd);
+    tbody.appendChild(detailRow);
   }
   setSeqControlsDisabled(seqRunning);
 }
@@ -1256,46 +1365,14 @@ function onSeqDragEnd(e) {
 
 function renderSeqResults(data) {
   const container = document.getElementById('seq-results');
+  if (!container) return;
   container.innerHTML = '';
-  if (!data || !data.steps || !data.steps.length) return;
-  const heading = document.createElement('h3');
-  heading.textContent = '执行结果';
-  container.appendChild(heading);
-  const list = document.createElement('div');
-  list.className = 'seq-results-list';
-  for (let i = 0; i < data.steps.length; i++) {
-    const step = data.steps[i];
-    const row = document.createElement('div');
-    row.className = 'seq-step ' + (step.ok ? 'seq-step-ok' : 'seq-step-fail');
-    const label = document.createElement('span');
-    label.className = 'seq-step-label';
-    label.textContent = (step.position != null ? step.position + 1 : i + 1) + '. ' + (step.name || step.template_id || '—');
-    const status = document.createElement('span');
-    status.className = 'seq-step-status';
-    status.textContent = step.ok ? '成功' : '失败';
-    row.appendChild(label);
-    row.appendChild(status);
-    if (!step.ok && step.error) {
-      const errEl = document.createElement('div');
-      errEl.className = 'seq-step-error mono';
-      errEl.textContent = step.error;
-      row.appendChild(errEl);
-    }
-    if (step.result != null) {
-      const details = document.createElement('details');
-      details.className = 'seq-step-details';
-      const summary = document.createElement('summary');
-      summary.textContent = '原始返回 JSON';
-      const pre = document.createElement('pre');
-      pre.className = 'mono lv-pre';
-      pre.textContent = JSON.stringify(step.result, null, 2);
-      details.appendChild(summary);
-      details.appendChild(pre);
-      row.appendChild(details);
-    }
-    list.appendChild(row);
+  if (!data || !data.steps || !data.steps.length) {
+    container.hidden = true;
+    return;
   }
-  container.appendChild(list);
+  container.hidden = false;
+  container.textContent = '本次共 ' + data.steps.length + ' 步结果，已写入步骤行；点「详情」查看实测与原始返回。详细日志见 Agent sequence_run。';
 }
 
 function handleSequenceResponse(data) {
@@ -1304,6 +1381,19 @@ function handleSequenceResponse(data) {
   if (data.sn) {
     const snEl = document.getElementById('seq-sn');
     if (snEl) snEl.value = data.sn;
+  }
+  if (data.pause && data.pause.before_position != null) {
+    const idx = seqSelected.findIndex(function (item, i) {
+      const pos = item.position != null ? item.position : i;
+      return pos === data.pause.before_position;
+    });
+    if (idx >= 0) seqExpandedIndexes[idx] = true;
+  } else if (data.failed_at != null) {
+    const idx = seqSelected.findIndex(function (item, i) {
+      const pos = item.position != null ? item.position : i;
+      return pos === data.failed_at;
+    });
+    if (idx >= 0) seqExpandedIndexes[idx] = true;
   }
   renderSeqResults(data);
   renderSeqSelected();
@@ -1613,6 +1703,20 @@ const seqContinueBtn = document.getElementById('seq-continue-btn');
 const seqAbortBtn = document.getElementById('seq-abort-btn');
 if (seqContinueBtn) seqContinueBtn.addEventListener('click', continueSequence);
 if (seqAbortBtn) seqAbortBtn.addEventListener('click', abortSequence);
+const seqRegisteredSearch = document.getElementById('seq-registered-search');
+const seqRegisteredFilter = document.getElementById('seq-registered-filter');
+if (seqRegisteredSearch) {
+  seqRegisteredSearch.addEventListener('input', function () {
+    seqRegisteredQuery = seqRegisteredSearch.value || '';
+    renderSeqRegistered();
+  });
+}
+if (seqRegisteredFilter) {
+  seqRegisteredFilter.addEventListener('change', function () {
+    seqRegisteredSource = seqRegisteredFilter.value || 'all';
+    renderSeqRegistered();
+  });
+}
 
 fetchStatus();
 loadLabviewConfig();

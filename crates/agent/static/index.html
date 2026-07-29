@@ -197,6 +197,14 @@
         <div class="seq-columns">
           <div class="seq-col">
             <h3>中心全部功能</h3>
+            <div class="seq-toolbar">
+              <input id="seq-registered-search" type="search" placeholder="搜索名称 / ID / 机台" />
+              <select id="seq-registered-filter">
+                <option value="all">全部类型</option>
+                <option value="labview">LabVIEW</option>
+                <option value="general">通用</option>
+              </select>
+            </div>
             <div class="table-scroll">
               <table>
                 <thead>
@@ -217,6 +225,7 @@
           </div>
           <div class="seq-col">
             <h3>执行顺序</h3>
+            <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略，并查看实测与原始返回</p>
             <div class="table-scroll">
               <table class="seq-selected-table">
                 <thead>
@@ -224,32 +233,18 @@
                     <th>#</th>
                     <th>启用</th>
                     <th>断点</th>
-                    <th>ID</th>
                     <th>名称</th>
                     <th>类型</th>
-                    <th>入参</th>
-                    <th>Spec</th>
-                    <th>Fail策略</th>
                     <th>结果</th>
-                    <th>实测</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="seq-selected-body">
-                  <tr><td colspan="12" class="empty">队列为空，从左侧添加</td></tr>
+                  <tr><td colspan="7" class="empty">队列为空，从左侧添加</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
-        </div>
-        <div class="seq-run-bar">
-          <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
-          <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
-          <button id="seq-save-template-btn" type="button">保存为模板</button>
-          <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
-          <button id="seq-continue-btn" type="button" disabled>继续</button>
-          <button id="seq-abort-btn" type="button" disabled>中止</button>
-          <span id="seq-overall"></span>
         </div>
         <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
         <p id="seq-msg" class="msg" hidden></p>
@@ -272,8 +267,17 @@
             </table>
           </div>
         </section>
-        <div id="seq-results"></div>
+        <div id="seq-results" class="seq-results-hint" hidden></div>
       </section>
+      <div class="seq-run-bar seq-run-bar-fixed">
+        <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
+        <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
+        <button id="seq-save-template-btn" type="button">保存为模板</button>
+        <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
+        <button id="seq-continue-btn" type="button" disabled>继续</button>
+        <button id="seq-abort-btn" type="button" disabled>中止</button>
+        <span id="seq-overall"></span>
+      </div>
     </div>
   </main>
 
