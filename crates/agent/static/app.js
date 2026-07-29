@@ -1131,20 +1131,23 @@ async function runSequence() {
       showSeqMsg('执行失败: ' + err, false);
       return;
     }
-    const outcome = handleSequenceResponse(data);
-    if (outcome !== 'paused') {
-      setSeqControlsDisabled(false);
-    }
+    handleSequenceResponse(data);
   } catch (e) {
     showSeqMsg('执行失败: ' + e.message, false);
-    setSeqControlsDisabled(false);
   } finally {
+    if (!seqPaused) {
+      setSeqControlsDisabled(false);
+    }
     renderSeqRegistered();
   }
 }
 
 async function continueSequence() {
   if (!seqPaused) return;
+  const contBtn = document.getElementById('seq-continue-btn');
+  const abortBtn = document.getElementById('seq-abort-btn');
+  if (contBtn) contBtn.disabled = true;
+  if (abortBtn) abortBtn.disabled = true;
   setSeqControlsDisabled(true);
   showSeqMsg('继续执行…', true);
   try {
@@ -1154,22 +1157,25 @@ async function continueSequence() {
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('继续失败: ' + err, false);
       seqPaused = false;
-      setSeqControlsDisabled(false);
       return;
     }
-    const outcome = handleSequenceResponse(data);
-    if (outcome !== 'paused') {
-      setSeqControlsDisabled(false);
-    }
+    handleSequenceResponse(data);
   } catch (e) {
     showSeqMsg('继续失败: ' + e.message, false);
     seqPaused = false;
-    setSeqControlsDisabled(false);
+  } finally {
+    if (!seqPaused) {
+      setSeqControlsDisabled(false);
+    }
   }
 }
 
 async function abortSequence() {
   if (!seqPaused) return;
+  const contBtn = document.getElementById('seq-continue-btn');
+  const abortBtn = document.getElementById('seq-abort-btn');
+  if (contBtn) contBtn.disabled = true;
+  if (abortBtn) abortBtn.disabled = true;
   showSeqMsg('中止中…', true);
   try {
     const resp = await fetch('/api/labview/run-sequence/abort', { method: 'POST' });
@@ -1181,10 +1187,10 @@ async function abortSequence() {
     }
     handleSequenceResponse(data);
     seqPaused = false;
-    setSeqControlsDisabled(false);
   } catch (e) {
     showSeqMsg('中止失败: ' + e.message, false);
     seqPaused = false;
+  } finally {
     setSeqControlsDisabled(false);
   }
 }
