@@ -227,6 +227,18 @@ fn default_vi_kind() -> String {
     "labview".into()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_fail_stop() -> String {
+    "stop".into()
+}
+
+fn default_empty_array() -> serde_json::Value {
+    serde_json::json!([])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViRunQueueItemView {
     pub id: String,
@@ -238,6 +250,11 @@ pub struct ViRunQueueItemView {
     pub inputs: serde_json::Value,
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String,
+    pub limits: serde_json::Value,
+    pub note: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -253,11 +270,23 @@ pub struct ReplaceViRunQueueRequest {
 #[derive(Debug, Deserialize)]
 pub struct ReplaceViRunQueueItem {
     pub vi_template_id: i64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub breakpoint: bool,
+    #[serde(default = "default_fail_stop")]
+    pub fail_policy: String,
+    #[serde(default = "default_empty_array")]
+    pub limits: serde_json::Value,
+    #[serde(default)]
+    pub note: String,
 }
 
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
     let inputs: serde_json::Value = serde_json::from_str(&item.inputs_json)
         .map_err(|err| format!("invalid inputs_json: {err}"))?;
+    let limits: serde_json::Value = serde_json::from_str(&item.limits_json)
+        .map_err(|err| format!("invalid limits_json: {err}"))?;
     Ok(ViRunQueueItemView {
         id: item.id,
         vi_template_id: item.vi_template_id,
@@ -268,6 +297,11 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         inputs,
         show_front_panel: item.show_front_panel,
         timeout_secs: item.timeout_secs,
+        enabled: item.enabled,
+        breakpoint: item.breakpoint,
+        fail_policy: item.fail_policy,
+        limits,
+        note: item.note,
     })
 }
 
@@ -1500,11 +1534,11 @@ async fn put_vi_run_queue(
         .into_iter()
         .map(|item| ViRunQueueReplaceItem {
             vi_template_id: item.vi_template_id,
-            enabled: true,
-            breakpoint: false,
-            fail_policy: "stop".into(),
-            limits_json: "[]".into(),
-            note: "".into(),
+            enabled: item.enabled,
+            breakpoint: item.breakpoint,
+            fail_policy: item.fail_policy,
+            limits_json: serde_json::to_string(&item.limits).unwrap_or_else(|_| "[]".into()),
+            note: item.note,
         })
         .collect();
 
@@ -3137,6 +3171,65 @@ mod tests {
         )
         .await;
 
+        let put_meta_body = serde_json::json!({
+            "items": [{
+                "vi_template_id": tpl_a.id,
+                "enabled": false,
+                "breakpoint": true,
+                "fail_policy": "continue",
+                "limits": [{"output":"x","min":0,"max":1}],
+                "note": "n1"
+            }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/agents/{agent_id}/vi-run-queue"),
+                &put_meta_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let put_meta_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(put_meta_list.items.len(), 1);
+        let meta_item = &put_meta_list.items[0];
+        assert_eq!(meta_item.vi_template_id, tpl_a.id);
+        assert!(!meta_item.enabled);
+        assert!(meta_item.breakpoint);
+        assert_eq!(meta_item.fail_policy, "continue");
+        assert_eq!(
+            meta_item.limits,
+            serde_json::json!([{"output":"x","min":0,"max":1}])
+        );
+        assert_eq!(meta_item.note, "n1");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/vi-run-queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let get_meta_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(get_meta_list.items.len(), 1);
+        let get_meta_item = &get_meta_list.items[0];
+        assert_eq!(get_meta_item.vi_template_id, tpl_a.id);
+        assert!(!get_meta_item.enabled);
+        assert!(get_meta_item.breakpoint);
+        assert_eq!(get_meta_item.fail_policy, "continue");
+        assert_eq!(
+            get_meta_item.limits,
+            serde_json::json!([{"output":"x","min":0,"max":1}])
+        );
+        assert_eq!(get_meta_item.note, "n1");
+
         let put_body = serde_json::json!({
             "items": [
                 { "vi_template_id": tpl_b.id },
@@ -3168,6 +3261,16 @@ mod tests {
         assert!(put_list.items[1].show_front_panel);
         assert_eq!(put_list.items[1].timeout_secs, Some(45));
         assert!(put_list.items[1].inputs.is_array());
+        assert!(put_list.items[0].enabled);
+        assert!(!put_list.items[0].breakpoint);
+        assert_eq!(put_list.items[0].fail_policy, "stop");
+        assert_eq!(put_list.items[0].limits, serde_json::json!([]));
+        assert_eq!(put_list.items[0].note, "");
+        assert!(put_list.items[1].enabled);
+        assert!(!put_list.items[1].breakpoint);
+        assert_eq!(put_list.items[1].fail_policy, "stop");
+        assert_eq!(put_list.items[1].limits, serde_json::json!([]));
+        assert_eq!(put_list.items[1].note, "");
 
         let resp = app
             .clone()
