@@ -5,7 +5,7 @@ Status: draft for user review
 
 ## Goal
 
-Upgrade Agent「执行顺序」from a simple ordered template list into a **formal test workbench** suitable for optical-module testing: per-step limits (spec), Pass/Fail after each step, skip, breakpoint-before-step, and a required serial/job number on each run.
+Upgrade Agent「执行顺序」from a simple ordered template list into a **formal test workbench** suitable for optical-module testing: per-step limits (spec), Pass/Fail after each step, skip, breakpoint-before-step, and optional serial/job metadata on each run.
 
 ## Decisions (locked)
 
@@ -17,7 +17,7 @@ Upgrade Agent「执行顺序」from a simple ordered template list into a **form
 | Run control | **Edit-time**: enable/skip checkbox + breakpoint (pause **before** that step) |
 | Architecture | **Route A**: extend `vi_run_queue_items` (+ run request metadata); defer full Test Run entity |
 | Fail default | **Stop** the sequence |
-| SN / 工单 | **Required** before start |
+| SN / 工单 | **Optional** before start; many recipes instead add a「通用」step that **reads SN** into the run |
 
 ## Non-goals (phase 1)
 
@@ -47,13 +47,14 @@ Upgrade Agent「执行顺序」from a simple ordered template list into a **form
 
 ```
 Edit queue (PUT) → center stores step meta
-Operator enters SN → Start
+Operator may enter SN (optional) → Start
 Agent loads queue → for each enabled step:
   if breakpoint before step → wait for Continue
-  run template (VI / delay)
+  run template (VI / delay / general read-SN)
+  if step outputs SN → update run.sn (see SN resolution)
   if limits → judge outputs → Pass/Fail/Error
   if Fail/Error and policy=stop → halt
-Return step results + overall result (+ SN)
+Return step results + overall result (+ resolved SN if any)
 ```
 
 ## Data model
@@ -106,14 +107,25 @@ Rules:
 }
 ```
 
-- `sn` required (non-empty trim); else 400  
+- `sn` **optional** (omit, null, or empty trim → no pre-set SN)  
 - `work_order` optional string  
+- Do **not** 400 solely for missing SN  
+
+### SN resolution
+
+Run context keeps `sn` (nullable), resolved in order:
+
+1. Pre-set from request body if non-empty  
+2. Else / also: if a step’s outputs include a conventional key (phase 1: `SN` or `sn`), update run `sn` from that value (last write wins if multiple read steps)  
+3. Response echoes final resolved `sn` (may still be null)
+
+UI guidance: recipes that need DUT identity should place a「通用 · 读 SN」类步骤 early in the queue rather than forcing the run bar.
 
 Response (extended):
 
 ```json
 {
-  "sn": "...",
+  "sn": "...",   // may be null if never set by request or step
   "work_order": null,
   "overall": "pass" | "fail" | "error" | "aborted",
   "stopped": true,
@@ -160,7 +172,7 @@ Phase 1 options considered:
 
 If implementation cost is too high for first slice, **MVP slice order** is allowed:
 
-1. Queue fields + UI + skip + limits + fail stop + SN (no live breakpoint)  
+1. Queue fields + UI + skip + limits + fail stop + optional SN (no live breakpoint)   
 2. Then breakpoint session  
 
 Spec still requires breakpoint in phase 1 delivery; implementers may land it as the second PR within the same phase.
@@ -180,9 +192,9 @@ Spec still requires breakpoint in phase 1 delivery; implementers may land it as 
 
 ### Run bar
 
-- SN (required), 工单 (optional)  
+- SN (optional), 工单 (optional); hint that SN may come from a queue step  
 - 开始 / 继续 / 中止  
-- Overall status + current step highlight  
+- Overall status + current step highlight + resolved SN when available  
 
 ### Left pane
 
@@ -202,9 +214,10 @@ Unchanged purpose (add templates). No limits on templates.
 
 - Unit: limit judge (inclusive bounds, missing value → Error, empty limits → ok)  
 - Store/API: queue round-trip of new fields; defaults for old payloads  
-- Agent: skip steps not executed; fail_policy stop halts; SN required 400  
+- Agent: skip steps not executed; fail_policy stop halts; missing SN still starts  
+- Agent: step output `SN`/`sn` updates run context when body SN omitted  
 - Breakpoint: pause then continue completes remaining steps  
-- UI smoke: edit limits, toggle skip/breakpoint, run with SN  
+- UI smoke: edit limits, toggle skip/breakpoint, run without SN and with optional SN  
 
 ## Migration
 
