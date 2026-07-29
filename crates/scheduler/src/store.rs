@@ -95,8 +95,76 @@ pub struct ViTemplate {
 }
 
 #[derive(Debug, Clone)]
+pub struct GeneralTemplate {
+    pub id: i64,
+    pub name: String,
+    pub origin_agent_id: String,
+    pub kind: String,
+    pub inputs_json: String,
+    pub outputs_json: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SequenceTemplate {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub created_by_agent_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_run_overall: Option<String>,
+    pub last_run_sn: Option<String>,
+    pub last_run_work_order: Option<String>,
+    pub last_run_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SequenceTemplateStep {
+    pub id: i64,
+    pub sequence_template_id: i64,
+    pub position: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub inputs_json: String,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String,
+    pub limits_json: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SequenceTemplateEnriched {
+    pub template: SequenceTemplate,
+    pub created_by_agent_name: Option<String>,
+    pub step_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SequenceTemplateLastStep {
+    pub position: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub name: String,
+    pub kind: String,
+    pub ok: bool,
+    pub status: String,
+    pub measured_json: Option<String>,
+    pub limits_json: Option<String>,
+    pub result_json: Option<String>,
+    pub error_text: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ViRunQueueReplaceItem {
-    pub vi_template_id: i64,
+    pub template_source: String, // "labview" | "general"
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub inputs_json: Option<String>,
     pub enabled: bool,
     pub breakpoint: bool,
     pub fail_policy: String, // "stop" | "continue"
@@ -108,7 +176,9 @@ pub struct ViRunQueueReplaceItem {
 pub struct ViRunQueueItem {
     pub id: String,
     pub agent_id: String,
-    pub vi_template_id: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
     pub position: i64,
     pub created_at: String,
     pub template_name: String,
@@ -135,7 +205,10 @@ fn normalize_fail_policy(fail_policy: &str) -> &'static str {
 #[derive(Debug)]
 pub enum QueueReplaceError {
     AgentNotFound,
-    BadTemplate { vi_template_id: i64 },
+    BadTemplate {
+        template_source: String,
+        template_id: i64,
+    },
     Db(sqlx::Error),
 }
 
@@ -157,6 +230,12 @@ pub enum TransferError {
 #[derive(Debug, Clone)]
 pub struct ViTemplateEnriched {
     pub template: ViTemplate,
+    pub origin_agent_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneralTemplateEnriched {
+    pub template: GeneralTemplate,
     pub origin_agent_name: Option<String>,
 }
 
@@ -588,6 +667,341 @@ impl Store {
         Ok(row.map(|r| r.into_screenshot()))
     }
 
+    pub async fn insert_general_template(
+        &self,
+        name: &str,
+        origin_agent_id: &str,
+        kind: &str,
+        inputs: &serde_json::Value,
+        outputs: &serde_json::Value,
+    ) -> Result<GeneralTemplate, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let outputs_json = serde_json::to_string(outputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("outputs json: {e}")))?;
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            INSERT INTO general_templates (
+                name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING
+                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+            "#,
+        )
+        .bind(name)
+        .bind(origin_agent_id)
+        .bind(kind)
+        .bind(&inputs_json)
+        .bind(&outputs_json)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_general_template())
+    }
+
+    pub async fn find_duplicate_general_template(
+        &self,
+        name: &str,
+        inputs: &serde_json::Value,
+    ) -> Result<Option<GeneralTemplate>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM general_templates
+            WHERE name = $1
+            "#,
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            let existing: serde_json::Value = match serde_json::from_str(&row.inputs_json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if &existing == inputs {
+                return Ok(Some(row.into_general_template()));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn get_general_template(
+        &self,
+        id: i64,
+    ) -> Result<Option<GeneralTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM general_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_general_template()))
+    }
+
+    pub async fn list_general_templates_enriched(
+        &self,
+        agent_id: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<GeneralTemplateEnriched>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateEnrichedRow>(
+            r#"
+            SELECT
+                t.id, t.name, t.origin_agent_id, t.kind, t.inputs_json, t.outputs_json,
+                t.created_at, o.name AS origin_agent_name
+            FROM general_templates t
+            LEFT JOIN agents o ON o.id = t.origin_agent_id
+            WHERE ($1::text IS NULL OR t.origin_agent_id = $1)
+              AND ($2::text IS NULL OR t.kind = $2)
+            ORDER BY t.created_at ASC
+            "#,
+        )
+        .bind(agent_id)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn delete_general_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE general_template_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let affected = sqlx::query("DELETE FROM general_templates WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
+        tx.commit().await?;
+        Ok(affected)
+    }
+
+    pub async fn create_sequence_template_from_queue(
+        &self,
+        agent_id: &str,
+        name: &str,
+        note: &str,
+        queue_items: &[ViRunQueueItem],
+    ) -> Result<SequenceTemplate, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let tpl: SequenceTemplateRow = sqlx::query_as(
+            r#"
+            INSERT INTO sequence_templates
+              (name, note, created_by_agent_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING
+              id, name, note, created_by_agent_id, created_at, updated_at,
+              last_run_overall, last_run_sn, last_run_work_order, last_run_at
+            "#,
+        )
+        .bind(name)
+        .bind(note)
+        .bind(agent_id)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        for item in queue_items {
+            sqlx::query(
+                r#"
+                INSERT INTO sequence_template_steps
+                  (sequence_template_id, position, template_source, vi_template_id, general_template_id,
+                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                "#,
+            )
+            .bind(tpl.id)
+            .bind(item.position)
+            .bind(&item.template_source)
+            .bind(item.vi_template_id)
+            .bind(item.general_template_id)
+            .bind(&item.inputs_json)
+            .bind(item.enabled)
+            .bind(item.breakpoint)
+            .bind(&item.fail_policy)
+            .bind(&item.limits_json)
+            .bind(&item.note)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(tpl.into_sequence_template())
+    }
+
+    pub async fn list_sequence_templates(&self) -> Result<Vec<SequenceTemplateEnriched>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SequenceTemplateEnrichedRow>(
+            r#"
+            SELECT
+              t.id, t.name, t.note, t.created_by_agent_id, t.created_at, t.updated_at,
+              t.last_run_overall, t.last_run_sn, t.last_run_work_order, t.last_run_at,
+              a.name AS created_by_agent_name,
+              COUNT(s.id) AS step_count
+            FROM sequence_templates t
+            LEFT JOIN agents a ON a.id = t.created_by_agent_id
+            LEFT JOIN sequence_template_steps s ON s.sequence_template_id = t.id
+            GROUP BY t.id, a.name
+            ORDER BY t.updated_at DESC, t.id DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn get_sequence_template(&self, id: i64) -> Result<Option<SequenceTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, SequenceTemplateRow>(
+            r#"
+            SELECT
+              id, name, note, created_by_agent_id, created_at, updated_at,
+              last_run_overall, last_run_sn, last_run_work_order, last_run_at
+            FROM sequence_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_sequence_template()))
+    }
+
+    pub async fn get_sequence_template_steps(
+        &self,
+        sequence_template_id: i64,
+    ) -> Result<Vec<SequenceTemplateStep>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SequenceTemplateStepRow>(
+            r#"
+            SELECT
+              id, sequence_template_id, position, template_source, vi_template_id,
+              general_template_id, inputs_json, enabled, breakpoint, fail_policy,
+              limits_json, note
+            FROM sequence_template_steps
+            WHERE sequence_template_id = $1
+            ORDER BY position ASC, id ASC
+            "#,
+        )
+        .bind(sequence_template_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_step()).collect())
+    }
+
+    pub async fn load_sequence_template_to_agent(
+        &self,
+        sequence_template_id: i64,
+        agent_id: &str,
+    ) -> Result<Vec<ViRunQueueItem>, QueueReplaceError> {
+        let steps = self
+            .get_sequence_template_steps(sequence_template_id)
+            .await
+            .map_err(QueueReplaceError::Db)?;
+        let items: Vec<ViRunQueueReplaceItem> = steps
+            .into_iter()
+            .map(|step| ViRunQueueReplaceItem {
+                template_source: step.template_source,
+                vi_template_id: step.vi_template_id,
+                general_template_id: step.general_template_id,
+                inputs_json: Some(step.inputs_json),
+                enabled: step.enabled,
+                breakpoint: step.breakpoint,
+                fail_policy: step.fail_policy,
+                limits_json: step.limits_json,
+                note: step.note,
+            })
+            .collect();
+        self.replace_vi_run_queue(agent_id, &items).await
+    }
+
+    pub async fn replace_sequence_template_last_run(
+        &self,
+        sequence_template_id: i64,
+        overall: &str,
+        sn: Option<&str>,
+        work_order: Option<&str>,
+        steps: &[SequenceTemplateLastStep],
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE sequence_templates
+            SET last_run_overall = $1, last_run_sn = $2, last_run_work_order = $3, last_run_at = $4, updated_at = $4
+            WHERE id = $5
+            "#,
+        )
+        .bind(overall)
+        .bind(sn)
+        .bind(work_order)
+        .bind(&now)
+        .bind(sequence_template_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM sequence_template_last_steps WHERE sequence_template_id = $1")
+            .bind(sequence_template_id)
+            .execute(&mut *tx)
+            .await?;
+        for step in steps {
+            sqlx::query(
+                r#"
+                INSERT INTO sequence_template_last_steps
+                  (sequence_template_id, position, template_source, vi_template_id, general_template_id,
+                   name, kind, ok, status, measured_json, limits_json, result_json, error_text, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                "#,
+            )
+            .bind(sequence_template_id)
+            .bind(step.position)
+            .bind(&step.template_source)
+            .bind(step.vi_template_id)
+            .bind(step.general_template_id)
+            .bind(&step.name)
+            .bind(&step.kind)
+            .bind(step.ok)
+            .bind(&step.status)
+            .bind(step.measured_json.as_deref())
+            .bind(step.limits_json.as_deref())
+            .bind(step.result_json.as_deref())
+            .bind(step.error_text.as_deref())
+            .bind(&step.created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn list_sequence_template_last_steps(
+        &self,
+        sequence_template_id: i64,
+    ) -> Result<Vec<SequenceTemplateLastStep>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SequenceTemplateLastStepRow>(
+            r#"
+            SELECT
+              position, template_source, vi_template_id, general_template_id,
+              name, kind, ok, status, measured_json, limits_json, result_json, error_text, created_at
+            FROM sequence_template_last_steps
+            WHERE sequence_template_id = $1
+            ORDER BY position ASC, id ASC
+            "#,
+        )
+        .bind(sequence_template_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_last_step()).collect())
+    }
+
     pub async fn insert_vi_template(
         &self,
         name: &str,
@@ -924,12 +1338,23 @@ impl Store {
     pub async fn list_vi_run_queue(&self, agent_id: &str) -> Result<Vec<ViRunQueueItem>, sqlx::Error> {
         let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
             r#"
-            SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
-                   t.name AS template_name, t.kind, t.vi_path,
-                   t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
+            SELECT q.id, q.agent_id,
+                   CASE
+                     WHEN q.general_template_id IS NOT NULL THEN 'general'
+                     ELSE 'labview'
+                   END AS template_source,
+                   q.vi_template_id, q.general_template_id, q.position, q.created_at,
+                   COALESCE(v.name, g.name) AS template_name,
+                   COALESCE(v.kind, g.kind) AS kind,
+                   COALESCE(v.vi_path, '') AS vi_path,
+                   COALESCE(q.inputs_json, v.inputs_json, g.inputs_json) AS inputs_json,
+                   COALESCE(v.outputs_json, g.outputs_json) AS outputs_json,
+                   COALESCE(v.show_front_panel, 0) AS show_front_panel,
+                   v.timeout_secs AS timeout_secs,
                    q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note
             FROM vi_run_queue_items q
-            JOIN vi_templates t ON t.id = q.vi_template_id
+            LEFT JOIN vi_templates v ON v.id = q.vi_template_id
+            LEFT JOIN general_templates g ON g.id = q.general_template_id
             WHERE q.agent_id = $1
             ORDER BY q.position ASC
             "#,
@@ -949,15 +1374,62 @@ impl Store {
             return Err(QueueReplaceError::AgentNotFound);
         }
 
+        let mut normalized_items = Vec::with_capacity(items.len());
         for item in items {
-            let template = self
-                .get_vi_template(item.vi_template_id)
-                .await
-                .map_err(QueueReplaceError::Db)?;
-            if template.is_none() {
-                return Err(QueueReplaceError::BadTemplate {
-                    vi_template_id: item.vi_template_id,
-                });
+            let source = item.template_source.as_str();
+            match source {
+                "general" => {
+                    let Some(template_id) = item.general_template_id else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "general".into(),
+                            template_id: 0,
+                        });
+                    };
+                    let got = self
+                        .get_general_template(template_id)
+                        .await
+                        .map_err(QueueReplaceError::Db)?;
+                    let Some(template) = got else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "general".into(),
+                            template_id,
+                        });
+                    };
+                    normalized_items.push(ViRunQueueReplaceItem {
+                        inputs_json: Some(
+                            item.inputs_json
+                                .clone()
+                                .unwrap_or_else(|| template.inputs_json.clone()),
+                        ),
+                        ..item.clone()
+                    });
+                }
+                _ => {
+                    let Some(template_id) = item.vi_template_id else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "labview".into(),
+                            template_id: 0,
+                        });
+                    };
+                    let template = self
+                        .get_vi_template(template_id)
+                        .await
+                        .map_err(QueueReplaceError::Db)?;
+                    let Some(template) = template else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "labview".into(),
+                            template_id,
+                        });
+                    };
+                    normalized_items.push(ViRunQueueReplaceItem {
+                        inputs_json: Some(
+                            item.inputs_json
+                                .clone()
+                                .unwrap_or_else(|| template.inputs_json.clone()),
+                        ),
+                        ..item.clone()
+                    });
+                }
             }
         }
 
@@ -970,20 +1442,22 @@ impl Store {
             .map_err(QueueReplaceError::Db)?;
 
         let now = Utc::now().to_rfc3339();
-        for (position, item) in items.iter().enumerate() {
+        for (position, item) in normalized_items.iter().enumerate() {
             let id = Uuid::new_v4().to_string();
             let fail_policy = normalize_fail_policy(&item.fail_policy);
             sqlx::query(
                 r#"
                 INSERT INTO vi_run_queue_items
-                  (id, agent_id, vi_template_id, position, created_at,
+                  (id, agent_id, vi_template_id, general_template_id, inputs_json, position, created_at,
                    enabled, breakpoint, fail_policy, limits_json, note)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 "#,
             )
             .bind(&id)
             .bind(agent_id)
             .bind(item.vi_template_id)
+            .bind(item.general_template_id)
+            .bind(item.inputs_json.as_deref().unwrap_or("[]"))
             .bind(position as i64)
             .bind(&now)
             .bind(item.enabled)
@@ -1144,10 +1618,23 @@ struct ViTemplateRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct GeneralTemplateRow {
+    id: i64,
+    name: String,
+    origin_agent_id: String,
+    kind: String,
+    inputs_json: String,
+    outputs_json: String,
+    created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
 struct ViRunQueueItemRow {
     id: String,
     agent_id: String,
-    vi_template_id: i64,
+    template_source: String,
+    vi_template_id: Option<i64>,
+    general_template_id: Option<i64>,
     position: i64,
     created_at: String,
     template_name: String,
@@ -1169,7 +1656,9 @@ impl ViRunQueueItemRow {
         ViRunQueueItem {
             id: self.id,
             agent_id: self.agent_id,
+            template_source: self.template_source,
             vi_template_id: self.vi_template_id,
+            general_template_id: self.general_template_id,
             position: self.position,
             created_at: self.created_at,
             template_name: self.template_name,
@@ -1189,6 +1678,146 @@ impl ViRunQueueItemRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct SequenceTemplateRow {
+    id: i64,
+    name: String,
+    note: String,
+    created_by_agent_id: String,
+    created_at: String,
+    updated_at: String,
+    last_run_overall: Option<String>,
+    last_run_sn: Option<String>,
+    last_run_work_order: Option<String>,
+    last_run_at: Option<String>,
+}
+
+impl SequenceTemplateRow {
+    fn into_sequence_template(self) -> SequenceTemplate {
+        SequenceTemplate {
+            id: self.id,
+            name: self.name,
+            note: self.note,
+            created_by_agent_id: self.created_by_agent_id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            last_run_overall: self.last_run_overall,
+            last_run_sn: self.last_run_sn,
+            last_run_work_order: self.last_run_work_order,
+            last_run_at: self.last_run_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SequenceTemplateStepRow {
+    id: i64,
+    sequence_template_id: i64,
+    position: i64,
+    template_source: String,
+    vi_template_id: Option<i64>,
+    general_template_id: Option<i64>,
+    inputs_json: String,
+    enabled: bool,
+    breakpoint: bool,
+    fail_policy: String,
+    limits_json: String,
+    note: String,
+}
+
+impl SequenceTemplateStepRow {
+    fn into_step(self) -> SequenceTemplateStep {
+        SequenceTemplateStep {
+            id: self.id,
+            sequence_template_id: self.sequence_template_id,
+            position: self.position,
+            template_source: self.template_source,
+            vi_template_id: self.vi_template_id,
+            general_template_id: self.general_template_id,
+            inputs_json: self.inputs_json,
+            enabled: self.enabled,
+            breakpoint: self.breakpoint,
+            fail_policy: self.fail_policy,
+            limits_json: self.limits_json,
+            note: self.note,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SequenceTemplateEnrichedRow {
+    id: i64,
+    name: String,
+    note: String,
+    created_by_agent_id: String,
+    created_at: String,
+    updated_at: String,
+    last_run_overall: Option<String>,
+    last_run_sn: Option<String>,
+    last_run_work_order: Option<String>,
+    last_run_at: Option<String>,
+    created_by_agent_name: Option<String>,
+    step_count: i64,
+}
+
+impl SequenceTemplateEnrichedRow {
+    fn into_enriched(self) -> SequenceTemplateEnriched {
+        SequenceTemplateEnriched {
+            template: SequenceTemplate {
+                id: self.id,
+                name: self.name,
+                note: self.note,
+                created_by_agent_id: self.created_by_agent_id,
+                created_at: self.created_at,
+                updated_at: self.updated_at,
+                last_run_overall: self.last_run_overall,
+                last_run_sn: self.last_run_sn,
+                last_run_work_order: self.last_run_work_order,
+                last_run_at: self.last_run_at,
+            },
+            created_by_agent_name: self.created_by_agent_name,
+            step_count: self.step_count,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SequenceTemplateLastStepRow {
+    position: i64,
+    template_source: String,
+    vi_template_id: Option<i64>,
+    general_template_id: Option<i64>,
+    name: String,
+    kind: String,
+    ok: bool,
+    status: String,
+    measured_json: Option<String>,
+    limits_json: Option<String>,
+    result_json: Option<String>,
+    error_text: Option<String>,
+    created_at: String,
+}
+
+impl SequenceTemplateLastStepRow {
+    fn into_last_step(self) -> SequenceTemplateLastStep {
+        SequenceTemplateLastStep {
+            position: self.position,
+            template_source: self.template_source,
+            vi_template_id: self.vi_template_id,
+            general_template_id: self.general_template_id,
+            name: self.name,
+            kind: self.kind,
+            ok: self.ok,
+            status: self.status,
+            measured_json: self.measured_json,
+            limits_json: self.limits_json,
+            result_json: self.result_json,
+            error_text: self.error_text,
+            created_at: self.created_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
 struct ViTemplateEnrichedRow {
     id: i64,
     name: String,
@@ -1201,6 +1830,18 @@ struct ViTemplateEnrichedRow {
     outputs_json: String,
     show_front_panel: i64,
     timeout_secs: Option<i64>,
+    created_at: String,
+    origin_agent_name: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct GeneralTemplateEnrichedRow {
+    id: i64,
+    name: String,
+    origin_agent_id: String,
+    kind: String,
+    inputs_json: String,
+    outputs_json: String,
     created_at: String,
     origin_agent_name: Option<String>,
 }
@@ -1224,6 +1865,20 @@ impl ViTemplateRow {
     }
 }
 
+impl GeneralTemplateRow {
+    fn into_general_template(self) -> GeneralTemplate {
+        GeneralTemplate {
+            id: self.id,
+            name: self.name,
+            origin_agent_id: self.origin_agent_id,
+            kind: self.kind,
+            inputs_json: self.inputs_json,
+            outputs_json: self.outputs_json,
+            created_at: self.created_at,
+        }
+    }
+}
+
 impl ViTemplateEnrichedRow {
     fn into_enriched(self) -> ViTemplateEnriched {
         ViTemplateEnriched {
@@ -1239,6 +1894,23 @@ impl ViTemplateEnrichedRow {
                 outputs_json: self.outputs_json,
                 show_front_panel: self.show_front_panel != 0,
                 timeout_secs: self.timeout_secs,
+                created_at: self.created_at,
+            },
+            origin_agent_name: self.origin_agent_name,
+        }
+    }
+}
+
+impl GeneralTemplateEnrichedRow {
+    fn into_enriched(self) -> GeneralTemplateEnriched {
+        GeneralTemplateEnriched {
+            template: GeneralTemplate {
+                id: self.id,
+                name: self.name,
+                origin_agent_id: self.origin_agent_id,
+                kind: self.kind,
+                inputs_json: self.inputs_json,
+                outputs_json: self.outputs_json,
                 created_at: self.created_at,
             },
             origin_agent_name: self.origin_agent_name,
@@ -1748,7 +2420,10 @@ mod tests {
         template_ids
             .iter()
             .map(|&vi_template_id| ViRunQueueReplaceItem {
-                vi_template_id,
+                template_source: "labview".into(),
+                vi_template_id: Some(vi_template_id),
+                general_template_id: None,
+                inputs_json: None,
                 enabled: true,
                 breakpoint: false,
                 fail_policy: "stop".into(),
@@ -1774,22 +2449,22 @@ mod tests {
             .unwrap();
         assert_eq!(replaced.len(), 3);
         assert_eq!(replaced[0].position, 0);
-        assert_eq!(replaced[0].vi_template_id, tpl_b.id);
+        assert_eq!(replaced[0].vi_template_id, Some(tpl_b.id));
         assert_eq!(replaced[0].template_name, "B");
         assert_eq!(replaced[1].position, 1);
-        assert_eq!(replaced[1].vi_template_id, tpl_a.id);
+        assert_eq!(replaced[1].vi_template_id, Some(tpl_a.id));
         assert_eq!(replaced[1].template_name, "A");
         assert_eq!(replaced[2].position, 2);
-        assert_eq!(replaced[2].vi_template_id, tpl_b.id);
+        assert_eq!(replaced[2].vi_template_id, Some(tpl_b.id));
 
         let listed = store.list_vi_run_queue(&agent.id).await.unwrap();
         assert_eq!(listed.len(), 3);
         assert_eq!(listed[0].position, 0);
-        assert_eq!(listed[0].vi_template_id, tpl_b.id);
+        assert_eq!(listed[0].vi_template_id, Some(tpl_b.id));
         assert_eq!(listed[1].position, 1);
-        assert_eq!(listed[1].vi_template_id, tpl_a.id);
+        assert_eq!(listed[1].vi_template_id, Some(tpl_a.id));
         assert_eq!(listed[2].position, 2);
-        assert_eq!(listed[2].vi_template_id, tpl_b.id);
+        assert_eq!(listed[2].vi_template_id, Some(tpl_b.id));
     }
 
     #[tokio::test]
@@ -1804,11 +2479,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replaced.len(), 1);
-        assert_eq!(replaced[0].vi_template_id, tpl_b.id);
+        assert_eq!(replaced[0].vi_template_id, Some(tpl_b.id));
 
         let listed = store.list_vi_run_queue(&agent_a.id).await.unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].vi_template_id, tpl_b.id);
+        assert_eq!(listed[0].vi_template_id, Some(tpl_b.id));
     }
 
     #[tokio::test]
@@ -1848,7 +2523,10 @@ mod tests {
         let tpl = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
 
         let items = vec![ViRunQueueReplaceItem {
-            vi_template_id: tpl.id,
+            template_source: "labview".into(),
+            vi_template_id: Some(tpl.id),
+            general_template_id: None,
+            inputs_json: Some(r#"[{"name":"Channel","className":"I32","value":2}]"#.into()),
             enabled: false,
             breakpoint: true,
             fail_policy: "continue".into(),
@@ -1860,6 +2538,7 @@ mod tests {
         assert!(!listed[0].enabled);
         assert!(listed[0].breakpoint);
         assert_eq!(listed[0].fail_policy, "continue");
+        assert!(listed[0].inputs_json.contains("\"Channel\""));
         assert!(listed[0].limits_json.contains("Power_dBm"));
         assert_eq!(listed[0].note, "ch1");
     }

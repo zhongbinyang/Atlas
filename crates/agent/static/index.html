@@ -114,50 +114,81 @@
       <pre id="lv-run-out" class="mono lv-pre" hidden></pre>
       <p id="lv-msg" class="msg" hidden></p>
     </section>
+
+    <section id="lv-center-section" class="center-panel">
+      <h2>中心VI功能</h2>
+      <p id="lv-center-msg" class="msg" hidden></p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>名称</th>
+              <th>来源机台</th>
+              <th>VI 路径</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="lv-center-body">
+            <tr><td colspan="5" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
     </div>
 
     <div id="page-general" hidden>
-      <section id="general-section">
-        <h2>通用 · 延迟</h2>
-        <p class="muted-hint">配置延迟毫秒数后可试跑或注册到中心；序列页可与 VI 混排执行。</p>
-        <div class="lv-toolbar">
-          <label class="lv-path-label">
-            <span class="label">名称</span>
-            <input id="gen-delay-name" type="text" class="lv-path-input" placeholder="显示名称（必填）" required>
-          </label>
-          <label class="lv-path-label">
-            <span class="label">延迟 (ms)</span>
-            <input id="gen-delay-ms" type="number" min="0" step="1" class="lv-path-input mono" placeholder="例如 1000" value="1000">
-          </label>
-          <div class="lv-actions">
-            <button id="gen-delay-run-btn" type="button">试跑</button>
-            <button id="gen-delay-register-btn" type="button" class="btn-primary">注册到中心</button>
+      <div class="gen-layout">
+        <!-- 左：各类通用函数编辑区 -->
+        <div class="gen-editors">
+          <h2>通用函数</h2>
+
+          <!-- Delay 编辑卡 -->
+          <section class="gen-card" id="general-section">
+            <h3 class="gen-card-title">延迟 (Delay)</h3>
+            <p class="muted-hint">配置延迟毫秒数后可试跑或注册到中心。</p>
+            <div class="lv-toolbar">
+              <label class="lv-path-label">
+                <span class="label">名称</span>
+                <input id="gen-delay-name" type="text" class="lv-path-input" placeholder="显示名称（必填）" required>
+              </label>
+              <label class="lv-path-label">
+                <span class="label">延迟 (ms)</span>
+                <input id="gen-delay-ms" type="number" min="0" step="1" class="lv-path-input mono" placeholder="例如 1000" value="1000">
+              </label>
+            </div>
+            <div class="lv-actions">
+              <button id="gen-delay-run-btn" type="button">试跑</button>
+              <button id="gen-delay-register-btn" type="button" class="btn-primary">注册到中心</button>
+            </div>
+            <pre id="gen-delay-out" class="mono lv-pre" hidden></pre>
+            <p id="gen-delay-msg" class="msg" hidden></p>
+          </section>
+          <!-- 后续通用函数卡在此扩展 -->
+        </div>
+
+        <!-- 右：中心已注册的通用功能列表 -->
+        <div class="gen-center-panel">
+          <h2>中心通用功能</h2>
+          <p id="gen-center-msg" class="msg" hidden></p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>类型</th>
+                  <th>名称</th>
+                  <th>来源机台</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="gen-center-body">
+                <tr><td colspan="5" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
-        <pre id="gen-delay-out" class="mono lv-pre" hidden></pre>
-        <p id="gen-delay-msg" class="msg" hidden></p>
-      </section>
-
-      <section id="gen-center-section">
-        <h3>中心延迟功能</h3>
-        <p id="gen-center-msg" class="msg" hidden></p>
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>名称</th>
-                <th>来源机台</th>
-                <th>延迟(ms)</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="gen-center-body">
-              <tr><td colspan="5" class="empty">加载中…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+      </div>
     </div>
 
     <div id="page-sequence" hidden>
@@ -171,9 +202,9 @@
                 <thead>
                   <tr>
                     <th>ID</th>
+                    <th>类型</th>
                     <th>名称</th>
                     <th>来源机台</th>
-                    <th>VI 路径</th>
                     <th>入参</th>
                     <th>操作</th>
                   </tr>
@@ -214,18 +245,40 @@
         <div class="seq-run-bar">
           <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
           <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
+          <button id="seq-save-template-btn" type="button">保存为模板</button>
+          <button id="seq-view-last-run-btn" type="button">查看已保存结果</button>
           <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
           <button id="seq-continue-btn" type="button" disabled>继续</button>
           <button id="seq-abort-btn" type="button" disabled>中止</button>
           <span id="seq-overall"></span>
         </div>
+        <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
         <p id="seq-msg" class="msg" hidden></p>
+        <section class="seq-template-section">
+          <h3>中心序列模板</h3>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>名称</th>
+                  <th>步骤数</th>
+                  <th>来源机台</th>
+                  <th>最近结果</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="seq-templates-body">
+                <tr><td colspan="6" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
         <div id="seq-results"></div>
       </section>
     </div>
   </main>
 
-  <script src="/app.js"></script>
   <div id="spec-modal" class="spec-modal" hidden>
     <div class="spec-modal-card">
       <h3>编辑 Spec</h3>
@@ -251,5 +304,28 @@
       </div>
     </div>
   </div>
+  <div id="seq-inputs-modal" class="spec-modal" hidden>
+    <div class="spec-modal-card">
+      <h3>编辑步骤入参</h3>
+      <p id="seq-inputs-modal-hint" class="muted-hint"></p>
+      <div class="table-scroll">
+        <table class="spec-edit-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>值</th>
+            </tr>
+          </thead>
+          <tbody id="seq-inputs-modal-body"></tbody>
+        </table>
+      </div>
+      <div class="spec-modal-actions">
+        <button type="button" id="seq-inputs-cancel-btn">取消</button>
+        <button type="button" id="seq-inputs-save-btn" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
 </body>
 </html>

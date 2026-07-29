@@ -101,6 +101,23 @@ function attachInputsHover(cell, inputs) {
   cell.addEventListener('mouseleave', scheduleHideInputsPopover);
 }
 
+function isObjectLike(value) {
+  return value !== null && typeof value === 'object';
+}
+
+function parseEditableInputValue(raw, className) {
+  const text = String(raw == null ? '' : raw);
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  const typeName = String(className || '').toLowerCase();
+  if (typeName.indexOf('array') >= 0 || typeName.indexOf('cluster') >= 0 || typeName.indexOf('json') >= 0) {
+    return JSON.parse(trimmed);
+  }
+  if (trimmed === 'true' || trimmed === 'false') return trimmed === 'true';
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  return text;
+}
+
 /** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
 function normalizeFsPath(raw) {
   let s = String(raw == null ? '' : raw).trim();
@@ -400,6 +417,61 @@ function loadTemplateToEditor(t) {
   showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
 }
 
+function showLvCenterMsg(text, ok) {
+  const msg = document.getElementById('lv-center-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = ok ? 'msg ok' : 'msg err';
+}
+
+function renderLabviewCenterTemplates(templates) {
+  const tbody = document.getElementById('lv-center-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册 VI 功能</td></tr>';
+    return;
+  }
+  for (let i = 0; i < templates.length; i++) {
+    const t = templates[i];
+    const row = document.createElement('tr');
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td>' + escapeHtml(t.name || '—') + '</td>' +
+      '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(t.vi_path || '—') + '</td>';
+    const actions = document.createElement('td');
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.textContent = '加载到编辑区';
+    loadBtn.addEventListener('click', function () {
+      loadTemplateToEditor(t);
+      showLvCenterMsg('已加载: ' + (t.name || t.id), true);
+    });
+    actions.appendChild(loadBtn);
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function fetchLabviewCenterTemplates() {
+  const tbody = document.getElementById('lv-center-body');
+  if (!tbody) return;
+  try {
+    const resp = await fetch('/api/labview/all-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    renderLabviewCenterTemplates(Array.isArray(data) ? data : []);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
 function delayMsFromInputs(inputs) {
   if (!Array.isArray(inputs)) return null;
   for (let i = 0; i < inputs.length; i++) {
@@ -412,6 +484,7 @@ function delayMsFromInputs(inputs) {
 }
 
 async function refreshTemplateLists() {
+  await fetchLabviewCenterTemplates();
   await loadSeqRegistered();
 }
 
@@ -428,6 +501,9 @@ let seqRunning = false;
 let seqPaused = false;
 let seqStepResults = {};
 let seqDragIndex = null;
+let seqInputsEditIndex = -1;
+let seqTemplates = [];
+let seqActiveTemplateId = null;
 
 function showPage(page) {
   const workbench = document.getElementById('page-workbench');
@@ -441,8 +517,10 @@ function showPage(page) {
   });
   if (page === 'sequence') {
     loadSequencePage();
+  } else if (page === 'workbench') {
+    fetchLabviewCenterTemplates();
   } else if (page === 'general') {
-    fetchGeneralDelayTemplates();
+    fetchGeneralTemplates();
   }
 }
 
@@ -542,10 +620,12 @@ function outputNamesFromSchema(outputs) {
 function resolveStepOutputNames(item) {
   let names = outputNamesFromSchema(item && item.outputs);
   if (names.length) return names;
-  const tid = item && item.vi_template_id;
+  const source = item && item.template_source ? item.template_source : 'labview';
+  const tid = source === 'general' ? item && item.general_template_id : item && item.vi_template_id;
   if (tid == null) return [];
   for (let i = 0; i < seqRegistered.length; i++) {
-    if (String(seqRegistered[i].id) === String(tid)) {
+    const regSource = seqRegistered[i]._source || 'labview';
+    if (regSource === source && String(seqRegistered[i].id) === String(tid)) {
       return outputNamesFromSchema(seqRegistered[i].outputs);
     }
   }
@@ -696,21 +776,27 @@ document.getElementById('spec-save-btn').addEventListener('click', async functio
 });
 
 async function loadSequencePage() {
-  await Promise.all([loadSeqRegistered(), loadQueue()]);
+  await Promise.all([loadSeqRegistered(), loadQueue(), loadSequenceTemplates()]);
+  updateSequenceTemplateBinding();
 }
 
 async function loadSeqRegistered() {
   const tbody = document.getElementById('seq-registered-body');
   try {
-    const resp = await fetch('/api/labview/all-templates');
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
+    const [lvResp, genResp] = await Promise.all([
+      fetch('/api/labview/all-templates'),
+      fetch('/api/general/all-templates'),
+    ]);
+    const [lvData, genData] = await Promise.all([lvResp.json(), genResp.json()]);
+    if (!lvResp.ok) {
+      const err = lvData.error && (lvData.error.message || lvData.error) || lvResp.status;
       tbody.innerHTML =
-        '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+        '<tr><td colspan="6" class="empty">加载 LabVIEW 模板失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
-    seqRegistered = Array.isArray(data) ? data : [];
+    const lvList = (Array.isArray(lvData) ? lvData : []).map(t => Object.assign({}, t, { _source: 'labview' }));
+    const genList = genResp.ok ? (Array.isArray(genData) ? genData : []).map(t => Object.assign({}, t, { _source: 'general' })) : [];
+    seqRegistered = [...lvList, ...genList];
     renderSeqRegistered();
   } catch (e) {
     tbody.innerHTML =
@@ -728,9 +814,11 @@ function renderSeqRegistered() {
   for (let i = 0; i < seqRegistered.length; i++) {
     const t = seqRegistered[i];
     const row = document.createElement('tr');
+    const isGeneral = t._source === 'general';
+    const typeLabel = isGeneral ? '通用' : 'VI';
     const name = escapeHtml(t.name || t.id || '—');
     const origin = escapeHtml(t.origin_agent_name || '—');
-    const viPath = escapeHtml(t.vi_path || '—');
+    const actions = document.createElement('td');
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.textContent = '添加';
@@ -738,13 +826,12 @@ function renderSeqRegistered() {
     addBtn.addEventListener('click', function () {
       addToQueue(t);
     });
-    const actions = document.createElement('td');
     actions.appendChild(addBtn);
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td><span class="kind-badge kind-' + (isGeneral ? 'general' : 'labview') + '">' + typeLabel + '</span></td>' +
       '<td>' + name + '</td>' +
       '<td>' + origin + '</td>' +
-      '<td class="mono">' + viPath + '</td>' +
       '<td class="inputs-cell-host"></td>';
     attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     row.appendChild(actions);
@@ -763,11 +850,78 @@ async function loadQueue() {
     } else {
       seqSelected = Array.isArray(data.items) ? data.items : [];
     }
+    updateSequenceTemplateBinding();
     renderSeqSelected();
   } catch (e) {
     showSeqMsg('加载队列失败: ' + e.message, false);
     seqSelected = [];
     renderSeqSelected();
+  }
+}
+
+function updateSequenceTemplateBinding() {
+  const el = document.getElementById('seq-template-bind');
+  if (!el) return;
+  const active = seqTemplates.find(function (t) {
+    return String(t.id) === String(seqActiveTemplateId);
+  });
+  el.textContent = active
+    ? '当前模板: ' + (active.name || active.id) + ' (ID ' + active.id + ')'
+    : '当前未绑定序列模板';
+}
+
+async function loadSequenceTemplates() {
+  const tbody = document.getElementById('seq-templates-body');
+  if (!tbody) return;
+  try {
+    const resp = await fetch('/api/sequence-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    seqTemplates = Array.isArray(data) ? data : [];
+    renderSequenceTemplates();
+    updateSequenceTemplateBinding();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+function renderSequenceTemplates() {
+  const tbody = document.getElementById('seq-templates-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!seqTemplates.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无中心序列模板</td></tr>';
+    return;
+  }
+  for (let i = 0; i < seqTemplates.length; i++) {
+    const t = seqTemplates[i];
+    const row = document.createElement('tr');
+    const isActive = String(t.id) === String(seqActiveTemplateId);
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
+      '<td>' + escapeHtml(t.name || '—') + (isActive ? ' <span class="kind-badge kind-general">当前</span>' : '') + '</td>' +
+      '<td class="mono">' + escapeHtml(String(t.step_count || 0)) + '</td>' +
+      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>' +
+      '<td>' + escapeHtml(t.last_run_overall || '—') + '</td>';
+    const actions = document.createElement('td');
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.textContent = '加载到当前队列';
+    loadBtn.disabled = seqRunning || seqPaused;
+    loadBtn.addEventListener('click', function () { loadSequenceTemplateToQueue(t); });
+    const runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.textContent = '查看结果';
+    runBtn.addEventListener('click', function () { viewSequenceTemplateLastRun(t.id); });
+    actions.appendChild(loadBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(runBtn);
+    row.appendChild(actions);
+    tbody.appendChild(row);
   }
 }
 
@@ -787,8 +941,10 @@ function renderSeqSelected() {
     row.className = 'seq-row';
     const pos = item.position != null ? item.position : i;
     const stepResult = seqStepResults[pos];
-    const name = escapeHtml(item.name || item.vi_template_id || '—');
-    const idCol = escapeHtml(String(item.vi_template_id ?? '—'));
+    const source = item.template_source === 'general' ? 'general' : 'labview';
+    const templateId = source === 'general' ? item.general_template_id : item.vi_template_id;
+    const name = escapeHtml(item.name || templateId || '—');
+    const idCol = escapeHtml(String(templateId ?? '—'));
     const kind = escapeHtml(item.kind || 'labview');
     const enabled = item.enabled !== false;
     const breakpoint = !!item.breakpoint;
@@ -808,7 +964,7 @@ function renderSeqSelected() {
       '<td class="seq-result-cell mono">' + escapeHtml(stepResult ? formatStepStatus(stepResult.status) : '—') + '</td>' +
       '<td class="seq-measured-cell mono">' + escapeHtml(stepResult ? formatMeasuredSummary(stepResult.measured) : '—') + '</td>';
 
-    attachInputsHover(row.querySelector('.inputs-cell-host'), item.inputs);
+    renderSeqInputsCell(row.querySelector('.inputs-cell-host'), item, i);
 
     const enabledCb = document.createElement('input');
     enabledCb.type = 'checkbox';
@@ -886,11 +1042,34 @@ function renderSeqSelected() {
   setSeqControlsDisabled(seqRunning);
 }
 
+function renderSeqInputsCell(host, item, index) {
+  if (!host) return;
+  host.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'seq-inputs-cell';
+  const summaryHost = document.createElement('span');
+  attachInputsHover(summaryHost, item.inputs);
+  wrap.appendChild(summaryHost);
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'btn-sm';
+  editBtn.textContent = '编辑';
+  editBtn.disabled = seqRunning || seqPaused;
+  editBtn.addEventListener('click', function () {
+    openSeqInputsEditor(index);
+  });
+  wrap.appendChild(editBtn);
+  host.appendChild(wrap);
+}
+
 async function saveQueue() {
   const body = {
     items: seqSelected.map(function (item) {
       return {
-        vi_template_id: item.vi_template_id,
+        template_source: item.template_source === 'general' ? 'general' : 'labview',
+        vi_template_id: item.template_source === 'general' ? null : item.vi_template_id,
+        general_template_id: item.template_source === 'general' ? item.general_template_id : null,
+        inputs: Array.isArray(item.inputs) ? item.inputs : [],
         enabled: item.enabled !== false,
         breakpoint: !!item.breakpoint,
         fail_policy: item.fail_policy === 'continue' ? 'continue' : 'stop',
@@ -924,6 +1103,75 @@ async function saveQueue() {
   }
 }
 
+function closeSeqInputsModal() {
+  const modal = document.getElementById('seq-inputs-modal');
+  if (modal) modal.hidden = true;
+  seqInputsEditIndex = -1;
+}
+
+function openSeqInputsEditor(index) {
+  const item = seqSelected[index];
+  const modal = document.getElementById('seq-inputs-modal');
+  const body = document.getElementById('seq-inputs-modal-body');
+  const hint = document.getElementById('seq-inputs-modal-hint');
+  if (!item || !modal || !body || !hint) return;
+  seqInputsEditIndex = index;
+  hint.textContent = (item.name || '步骤') + ' · 修改后只影响当前序列步骤';
+  body.innerHTML = '';
+  const inputs = Array.isArray(item.inputs) ? item.inputs : [];
+  if (!inputs.length) {
+    body.innerHTML = '<tr><td colspan="3" class="empty">该步骤没有可编辑入参</td></tr>';
+  } else {
+    for (let i = 0; i < inputs.length; i++) {
+      const inp = inputs[i] || {};
+      const row = document.createElement('tr');
+      const value = inp.value;
+      const control = isObjectLike(value)
+        ? '<textarea class="seq-input-edit mono" data-index="' + i + '" data-class="' + escapeHtml(inp.className || '') + '" rows="3">' + escapeHtml(JSON.stringify(value)) + '</textarea>'
+        : '<input class="seq-input-edit mono" data-index="' + i + '" data-class="' + escapeHtml(inp.className || '') + '" type="text" value="' + escapeHtml(value == null ? '' : String(value)) + '">';
+      row.innerHTML =
+        '<td>' + escapeHtml(inp.name || '') + '</td>' +
+        '<td class="mono">' + escapeHtml(inp.className || '') + '</td>' +
+        '<td>' + control + '</td>';
+      body.appendChild(row);
+    }
+  }
+  modal.hidden = false;
+}
+
+function collectSeqInputsModalValues() {
+  if (seqInputsEditIndex < 0 || seqInputsEditIndex >= seqSelected.length) return [];
+  const original = Array.isArray(seqSelected[seqInputsEditIndex].inputs) ? seqSelected[seqInputsEditIndex].inputs : [];
+  const next = original.map(function (inp) {
+    return Object.assign({}, inp);
+  });
+  document.querySelectorAll('#seq-inputs-modal .seq-input-edit').forEach(function (el) {
+    const idx = Number(el.getAttribute('data-index'));
+    const className = el.getAttribute('data-class') || '';
+    if (!Number.isFinite(idx) || !next[idx]) return;
+    next[idx].value = parseEditableInputValue(el.value, className);
+  });
+  return next;
+}
+
+async function saveSeqInputsModal() {
+  if (seqInputsEditIndex < 0 || seqInputsEditIndex >= seqSelected.length) {
+    closeSeqInputsModal();
+    return;
+  }
+  try {
+    seqSelected[seqInputsEditIndex].inputs = collectSeqInputsModalValues();
+  } catch (e) {
+    showSeqMsg('入参格式错误: ' + e.message, false);
+    return;
+  }
+  const ok = await saveQueue();
+  if (ok) {
+    closeSeqInputsModal();
+    showSeqMsg('步骤入参已保存', true);
+  }
+}
+
 async function addToQueue(template) {
   const templateId = template.id;
   if (!templateId) {
@@ -931,7 +1179,9 @@ async function addToQueue(template) {
     return;
   }
   seqSelected.push({
-    vi_template_id: templateId,
+    template_source: template._source === 'general' ? 'general' : 'labview',
+    vi_template_id: template._source === 'general' ? null : templateId,
+    general_template_id: template._source === 'general' ? templateId : null,
     name: template.name || templateId,
     kind: template.kind || 'labview',
     vi_path: template.vi_path || '',
@@ -1083,6 +1333,86 @@ function handleSequenceResponse(data) {
   return 'done';
 }
 
+async function saveCurrentQueueAsSequenceTemplate() {
+  if (!seqSelected.length) {
+    showSeqMsg('当前队列为空，无法保存模板', false);
+    return;
+  }
+  const name = String(window.prompt('请输入序列模板名称') || '').trim();
+  if (!name) return;
+  const note = String(window.prompt('备注（可选）') || '').trim();
+  try {
+    const resp = await fetch('/api/sequence-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, note: note }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('保存模板失败: ' + err, false);
+      return;
+    }
+    seqActiveTemplateId = data.id;
+    showSeqMsg('已保存序列模板: ' + (data.name || name), true);
+    await loadSequenceTemplates();
+  } catch (e) {
+    showSeqMsg('保存模板失败: ' + e.message, false);
+  }
+}
+
+async function loadSequenceTemplateToQueue(tpl) {
+  try {
+    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(tpl.id) + '/load', {
+      method: 'POST',
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('加载模板失败: ' + err, false);
+      return;
+    }
+    seqSelected = Array.isArray(data.items) ? data.items : [];
+    seqActiveTemplateId = tpl.id;
+    seqStepResults = {};
+    renderSeqSelected();
+    updateSeqOverall({});
+    updateSequenceTemplateBinding();
+    showSeqMsg('已加载模板: ' + (tpl.name || tpl.id), true);
+  } catch (e) {
+    showSeqMsg('加载模板失败: ' + e.message, false);
+  }
+}
+
+async function viewSequenceTemplateLastRun(id) {
+  if (!id) {
+    showSeqMsg('当前没有已绑定模板', false);
+    return;
+  }
+  try {
+    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(id) + '/last-run');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('查看结果失败: ' + err, false);
+      return;
+    }
+    if (!data.steps || !data.steps.length) {
+      showSeqMsg('该模板还没有已保存结果', false);
+      return;
+    }
+    renderSeqResults({ steps: data.steps });
+    updateSeqOverall({
+      overall: data.overall || '—',
+      sn: data.sn || '',
+      work_order: data.work_order || '',
+    });
+    showSeqMsg('已加载模板最近一次结果', true);
+  } catch (e) {
+    showSeqMsg('查看结果失败: ' + e.message, false);
+  }
+}
+
 async function runSequence() {
   if ((seqRunning && !seqPaused) || !seqSelected.length) return;
   seqPaused = false;
@@ -1094,6 +1424,7 @@ async function runSequence() {
   const payload = {};
   if (snRaw) payload.sn = snRaw;
   if (woRaw) payload.work_order = woRaw;
+  if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
   try {
     const resp = await fetch('/api/labview/run-sequence', {
       method: 'POST',
@@ -1242,88 +1573,78 @@ async function registerGeneralDelay() {
       return;
     }
     showGenDelayMsg('已注册: ' + (data.name || name) + ' (ID ' + data.id + ')', true);
-    await fetchGeneralDelayTemplates();
+    await fetchGeneralTemplates();
   } catch (e) {
     showGenDelayMsg('注册失败: ' + e.message, false);
   }
 }
 
-function renderGeneralDelayTemplates(templates) {
+function kindLabel(kind) {
+  switch ((kind || '').toLowerCase()) {
+    case 'delay': return '延迟';
+    default: return escapeHtml(kind || '通用');
+  }
+}
+
+function renderGeneralTemplates(templates) {
   const tbody = document.getElementById('gen-center-body');
   if (!tbody) return;
   tbody.innerHTML = '';
   if (!templates || templates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册延迟功能</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册通用功能</td></tr>';
     return;
   }
   for (let i = 0; i < templates.length; i++) {
     const t = templates[i];
     const row = document.createElement('tr');
-    const ms = delayMsFromInputs(t.inputs);
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td><span class="kind-badge kind-general">' + kindLabel(t.kind) + '</span></td>' +
       '<td>' + escapeHtml(t.name || '—') + '</td>' +
-      '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>' +
-      '<td class="mono">' + escapeHtml(ms != null ? String(ms) : '—') + '</td>';
-    const loadBtn = document.createElement('button');
-    loadBtn.type = 'button';
-    loadBtn.textContent = '加载到编辑区';
-    loadBtn.addEventListener('click', function () {
-      document.getElementById('gen-delay-name').value = t.name || '';
-      const dms = delayMsFromInputs(t.inputs);
-      document.getElementById('gen-delay-ms').value = dms != null ? String(dms) : '1000';
-      showGenDelayMsg('已加载到编辑区: ' + (t.name || t.id), true);
-    });
+      '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>';
     const actions = document.createElement('td');
-    actions.appendChild(loadBtn);
+    const kind = (t.kind || '').toLowerCase();
+    if (kind === 'delay') {
+      const loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.textContent = '加载到编辑区';
+      loadBtn.addEventListener('click', function () {
+        document.getElementById('gen-delay-name').value = t.name || '';
+        const dms = delayMsFromInputs(t.inputs);
+        document.getElementById('gen-delay-ms').value = dms != null ? String(dms) : '1000';
+        showGenDelayMsg('已加载到编辑区: ' + (t.name || t.id), true);
+      });
+      actions.appendChild(loadBtn);
+    }
     row.appendChild(actions);
     tbody.appendChild(row);
   }
 }
 
-async function trialGeneralDelayTemplate(t) {
-  const ms = delayMsFromInputs(t.inputs);
-  if (ms == null) {
-    showGenCenterMsg('模板缺少 delay_ms', false);
-    return;
-  }
-  showGenCenterMsg('试跑中: ' + (t.name || t.id) + '…', true);
-  try {
-    const resp = await fetch('/api/general/delay/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ delay_ms: ms }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showGenCenterMsg('试跑失败: ' + err, false);
-      return;
-    }
-    showGenCenterMsg('试跑完成: ' + (t.name || t.id) + ' (' + ms + ' ms)', true);
-  } catch (e) {
-    showGenCenterMsg('试跑失败: ' + e.message, false);
-  }
-}
-
-async function fetchGeneralDelayTemplates() {
+async function fetchGeneralTemplates() {
   const tbody = document.getElementById('gen-center-body');
   if (!tbody) return;
   try {
-    const resp = await fetch('/api/general/delay/templates');
+    const resp = await fetch('/api/general/all-templates');
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
-    renderGeneralDelayTemplates(Array.isArray(data) ? data : []);
+    renderGeneralTemplates(Array.isArray(data) ? data : []);
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+const seqSaveTemplateBtn = document.getElementById('seq-save-template-btn');
+const seqViewLastRunBtn = document.getElementById('seq-view-last-run-btn');
+if (seqSaveTemplateBtn) seqSaveTemplateBtn.addEventListener('click', saveCurrentQueueAsSequenceTemplate);
+if (seqViewLastRunBtn) seqViewLastRunBtn.addEventListener('click', function () {
+  viewSequenceTemplateLastRun(seqActiveTemplateId);
+});
 const seqContinueBtn = document.getElementById('seq-continue-btn');
 const seqAbortBtn = document.getElementById('seq-abort-btn');
 if (seqContinueBtn) seqContinueBtn.addEventListener('click', continueSequence);
@@ -1336,4 +1657,8 @@ const genRunBtn = document.getElementById('gen-delay-run-btn');
 const genRegBtn = document.getElementById('gen-delay-register-btn');
 if (genRunBtn) genRunBtn.addEventListener('click', runGeneralDelay);
 if (genRegBtn) genRegBtn.addEventListener('click', registerGeneralDelay);
+const seqInputsCancelBtn = document.getElementById('seq-inputs-cancel-btn');
+const seqInputsSaveBtn = document.getElementById('seq-inputs-save-btn');
+if (seqInputsCancelBtn) seqInputsCancelBtn.addEventListener('click', closeSeqInputsModal);
+if (seqInputsSaveBtn) seqInputsSaveBtn.addEventListener('click', saveSeqInputsModal);
 setInterval(fetchStatus, POLL_MS);

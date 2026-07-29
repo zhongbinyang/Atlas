@@ -584,6 +584,80 @@ th {
   margin: 0.25rem 0 0.75rem;
 }
 
+.center-panel {
+  margin-top: 1.25rem;
+}
+
+.center-panel h2 {
+  margin: 0 0 0.75rem;
+}
+
+.kind-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.kind-badge.kind-labview {
+  background: #1e3a5f;
+  color: #7eb8f7;
+}
+.kind-badge.kind-general {
+  background: #1e3d2a;
+  color: #6fcf97;
+}
+
+/* General page two-column layout */
+.gen-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 0 4px;
+}
+
+.gen-editors {
+  flex: 0 0 340px;
+  min-width: 280px;
+}
+
+.gen-editors h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  color: var(--fg, #e0e0e0);
+  border-bottom: 1px solid var(--border, #333);
+  padding-bottom: 6px;
+}
+
+.gen-card {
+  background: var(--surface2, #1e1e1e);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.gen-card-title {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: var(--accent, #4a9eff);
+}
+
+.gen-center-panel {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.gen-center-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  color: var(--fg, #e0e0e0);
+  border-bottom: 1px solid var(--border, #333);
+  padding-bottom: 6px;
+}
+
 .spec-modal {
   position: fixed;
   inset: 0;
@@ -629,6 +703,26 @@ th {
 .spec-edit-table input {
   width: 100%;
   max-width: 9rem;
+}
+
+.spec-edit-table textarea.seq-input-edit,
+.spec-edit-table input.seq-input-edit {
+  max-width: none;
+  width: 100%;
+}
+
+.seq-inputs-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.seq-template-section {
+  margin-top: 1rem;
+}
+
+#seq-template-bind {
+  margin: 0.35rem 0 0.5rem;
 }
 
 .spec-output-custom {

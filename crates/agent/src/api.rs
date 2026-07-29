@@ -72,6 +72,8 @@ struct RunSequenceRequest {
     sn: Option<String>,
     #[serde(default)]
     work_order: Option<String>,
+    #[serde(default)]
+    sequence_template_id: Option<i64>,
 }
 
 fn normalize_run_sequence_opt(value: Option<String>) -> Option<String> {
@@ -185,6 +187,18 @@ pub fn router(state: AppState) -> Router {
             post(labview_claim_template),
         )
         .route("/api/labview/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
+        .route(
+            "/api/sequence-templates",
+            get(sequence_templates_list).post(sequence_templates_create),
+        )
+        .route(
+            "/api/sequence-templates/{id}/load",
+            post(sequence_template_load_to_agent),
+        )
+        .route(
+            "/api/sequence-templates/{id}/last-run",
+            get(sequence_template_last_run),
+        )
         .route("/api/labview/run-sequence", post(labview_run_sequence))
         .route(
             "/api/labview/run-sequence/continue",
@@ -200,6 +214,7 @@ pub fn router(state: AppState) -> Router {
             post(general_delay_register),
         )
         .route("/api/general/delay/templates", get(general_delay_templates))
+        .route("/api/general/all-templates", get(general_all_templates))
         .with_state(state)
 }
 
@@ -757,6 +772,98 @@ async fn labview_run_queue_put(
     }
 }
 
+async fn sequence_templates_list(State(s): State<AppState>) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::list_sequence_templates(&s.http_client, &s.center_url).await {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn sequence_templates_create(
+    State(s): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(agent_id) => {
+            let mut center_body = body;
+            center_body["agent_id"] = Value::String(agent_id);
+            match crate::register::create_sequence_template(&s.http_client, &s.center_url, &center_body).await {
+                Ok((status, resp_body)) => {
+                    let axum_status =
+                        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                    (axum_status, Json(resp_body)).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(resp) => resp,
+    }
+}
+
+async fn sequence_template_load_to_agent(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(agent_id) => match crate::register::load_sequence_template_to_agent(
+            &s.http_client,
+            &s.center_url,
+            &id,
+            &agent_id,
+        )
+        .await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn sequence_template_last_run(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::get_sequence_template_last_run(&s.http_client, &s.center_url, &id).await {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
 #[derive(Deserialize)]
 struct DelayRunRequest {
     delay_ms: u64,
@@ -825,17 +932,12 @@ async fn general_delay_register(
     let center_body = serde_json::json!({
         "agent_id": agent_id,
         "kind": crate::general::KIND_DELAY,
-        "vi_path": crate::general::DELAY_VI_PATH,
-        "cli_path": "",
-        "getinfo_path": "",
         "inputs": crate::general::delay_inputs(req.delay_ms),
         "outputs": crate::general::delay_outputs(),
         "name": req.name.trim(),
-        "show_front_panel": false,
-        "timeout_secs": null,
     });
 
-    match crate::register::register_vi_template(&s.http_client, &s.center_url, &center_body).await {
+    match crate::register::register_general_template(&s.http_client, &s.center_url, &center_body).await {
         Ok((status, body)) => {
             let axum_status =
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -851,10 +953,33 @@ async fn general_delay_register(
 
 async fn general_delay_templates(State(s): State<AppState>) -> impl IntoResponse {
     match resolve_agent_id_for_proxy(&s).await {
-        Ok(_) => match crate::register::list_vi_templates_by_kind(
+        Ok(_) => match crate::register::list_general_templates_by_kind(
             &s.http_client,
             &s.center_url,
             crate::general::KIND_DELAY,
+        )
+        .await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn general_all_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::list_all_general_templates(
+            &s.http_client,
+            &s.center_url,
         )
         .await
         {
@@ -888,14 +1013,63 @@ fn pause_index(
         })
 }
 
+async fn persist_sequence_template_last_run(
+    state: &AppState,
+    sequence_template_id: Option<i64>,
+    items: &[crate::labview_sequence::QueueItemForRun],
+    resp: &SequenceResponse,
+) {
+    let Some(template_id) = sequence_template_id else {
+        return;
+    };
+    let steps: Vec<Value> = resp
+        .steps
+        .iter()
+        .map(|step| {
+            let item = items.iter().find(|i| i.position == step.position);
+            let is_general = item.is_some_and(|i| i.kind != "labview" && i.vi_path.is_empty());
+            serde_json::json!({
+                "position": step.position as i64,
+                "template_source": if is_general { "general" } else { "labview" },
+                "vi_template_id": if is_general { Value::Null } else { serde_json::to_value(step.template_id.parse::<i64>().ok()).unwrap_or(Value::Null) },
+                "general_template_id": if is_general { serde_json::to_value(step.template_id.parse::<i64>().ok()).unwrap_or(Value::Null) } else { Value::Null },
+                "name": step.name,
+                "kind": item.map(|i| i.kind.clone()).unwrap_or_default(),
+                "ok": step.ok,
+                "status": step.status,
+                "measured": step.measured,
+                "limits": step.limits,
+                "result": step.result,
+                "error": step.error,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "overall": resp.overall,
+        "sn": resp.sn,
+        "work_order": resp.work_order,
+        "steps": steps
+    });
+    let _ = crate::register::save_sequence_template_last_run(
+        &state.http_client,
+        &state.center_url,
+        &template_id.to_string(),
+        &body,
+    )
+    .await;
+}
+
 async fn labview_run_sequence(
     State(s): State<AppState>,
     body: Option<Json<RunSequenceRequest>>,
 ) -> impl IntoResponse {
+    let sequence_template_id = body
+        .as_ref()
+        .and_then(|Json(req)| req.sequence_template_id);
     let run_opts = body
         .map(|Json(req)| SequenceRunOpts {
-            sn: normalize_run_sequence_opt(req.sn),
-            work_order: normalize_run_sequence_opt(req.work_order),
+            sn: normalize_run_sequence_opt(req.sn.clone()),
+            work_order: normalize_run_sequence_opt(req.work_order.clone()),
         })
         .unwrap_or_default();
 
@@ -996,6 +1170,7 @@ async fn labview_run_sequence(
                 steps_so_far: resp.steps.clone(),
                 sn: resp.sn.clone(),
                 work_order: resp.work_order.clone(),
+                sequence_template_id,
                 abort: false,
             })
             .await;
@@ -1004,6 +1179,7 @@ async fn labview_run_sequence(
 
     s.sequence_session.clear().await;
     s.slot.release().await;
+    persist_sequence_template_last_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -1055,6 +1231,7 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
                 steps_so_far: resp.steps.clone(),
                 sn: resp.sn.clone(),
                 work_order: resp.work_order.clone(),
+                sequence_template_id: session.sequence_template_id,
                 abort: false,
             })
             .await;
@@ -1063,6 +1240,8 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
 
     s.sequence_session.clear().await;
     s.slot.release().await;
+    persist_sequence_template_last_run(&s, session.sequence_template_id, &session.items, &resp)
+        .await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 

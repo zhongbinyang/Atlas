@@ -1,0 +1,36 @@
+CREATE TABLE IF NOT EXISTS sequence_templates (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_run_overall TEXT,
+  last_run_sn TEXT,
+  last_run_work_order TEXT,
+  last_run_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sequence_template_steps (
+  id BIGSERIAL PRIMARY KEY,
+  sequence_template_id BIGINT NOT NULL REFERENCES sequence_templates(id) ON DELETE CASCADE,
+  position BIGINT NOT NULL,
+  template_source TEXT NOT NULL,
+  vi_template_id BIGINT,
+  general_template_id BIGINT,
+  inputs_json TEXT NOT NULL DEFAULT '[]',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  breakpoint BOOLEAN NOT NULL DEFAULT FALSE,
+  fail_policy TEXT NOT NULL DEFAULT 'stop',
+  limits_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  CHECK (
+    (vi_template_id IS NOT NULL AND general_template_id IS NULL) OR
+    (vi_template_id IS NULL AND general_template_id IS NOT NULL)
+  ),
+  FOREIGN KEY (vi_template_id) REFERENCES vi_templates(id),
+  FOREIGN KEY (general_template_id) REFERENCES general_templates(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sequence_template_steps_pos
+  ON sequence_template_steps(sequence_template_id, position);

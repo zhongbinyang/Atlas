@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, Request, StatusCode, Uri},
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use common::{ErrorBody, RegisterAgentRequest};
@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::screenshot::{capture_and_archive, CaptureError};
 use crate::store::{
-    Agent, CreateTaskParams, QueueReplaceError, Screenshot, Store, Task, TaskTemplate,
-    UpdateTemplateParams, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched, ViTemplatePatch,
+    Agent, CreateTaskParams, GeneralTemplateEnriched, QueueReplaceError, Screenshot,
+    SequenceTemplateEnriched, SequenceTemplateLastStep, SequenceTemplateStep, Store, Task,
+    TaskTemplate, UpdateTemplateParams, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
+    ViTemplatePatch,
 };
 use crate::vi_distribute::{copy_template, TransferApiError};
 
@@ -161,9 +163,99 @@ pub struct ViTemplateView {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralTemplateView {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+    pub origin_agent_id: String,
+    pub origin_agent_name: String,
+    pub inputs: serde_json::Value,
+    pub outputs: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceTemplateStepView {
+    pub position: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub inputs: serde_json::Value,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String,
+    pub limits: serde_json::Value,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceTemplateListItemView {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub created_by_agent_id: String,
+    pub created_by_agent_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub step_count: i64,
+    pub last_run_overall: Option<String>,
+    pub last_run_sn: Option<String>,
+    pub last_run_work_order: Option<String>,
+    pub last_run_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceTemplateDetailView {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub created_by_agent_id: String,
+    pub created_by_agent_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub step_count: i64,
+    pub last_run_overall: Option<String>,
+    pub last_run_sn: Option<String>,
+    pub last_run_work_order: Option<String>,
+    pub last_run_at: Option<String>,
+    pub steps: Vec<SequenceTemplateStepView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceTemplateLastStepView {
+    pub position: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub name: String,
+    pub kind: String,
+    pub ok: bool,
+    pub status: String,
+    pub measured: Option<serde_json::Value>,
+    pub limits: Option<serde_json::Value>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceTemplateLastRunView {
+    pub sequence_template_id: i64,
+    pub overall: Option<String>,
+    pub sn: Option<String>,
+    pub work_order: Option<String>,
+    pub ran_at: Option<String>,
+    pub steps: Vec<SequenceTemplateLastStepView>,
+}
+
 fn agent_display_name(name: Option<String>) -> String {
     name.filter(|n| !n.is_empty())
         .unwrap_or_else(|| "未知".into())
+}
+
+fn parse_json_text(raw: &str, label: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(raw).map_err(|err| format!("invalid {label}: {err}"))
 }
 
 impl TryFrom<ViTemplateEnriched> for ViTemplateView {
@@ -192,10 +284,137 @@ impl TryFrom<ViTemplateEnriched> for ViTemplateView {
     }
 }
 
+impl TryFrom<GeneralTemplateEnriched> for GeneralTemplateView {
+    type Error = String;
+
+    fn try_from(e: GeneralTemplateEnriched) -> Result<Self, Self::Error> {
+        let inputs: serde_json::Value = serde_json::from_str(&e.template.inputs_json)
+            .map_err(|err| format!("invalid inputs_json: {err}"))?;
+        let outputs: serde_json::Value = serde_json::from_str(&e.template.outputs_json)
+            .map_err(|err| format!("invalid outputs_json: {err}"))?;
+        Ok(Self {
+            id: e.template.id,
+            name: e.template.name,
+            kind: e.template.kind,
+            origin_agent_id: e.template.origin_agent_id,
+            origin_agent_name: agent_display_name(e.origin_agent_name),
+            inputs,
+            outputs,
+            created_at: e.template.created_at,
+        })
+    }
+}
+
+fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTemplateStepView, String> {
+    Ok(SequenceTemplateStepView {
+        position: step.position,
+        template_source: step.template_source,
+        vi_template_id: step.vi_template_id,
+        general_template_id: step.general_template_id,
+        inputs: parse_json_text(&step.inputs_json, "inputs_json")?,
+        enabled: step.enabled,
+        breakpoint: step.breakpoint,
+        fail_policy: step.fail_policy,
+        limits: parse_json_text(&step.limits_json, "limits_json")?,
+        note: step.note,
+    })
+}
+
+fn sequence_template_list_item_view(t: SequenceTemplateEnriched) -> SequenceTemplateListItemView {
+    SequenceTemplateListItemView {
+        id: t.template.id,
+        name: t.template.name,
+        note: t.template.note,
+        created_by_agent_id: t.template.created_by_agent_id,
+        created_by_agent_name: agent_display_name(t.created_by_agent_name),
+        created_at: t.template.created_at,
+        updated_at: t.template.updated_at,
+        step_count: t.step_count,
+        last_run_overall: t.template.last_run_overall,
+        last_run_sn: t.template.last_run_sn,
+        last_run_work_order: t.template.last_run_work_order,
+        last_run_at: t.template.last_run_at,
+    }
+}
+
+fn sequence_template_last_step_view(step: SequenceTemplateLastStep) -> Result<SequenceTemplateLastStepView, String> {
+    Ok(SequenceTemplateLastStepView {
+        position: step.position,
+        template_source: step.template_source,
+        vi_template_id: step.vi_template_id,
+        general_template_id: step.general_template_id,
+        name: step.name,
+        kind: step.kind,
+        ok: step.ok,
+        status: step.status,
+        measured: step
+            .measured_json
+            .as_deref()
+            .map(|s| parse_json_text(s, "measured_json"))
+            .transpose()?,
+        limits: step
+            .limits_json
+            .as_deref()
+            .map(|s| parse_json_text(s, "limits_json"))
+            .transpose()?,
+        result: step
+            .result_json
+            .as_deref()
+            .map(|s| parse_json_text(s, "result_json"))
+            .transpose()?,
+        error: step.error_text,
+        created_at: step.created_at,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListViTemplatesQuery {
     pub agent_id: Option<String>,
     pub kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListGeneralTemplatesQuery {
+    pub agent_id: Option<String>,
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSequenceTemplateRequest {
+    pub agent_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoadSequenceTemplateToAgentRequest {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveSequenceTemplateLastRunRequest {
+    pub overall: String,
+    pub sn: Option<String>,
+    pub work_order: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<SaveSequenceTemplateLastStepRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveSequenceTemplateLastStepRequest {
+    pub position: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub name: String,
+    pub kind: String,
+    pub ok: bool,
+    pub status: String,
+    pub measured: Option<serde_json::Value>,
+    pub limits: Option<serde_json::Value>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,8 +448,23 @@ pub struct CreateViTemplateRequest {
     pub timeout_secs: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateGeneralTemplateRequest {
+    pub agent_id: String,
+    #[serde(default = "default_general_kind")]
+    pub kind: String,
+    pub inputs: serde_json::Value,
+    #[serde(default = "default_empty_array")]
+    pub outputs: serde_json::Value,
+    pub name: String,
+}
+
 fn default_vi_kind() -> String {
     "labview".into()
+}
+
+fn default_general_kind() -> String {
+    "delay".into()
 }
 
 fn default_true() -> bool {
@@ -241,6 +475,10 @@ fn default_fail_stop() -> String {
     "stop".into()
 }
 
+fn default_queue_template_source() -> String {
+    "labview".into()
+}
+
 fn default_empty_array() -> serde_json::Value {
     serde_json::json!([])
 }
@@ -248,7 +486,9 @@ fn default_empty_array() -> serde_json::Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViRunQueueItemView {
     pub id: String,
-    pub vi_template_id: i64,
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
     pub position: i64,
     pub name: String,
     pub kind: String,
@@ -276,7 +516,11 @@ pub struct ReplaceViRunQueueRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ReplaceViRunQueueItem {
-    pub vi_template_id: i64,
+    #[serde(default = "default_queue_template_source")]
+    pub template_source: String,
+    pub vi_template_id: Option<i64>,
+    pub general_template_id: Option<i64>,
+    pub inputs: Option<serde_json::Value>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -298,7 +542,9 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         .map_err(|err| format!("invalid limits_json: {err}"))?;
     Ok(ViRunQueueItemView {
         id: item.id,
+        template_source: item.template_source,
         vi_template_id: item.vi_template_id,
+        general_template_id: item.general_template_id,
         position: item.position,
         name: item.template_name,
         kind: item.kind,
@@ -327,10 +573,13 @@ fn queue_replace_error_response(err: QueueReplaceError) -> (StatusCode, Json<Err
                 error: "agent not found".into(),
             }),
         ),
-        QueueReplaceError::BadTemplate { vi_template_id } => (
+        QueueReplaceError::BadTemplate {
+            template_source,
+            template_id,
+        } => (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: format!("vi template not found or not owned by agent: {vi_template_id}"),
+                error: format!("{template_source} template not found: {template_id}"),
             }),
         ),
         QueueReplaceError::Db(e) => {
@@ -464,6 +713,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/vi-templates/{id}/distribute",
             post(distribute_vi_template),
+        )
+        .route(
+            "/api/general-templates",
+            get(list_general_templates).post(create_general_template),
+        )
+        .route(
+            "/api/general-templates/{id}",
+            get(get_general_template).delete(delete_general_template),
+        )
+        .route(
+            "/api/sequence-templates",
+            get(list_sequence_templates).post(create_sequence_template),
+        )
+        .route(
+            "/api/sequence-templates/{id}",
+            get(get_sequence_template),
+        )
+        .route(
+            "/api/sequence-templates/{id}/load-to-agent",
+            post(load_sequence_template_to_agent),
+        )
+        .route(
+            "/api/sequence-templates/{id}/last-run",
+            get(get_sequence_template_last_run).post(save_sequence_template_last_run),
         )
         .route(
             "/api/agents/{id}/screenshots",
@@ -827,8 +1100,8 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
         return Some("name is required");
     }
     let kind = req.kind.trim();
-    if kind != "labview" && kind != "delay" {
-        return Some("kind must be labview or delay");
+    if kind != "labview" {
+        return Some("kind must be labview");
     }
     if !req.inputs.is_array() {
         return Some("inputs must be an array");
@@ -838,22 +1111,6 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     }
     if req.timeout_secs == Some(0) {
         return Some("timeout_secs must be greater than 0");
-    }
-    if kind == "delay" {
-        let has_delay_ms = req.inputs.as_array().is_some_and(|arr| {
-            arr.iter().any(|item| {
-                item.get("name").and_then(|v| v.as_str()) == Some("delay_ms")
-                    && item.get("value").is_some_and(|v| {
-                        v.as_u64().is_some()
-                            || v.as_i64().is_some_and(|n| n >= 0)
-                            || v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0)
-                    })
-            })
-        });
-        if !has_delay_ms {
-            return Some("delay kind requires inputs delay_ms");
-        }
-        return None;
     }
     if crate::labview_cmd::normalize_fs_path(&req.vi_path).is_empty() {
         return Some("vi_path is required");
@@ -959,19 +1216,11 @@ async fn create_vi_template(
     }
 
     let kind = req.kind.trim();
-    let (vi_path, cli_path, getinfo_path) = if kind == "delay" {
-        (
-            "__builtin__/delay".to_string(),
-            String::new(),
-            String::new(),
-        )
-    } else {
-        (
-            crate::labview_cmd::normalize_fs_path(&req.vi_path),
-            crate::labview_cmd::normalize_fs_path(&req.cli_path),
-            crate::labview_cmd::normalize_fs_path(&req.getinfo_path),
-        )
-    };
+    let (vi_path, cli_path, getinfo_path) = (
+        crate::labview_cmd::normalize_fs_path(&req.vi_path),
+        crate::labview_cmd::normalize_fs_path(&req.cli_path),
+        crate::labview_cmd::normalize_fs_path(&req.getinfo_path),
+    );
     let name = req.name.trim();
 
     match s
@@ -1246,6 +1495,456 @@ async fn delete_vi_template(
             .into_response(),
         Err(e) => {
             tracing::error!("delete vi template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_general_templates(
+    State(s): State<AppState>,
+    Query(q): Query<ListGeneralTemplatesQuery>,
+) -> impl IntoResponse {
+    let agent_filter = q.agent_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    let kind_filter = q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    match s.store.list_general_templates_enriched(agent_filter, kind_filter).await {
+        Ok(templates) => {
+            let mut views = Vec::with_capacity(templates.len());
+            for t in templates {
+                match GeneralTemplateView::try_from(t) {
+                    Ok(v) => views.push(v),
+                    Err(e) => {
+                        tracing::error!("general template view: {e}");
+                        return db_error().into_response();
+                    }
+                }
+            }
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list general templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_general_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.list_general_templates_enriched(None, None).await {
+        Ok(templates) => {
+            let enriched = templates.into_iter().find(|t| t.template.id == id);
+            match enriched {
+                Some(t) => match GeneralTemplateView::try_from(t) {
+                    Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+                    Err(e) => {
+                        tracing::error!("general template view: {e}");
+                        db_error().into_response()
+                    }
+                },
+                None => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorBody {
+                        error: "general template not found".into(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => {
+            tracing::error!("get general template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_sequence_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.list_sequence_templates().await {
+        Ok(items) => {
+            let views: Vec<SequenceTemplateListItemView> =
+                items.into_iter().map(sequence_template_list_item_view).collect();
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list sequence templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_sequence_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateSequenceTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "name is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    let queue_items = match s.store.list_vi_run_queue(req.agent_id.trim()).await {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::error!("list vi run queue for sequence template create: {e}");
+            return db_error().into_response();
+        }
+    };
+    if queue_items.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "run queue is empty".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .create_sequence_template_from_queue(
+            req.agent_id.trim(),
+            req.name.trim(),
+            req.note.trim(),
+            &queue_items,
+        )
+        .await
+    {
+        Ok(template) => {
+            let enriched = SequenceTemplateEnriched {
+                template,
+                created_by_agent_name: s
+                    .store
+                    .get_agent(req.agent_id.trim())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name),
+                step_count: queue_items.len() as i64,
+            };
+            (StatusCode::CREATED, Json(sequence_template_list_item_view(enriched))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("create sequence template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_sequence_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let template = match s.store.get_sequence_template(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "sequence template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get sequence template: {e}");
+            return db_error().into_response();
+        }
+    };
+    let steps = match s.store.get_sequence_template_steps(id).await {
+        Ok(steps) => steps,
+        Err(e) => {
+            tracing::error!("get sequence template steps: {e}");
+            return db_error().into_response();
+        }
+    };
+    let step_views: Result<Vec<_>, _> = steps.into_iter().map(sequence_template_step_view).collect();
+    let step_views = match step_views {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorBody { error: e })).into_response(),
+    };
+    let creator_name = match s.store.get_agent(&template.created_by_agent_id).await {
+        Ok(Some(a)) => Some(a.name),
+        Ok(None) => None,
+        Err(_) => None,
+    };
+    let view = SequenceTemplateDetailView {
+        id: template.id,
+        name: template.name,
+        note: template.note,
+        created_by_agent_id: template.created_by_agent_id,
+        created_by_agent_name: agent_display_name(creator_name),
+        created_at: template.created_at,
+        updated_at: template.updated_at,
+        step_count: step_views.len() as i64,
+        last_run_overall: template.last_run_overall,
+        last_run_sn: template.last_run_sn,
+        last_run_work_order: template.last_run_work_order,
+        last_run_at: template.last_run_at,
+        steps: step_views,
+    };
+    (StatusCode::OK, Json(view)).into_response()
+}
+
+async fn load_sequence_template_to_agent(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoadSequenceTemplateToAgentRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_sequence_template(id).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "sequence template not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .load_sequence_template_to_agent(id, req.agent_id.trim())
+        .await
+    {
+        Ok(items) => match vi_run_queue_views(items) {
+            Ok(views) => (StatusCode::OK, Json(ViRunQueueListResponse { items: views })).into_response(),
+            Err(e) => {
+                tracing::error!("sequence template load queue view: {e}");
+                db_error().into_response()
+            }
+        },
+        Err(e) => queue_replace_error_response(e).into_response(),
+    }
+}
+
+async fn get_sequence_template_last_run(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let template = match s.store.get_sequence_template(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "sequence template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get sequence template last run template: {e}");
+            return db_error().into_response();
+        }
+    };
+    let steps = match s.store.list_sequence_template_last_steps(id).await {
+        Ok(steps) => steps,
+        Err(e) => {
+            tracing::error!("list sequence template last steps: {e}");
+            return db_error().into_response();
+        }
+    };
+    let views: Result<Vec<_>, _> = steps.into_iter().map(sequence_template_last_step_view).collect();
+    match views {
+        Ok(steps) => (
+            StatusCode::OK,
+            Json(SequenceTemplateLastRunView {
+                sequence_template_id: id,
+                overall: template.last_run_overall,
+                sn: template.last_run_sn,
+                work_order: template.last_run_work_order,
+                ran_at: template.last_run_at,
+                steps,
+            }),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn save_sequence_template_last_run(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SaveSequenceTemplateLastRunRequest>,
+) -> impl IntoResponse {
+    if req.overall.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "overall is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    let existing = match s.store.get_sequence_template(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "sequence template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get sequence template before save last run: {e}");
+            return db_error().into_response();
+        }
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut steps = Vec::with_capacity(req.steps.len());
+    for step in req.steps {
+        steps.push(SequenceTemplateLastStep {
+            position: step.position,
+            template_source: step.template_source,
+            vi_template_id: step.vi_template_id,
+            general_template_id: step.general_template_id,
+            name: step.name,
+            kind: step.kind,
+            ok: step.ok,
+            status: step.status,
+            measured_json: step.measured.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
+            limits_json: step.limits.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
+            result_json: step.result.map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
+            error_text: step.error,
+            created_at: now.clone(),
+        });
+    }
+    match s
+        .store
+        .replace_sequence_template_last_run(
+            id,
+            req.overall.trim(),
+            req.sn.as_deref(),
+            req.work_order.as_deref(),
+            &steps,
+        )
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(SequenceTemplateLastRunView {
+                sequence_template_id: id,
+                overall: Some(req.overall.trim().to_string()),
+                sn: req.sn.or(existing.last_run_sn),
+                work_order: req.work_order.or(existing.last_run_work_order),
+                ran_at: Some(now),
+                steps: steps
+                    .into_iter()
+                    .map(sequence_template_last_step_view)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("save sequence template last run: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_general_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateGeneralTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "agent_id is required".into() })).into_response();
+    }
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "name is required".into() })).into_response();
+    }
+    if !req.inputs.is_array() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "inputs must be an array".into() })).into_response();
+    }
+    if !req.outputs.is_array() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "outputs must be an array".into() })).into_response();
+    }
+
+    match s.store.get_agent(req.agent_id.trim()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(ErrorBody { error: "agent not found".into() })).into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for general template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.find_duplicate_general_template(req.name.trim(), &req.inputs).await {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody { error: "a template with the same name and inputs already exists".into() }),
+            ).into_response();
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("find duplicate general template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.insert_general_template(req.name.trim(), req.agent_id.trim(), req.kind.trim(), &req.inputs, &req.outputs).await {
+        Ok(t) => {
+            // Re-fetch enriched view for consistent response shape
+            match s.store.list_general_templates_enriched(Some(req.agent_id.trim()), None).await {
+                Ok(all) => {
+                    if let Some(enriched) = all.into_iter().find(|e| e.template.id == t.id) {
+                        match GeneralTemplateView::try_from(enriched) {
+                            Ok(view) => return (StatusCode::CREATED, Json(view)).into_response(),
+                            Err(e) => {
+                                tracing::error!("general template view: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("list general templates after create: {e}"),
+            }
+            db_error().into_response()
+        }
+        Err(e) => {
+            tracing::error!("create general template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_general_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.delete_general_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "general template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete general template: {e}");
             db_error().into_response()
         }
     }
@@ -1545,6 +2244,37 @@ async fn put_vi_run_queue(
 ) -> impl IntoResponse {
     let mut items = Vec::with_capacity(req.items.len());
     for (i, item) in req.items.into_iter().enumerate() {
+        let source = if item.template_source.trim().is_empty() {
+            "labview".to_string()
+        } else {
+            item.template_source.trim().to_string()
+        };
+        let (vi_template_id, general_template_id) = match source.as_str() {
+            "general" => {
+                if item.general_template_id.is_none() {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorBody {
+                            error: format!("items[{i}].general_template_id is required"),
+                        }),
+                    )
+                        .into_response();
+                }
+                (None, item.general_template_id)
+            }
+            _ => {
+                if item.vi_template_id.is_none() {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorBody {
+                            error: format!("items[{i}].vi_template_id is required"),
+                        }),
+                    )
+                        .into_response();
+                }
+                (item.vi_template_id, None)
+            }
+        };
         let limits_json = match serde_json::to_string(&item.limits) {
             Ok(v) => v,
             Err(err) => {
@@ -1557,8 +2287,26 @@ async fn put_vi_run_queue(
                     .into_response();
             }
         };
+        let inputs_json = match item.inputs {
+            Some(inputs) => match serde_json::to_string(&inputs) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorBody {
+                            error: format!("items[{i}].inputs: {err}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            None => None,
+        };
         items.push(ViRunQueueReplaceItem {
-            vi_template_id: item.vi_template_id,
+            template_source: source,
+            vi_template_id,
+            general_template_id,
+            inputs_json,
             enabled: item.enabled,
             breakpoint: item.breakpoint,
             fail_policy: item.fail_policy,
@@ -3220,7 +3968,7 @@ mod tests {
         let put_meta_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(put_meta_list.items.len(), 1);
         let meta_item = &put_meta_list.items[0];
-        assert_eq!(meta_item.vi_template_id, tpl_a.id);
+        assert_eq!(meta_item.vi_template_id, Some(tpl_a.id));
         assert!(!meta_item.enabled);
         assert!(meta_item.breakpoint);
         assert_eq!(meta_item.fail_policy, "continue");
@@ -3245,7 +3993,7 @@ mod tests {
         let get_meta_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(get_meta_list.items.len(), 1);
         let get_meta_item = &get_meta_list.items[0];
-        assert_eq!(get_meta_item.vi_template_id, tpl_a.id);
+        assert_eq!(get_meta_item.vi_template_id, Some(tpl_a.id));
         assert!(!get_meta_item.enabled);
         assert!(get_meta_item.breakpoint);
         assert_eq!(get_meta_item.fail_policy, "continue");
@@ -3275,13 +4023,13 @@ mod tests {
         let put_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(put_list.items.len(), 2);
         assert_eq!(put_list.items[0].position, 0);
-        assert_eq!(put_list.items[0].vi_template_id, tpl_b.id);
+        assert_eq!(put_list.items[0].vi_template_id, Some(tpl_b.id));
         assert_eq!(put_list.items[0].name, "B");
         assert_eq!(put_list.items[0].vi_path, r"C:\b.vi");
         assert!(!put_list.items[0].show_front_panel);
         assert_eq!(put_list.items[0].timeout_secs, None);
         assert_eq!(put_list.items[1].position, 1);
-        assert_eq!(put_list.items[1].vi_template_id, tpl_a.id);
+        assert_eq!(put_list.items[1].vi_template_id, Some(tpl_a.id));
         assert_eq!(put_list.items[1].name, "A");
         assert!(put_list.items[1].show_front_panel);
         assert_eq!(put_list.items[1].timeout_secs, Some(45));
@@ -3311,8 +4059,8 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let get_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(get_list.items.len(), 2);
-        assert_eq!(get_list.items[0].vi_template_id, tpl_b.id);
-        assert_eq!(get_list.items[1].vi_template_id, tpl_a.id);
+        assert_eq!(get_list.items[0].vi_template_id, Some(tpl_b.id));
+        assert_eq!(get_list.items[1].vi_template_id, Some(tpl_a.id));
         assert_eq!(get_list.items[1].inputs, tpl_a.inputs);
     }
 
@@ -3340,7 +4088,7 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(list.items.len(), 1);
-        assert_eq!(list.items[0].vi_template_id, tpl_b.id);
+        assert_eq!(list.items[0].vi_template_id, Some(tpl_b.id));
     }
 
     #[tokio::test]

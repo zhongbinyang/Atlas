@@ -101,6 +101,58 @@ pub async fn register_vi_template(
     Ok((status, value))
 }
 
+pub async fn register_general_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/general-templates", center_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn list_general_templates_by_kind(
+    client: &reqwest::Client,
+    center_url: &str,
+    kind: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/general-templates?kind={}",
+        center_url.trim_end_matches('/'),
+        kind
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn list_all_general_templates(
+    client: &reqwest::Client,
+    center_url: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/general-templates", center_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
 pub async fn list_vi_templates_for_agent(
     client: &reqwest::Client,
     center_url: &str,
@@ -210,6 +262,110 @@ pub async fn put_vi_run_queue(
     );
     let resp = client
         .put(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn list_sequence_templates(
+    client: &reqwest::Client,
+    center_url: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/sequence-templates", center_url.trim_end_matches('/'));
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn create_sequence_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/sequence-templates", center_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn get_sequence_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/sequence-templates/{}",
+        center_url.trim_end_matches('/'),
+        id
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn load_sequence_template_to_agent(
+    client: &reqwest::Client,
+    center_url: &str,
+    template_id: &str,
+    agent_id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/sequence-templates/{}/load-to-agent",
+        center_url.trim_end_matches('/'),
+        template_id
+    );
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "agent_id": agent_id }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn get_sequence_template_last_run(
+    client: &reqwest::Client,
+    center_url: &str,
+    template_id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/sequence-templates/{}/last-run",
+        center_url.trim_end_matches('/'),
+        template_id
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn save_sequence_template_last_run(
+    client: &reqwest::Client,
+    center_url: &str,
+    template_id: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/sequence-templates/{}/last-run",
+        center_url.trim_end_matches('/'),
+        template_id
+    );
+    let resp = client
+        .post(&url)
         .json(body)
         .send()
         .await

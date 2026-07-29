@@ -11,6 +11,7 @@ pub struct SequenceSession {
     pub steps_so_far: Vec<SequenceStepResult>,
     pub sn: Option<String>,
     pub work_order: Option<String>,
+    pub sequence_template_id: Option<i64>,
     pub abort: bool,
 }
 

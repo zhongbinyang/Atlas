@@ -624,6 +624,22 @@ pre {
   margin-bottom: 1rem;
 }
 
+.functions-groups {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.function-group h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+#sequence-last-run-pre {
+  max-height: 70vh;
+  overflow: auto;
+  margin: 0;
+}
+
 #view-functions .table-scroll {
   margin-top: 0.25rem;
 }
@@ -733,6 +749,26 @@ pre {
 
 .row-actions .btn-sm:first-child {
   margin-left: 0;
+}
+
+.kind-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.kind-badge.kind-labview {
+  background: #1e3a5f;
+  color: #7eb8f7;
+}
+
+.kind-badge.kind-general {
+  background: #1e3d2a;
+  color: #6fcf97;
 }
 
 @media (max-width: 640px) {

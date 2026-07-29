@@ -2,6 +2,7 @@ const POLL_MS = 2000;
 
 let agents = [];
 let viTemplates = [];
+let sequenceTemplates = [];
 let historyAgentId = null;
 let historyOffset = 0;
 const HISTORY_LIMIT = 50;
@@ -118,6 +119,7 @@ function parseRoute() {
     return { name: 'agent', agentId: decodeURIComponent(parts[1]) };
   }
   if (parts[0] === 'functions') return { name: 'functions' };
+  if (parts[0] === 'sequences') return { name: 'sequences' };
   return { name: 'machines' };
 }
 
@@ -128,7 +130,7 @@ function setHash(path) {
 }
 
 function showView(id) {
-  ['view-machines', 'view-agent-detail', 'view-functions'].forEach((vid) => {
+  ['view-machines', 'view-agent-detail', 'view-functions', 'view-sequences'].forEach((vid) => {
     const el = document.getElementById(vid);
     if (!el) return;
     const on = vid === id;
@@ -137,9 +139,16 @@ function showView(id) {
   });
   document.getElementById('nav-machines')?.classList.toggle('active', id === 'view-machines' || id === 'view-agent-detail');
   document.getElementById('nav-functions')?.classList.toggle('active', id === 'view-functions');
+  document.getElementById('nav-sequences')?.classList.toggle('active', id === 'view-sequences');
 }
 
 async function applyRoute(route) {
+  if (route.name === 'sequences') {
+    showView('view-sequences');
+    await fetchAgents();
+    await fetchSequenceTemplates();
+    return;
+  }
   if (route.name === 'functions') {
     showView('view-functions');
     await fetchAgents();
@@ -162,6 +171,7 @@ async function fetchAgents() {
   agents = await resp.json();
   renderAgents();
   updateViTemplatesAgentFilter();
+  updateSequenceTargetAgents();
 }
 
 function formatByteSize(bytes) {
@@ -544,6 +554,7 @@ document.getElementById('shot-history-next').addEventListener('click', () => {
 
 document.getElementById('nav-machines').addEventListener('click', () => setHash('machines'));
 document.getElementById('nav-functions').addEventListener('click', () => setHash('functions'));
+document.getElementById('nav-sequences').addEventListener('click', () => setHash('sequences'));
 document.getElementById('agent-detail-back').addEventListener('click', () => setHash('machines'));
 
 window.addEventListener('hashchange', () => applyRoute(parseRoute()));
@@ -570,49 +581,128 @@ function showViTemplatesMsg(text, ok) {
   showMsg(document.getElementById('vi-templates-msg'), text, ok);
 }
 
-async function fetchViTemplates() {
-  const filterEl = document.getElementById('vi-templates-agent-filter');
-  let url = '/api/vi-templates';
-  if (filterEl && filterEl.value) {
-    url += '?agent_id=' + encodeURIComponent(filterEl.value);
+function updateSequenceTargetAgents() {
+  const sel = document.getElementById('sequence-target-agent');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">请选择机台</option>';
+  for (const a of agents) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.name + ' (' + a.ip + ')';
+    sel.appendChild(opt);
   }
-  const resp = await fetch(url);
-  if (!resp.ok) return;
-  viTemplates = await resp.json();
+  if (prev && agents.some(a => a.id === prev)) sel.value = prev;
+}
+
+function showSequenceTemplatesMsg(text, ok) {
+  showMsg(document.getElementById('sequence-templates-msg'), text, ok);
+}
+
+function templateSourceLabel(source) {
+  return source === 'general' ? '通用' : 'VI';
+}
+
+function templateKindLabel(kind) {
+  return kind === 'delay' ? '延迟' : (kind === 'labview' ? 'VI' : (kind || '—'));
+}
+
+function templateConfigSummary(t) {
+  if (t._source === 'general') {
+    if (t.kind === 'delay') {
+      const inputs = Array.isArray(t.inputs) ? t.inputs : [];
+      const delayInput = inputs.find((item) => item && item.name === 'delay_ms');
+      if (delayInput && delayInput.value != null) {
+        return 'delay_ms=' + String(delayInput.value);
+      }
+    }
+    return '—';
+  }
+  const timeout = t.timeout_secs != null ? ' | 超时 ' + t.timeout_secs + 's' : '';
+  return (t.vi_path || '—') + timeout;
+}
+
+async function fetchViTemplates() {
+  const agentFilterEl = document.getElementById('vi-templates-agent-filter');
+  const sourceFilterEl = document.getElementById('vi-templates-source-filter');
+  const agentId = agentFilterEl && agentFilterEl.value ? agentFilterEl.value : '';
+  const source = sourceFilterEl && sourceFilterEl.value ? sourceFilterEl.value : '';
+  const query = agentId ? ('?agent_id=' + encodeURIComponent(agentId)) : '';
+  const reqs = [];
+  if (!source || source === 'labview') reqs.push(fetch('/api/vi-templates' + query));
+  if (!source || source === 'general') reqs.push(fetch('/api/general-templates' + query));
+  const responses = await Promise.all(reqs);
+  const merged = [];
+  for (const resp of responses) {
+    if (!resp.ok) continue;
+    const data = await resp.json();
+    if (!Array.isArray(data)) continue;
+    const inferredSource = resp.url.indexOf('/api/general-templates') >= 0 ? 'general' : 'labview';
+    for (const item of data) {
+      merged.push(Object.assign({}, item, { _source: inferredSource }));
+    }
+  }
+  viTemplates = merged;
   renderViTemplates();
 }
 
 function renderViTemplates() {
-  const tbody = document.getElementById('vi-templates-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (viTemplates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无已注册功能，请在机台端注册</td></tr>';
-    return;
+  const viBody = document.getElementById('vi-templates-body');
+  const generalBody = document.getElementById('general-templates-body');
+  const viGroup = document.getElementById('functions-vi-group');
+  const generalGroup = document.getElementById('functions-general-group');
+  if (!viBody || !generalBody) return;
+  viBody.innerHTML = '';
+  generalBody.innerHTML = '';
+
+  const viOnly = viTemplates.filter((t) => t._source !== 'general');
+  const generalOnly = viTemplates.filter((t) => t._source === 'general');
+
+  if (viGroup) viGroup.hidden = false;
+  if (generalGroup) generalGroup.hidden = false;
+
+  if (viOnly.length === 0) {
+    viBody.innerHTML = '<tr><td colspan="8" class="empty">暂无已注册 VI 功能</td></tr>';
   }
+  if (generalOnly.length === 0) {
+    generalBody.innerHTML = '<tr><td colspan="8" class="empty">暂无已注册通用功能</td></tr>';
+  }
+
   for (const t of viTemplates) {
     const row = document.createElement('tr');
     const originCol = t.origin_agent_name || '—';
-    const timeout = t.timeout_secs != null ? t.timeout_secs + 's' : '—';
-    const kindLabel = t.kind === 'delay' ? '延迟' : (t.kind === 'labview' ? 'VI' : (t.kind || '—'));
-    const pathCol = t.kind === 'delay' ? '—' : t.vi_path;
+    const kindLabel = templateKindLabel(t.kind);
+    const sourceLabel = templateSourceLabel(t._source);
+    const configCol = templateConfigSummary(t);
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
+      '<td><span class="kind-badge kind-' + escapeHtml(t._source || 'labview') + '">' + escapeHtml(sourceLabel) + '</span></td>' +
       '<td>' + escapeHtml(t.name) + '</td>' +
       '<td>' + escapeHtml(kindLabel) + '</td>' +
       '<td>' + escapeHtml(originCol) + '</td>' +
-      '<td class="mono">' + escapeHtml(pathCol) + '</td>' +
+      '<td class="mono">' + escapeHtml(configCol) + '</td>' +
       '<td class="inputs-cell-host"></td>' +
-      '<td>' + escapeHtml(timeout) + '</td>' +
       '<td class="row-actions">' +
-        '<button type="button" class="btn-sm btn-vi-edit">修改</button>' +
-        '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
+        (t._source === 'labview'
+          ? '<button type="button" class="btn-sm btn-vi-edit">修改</button>'
+          : '') +
+        '<button type="button" class="btn-sm btn-danger btn-template-delete">删除</button>' +
       '</td>';
     attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
-    row.querySelector('.btn-vi-edit').addEventListener('click', () => editViTemplate(t));
-    row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t));
-    tbody.appendChild(row);
+    const editBtn = row.querySelector('.btn-vi-edit');
+    if (editBtn) editBtn.addEventListener('click', () => editViTemplate(t));
+    row.querySelector('.btn-template-delete').addEventListener('click', () => deleteTemplate(t));
+    if (t._source === 'general') {
+      generalBody.appendChild(row);
+    } else {
+      viBody.appendChild(row);
+    }
   }
+
+  const sourceFilterEl = document.getElementById('vi-templates-source-filter');
+  const source = sourceFilterEl && sourceFilterEl.value ? sourceFilterEl.value : '';
+  if (viGroup) viGroup.hidden = source === 'general';
+  if (generalGroup) generalGroup.hidden = source === 'labview';
 }
 
 async function editViTemplate(t) {
@@ -664,7 +754,135 @@ async function deleteViTemplate(t) {
   }
 }
 
+async function deleteGeneralTemplate(t) {
+  const label = t.name || t.id || '此模板';
+  if (!confirm('确定删除「' + label + '」？相关序列队列中的引用也会清除。')) return;
+  showViTemplatesMsg('删除中…', true);
+  try {
+    const resp = await fetch('/api/general-templates/' + encodeURIComponent(t.id), {
+      method: 'DELETE',
+    });
+    if (resp.ok || resp.status === 204) {
+      showViTemplatesMsg('已删除', true);
+      await fetchViTemplates();
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+  } catch (e) {
+    showViTemplatesMsg('删除失败: ' + e.message, false);
+  }
+}
+
+async function deleteTemplate(t) {
+  if (t._source === 'general') return deleteGeneralTemplate(t);
+  return deleteViTemplate(t);
+}
+
+async function fetchSequenceTemplates() {
+  const tbody = document.getElementById('sequence-templates-body');
+  if (!tbody) return;
+  try {
+    const resp = await fetch('/api/sequence-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    sequenceTemplates = Array.isArray(data) ? data : [];
+    renderSequenceTemplates();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+function renderSequenceTemplates() {
+  const tbody = document.getElementById('sequence-templates-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!sequenceTemplates.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无序列模板</td></tr>';
+    return;
+  }
+  for (const t of sequenceTemplates) {
+    const row = document.createElement('tr');
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
+      '<td>' + escapeHtml(t.name || '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(String(t.step_count || 0)) + '</td>' +
+      '<td>' + escapeHtml(t.created_by_agent_name || '—') + '</td>' +
+      '<td>' + escapeHtml(t.last_run_overall || '—') + '</td>' +
+      '<td>' + escapeHtml(t.last_run_at || '—') + '</td>';
+    const actions = document.createElement('td');
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.className = 'btn-sm';
+    loadBtn.textContent = '加载到机台';
+    loadBtn.addEventListener('click', () => loadSequenceTemplateToAgent(t));
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'btn-sm';
+    viewBtn.textContent = '查看结果';
+    viewBtn.addEventListener('click', () => openSequenceLastRun(t));
+    actions.appendChild(loadBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(viewBtn);
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function loadSequenceTemplateToAgent(t) {
+  const sel = document.getElementById('sequence-target-agent');
+  const agentId = sel && sel.value ? sel.value : '';
+  if (!agentId) {
+    showSequenceTemplatesMsg('请先选择目标机台', false);
+    return;
+  }
+  showSequenceTemplatesMsg('加载中…', true);
+  try {
+    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id) + '/load-to-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showSequenceTemplatesMsg('加载失败: ' + (data.error || resp.status), false);
+      return;
+    }
+    showSequenceTemplatesMsg('已加载到机台: ' + (t.name || t.id), true);
+  } catch (e) {
+    showSequenceTemplatesMsg('加载失败: ' + e.message, false);
+  }
+}
+
+function openSequenceLastRunModal(title, payload) {
+  document.getElementById('sequence-last-run-title').textContent = title;
+  document.getElementById('sequence-last-run-pre').textContent = JSON.stringify(payload, null, 2);
+  document.getElementById('sequence-last-run-modal').hidden = false;
+}
+
+async function openSequenceLastRun(t) {
+  try {
+    const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id) + '/last-run');
+    const data = await resp.json();
+    if (!resp.ok) {
+      showSequenceTemplatesMsg('查看结果失败: ' + ((data && data.error) || resp.status), false);
+      return;
+    }
+    openSequenceLastRunModal('最近一次结果 · ' + (t.name || t.id), data);
+  } catch (e) {
+    showSequenceTemplatesMsg('查看结果失败: ' + e.message, false);
+  }
+}
+
 document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
+document.getElementById('vi-templates-source-filter').addEventListener('change', fetchViTemplates);
+document.getElementById('sequence-last-run-close').addEventListener('click', function () {
+  document.getElementById('sequence-last-run-modal').hidden = true;
+});
 
 applyRoute(parseRoute());
 setInterval(refreshCurrent, POLL_MS);

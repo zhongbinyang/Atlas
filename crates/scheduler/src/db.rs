@@ -63,6 +63,31 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/011_vi_template_outputs.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/012_general_templates.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/013_vi_run_queue_general_support.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/014_vi_run_queue_inputs.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/015_sequence_templates.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/016_sequence_template_last_steps.sql"),
+    )
+    .await?;
     Ok(())
 }
 

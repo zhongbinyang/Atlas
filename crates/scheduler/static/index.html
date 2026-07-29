@@ -20,6 +20,7 @@
       <nav class="view-tabs" aria-label="主分区">
         <button type="button" id="nav-machines" class="tab active" data-route="machines">机台</button>
         <button type="button" id="nav-functions" class="tab" data-route="functions">已注册功能</button>
+        <button type="button" id="nav-sequences" class="tab" data-route="sequences">序列模板</button>
       </nav>
     </div>
     <button id="refresh-btn" type="button" class="btn-primary">刷新</button>
@@ -54,6 +55,72 @@
           <select id="vi-templates-agent-filter">
             <option value="">全部</option>
           </select>
+          <label for="vi-templates-source-filter">来源筛选</label>
+          <select id="vi-templates-source-filter">
+            <option value="">全部</option>
+            <option value="labview">VI</option>
+            <option value="general">通用</option>
+          </select>
+        </div>
+        <div id="functions-groups" class="functions-groups">
+          <section class="function-group" id="functions-vi-group">
+            <h3>中心VI功能</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>来源</th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>来源机台</th>
+                    <th>路径/配置</th>
+                    <th>入参</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="vi-templates-body">
+                  <tr><td colspan="8" class="empty">暂无已注册 VI 功能</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="function-group" id="functions-general-group">
+            <h3>中心通用功能</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>来源</th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>来源机台</th>
+                    <th>路径/配置</th>
+                    <th>入参</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="general-templates-body">
+                  <tr><td colspan="8" class="empty">暂无已注册通用功能</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div id="view-sequences" class="view" hidden>
+      <section id="sequence-templates-section">
+        <h2 class="view-title">序列模板</h2>
+        <p id="sequence-templates-msg" class="msg" hidden></p>
+        <div class="form-grid vi-agent-row">
+          <label for="sequence-target-agent">加载到机台</label>
+          <select id="sequence-target-agent">
+            <option value="">请选择机台</option>
+          </select>
         </div>
         <div class="table-scroll">
           <table>
@@ -61,16 +128,15 @@
               <tr>
                 <th>ID</th>
                 <th>名称</th>
-                <th>类型</th>
+                <th>步骤数</th>
                 <th>来源机台</th>
-                <th>VI 路径</th>
-                <th>入参</th>
-                <th>超时</th>
+                <th>最近结果</th>
+                <th>最近时间</th>
                 <th>操作</th>
               </tr>
             </thead>
-            <tbody id="vi-templates-body">
-              <tr><td colspan="8" class="empty">暂无已注册功能，请在机台端注册</td></tr>
+            <tbody id="sequence-templates-body">
+              <tr><td colspan="7" class="empty">暂无序列模板</td></tr>
             </tbody>
           </table>
         </div>
@@ -160,6 +226,19 @@
       <div class="modal-body">
         <pre id="file-preview-pre" hidden></pre>
         <img id="file-preview-img" alt="预览" hidden>
+      </div>
+    </div>
+  </div>
+
+  <div id="sequence-last-run-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="sequence-last-run-modal"></div>
+    <div class="modal-panel modal-panel-wide">
+      <div class="modal-header">
+        <h2 id="sequence-last-run-title">最近一次结果</h2>
+        <button id="sequence-last-run-close" type="button" class="btn-sm">关闭</button>
+      </div>
+      <div class="modal-body">
+        <pre id="sequence-last-run-pre" class="mono"></pre>
       </div>
     </div>
   </div>

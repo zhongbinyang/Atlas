@@ -183,13 +183,23 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing id".to_string())?
             .to_string();
-        let template_id = item.get("vi_template_id").and_then(|v| {
-            v.as_i64()
-                .map(|n| n.to_string())
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
-                .or_else(|| v.as_str().map(|s| s.to_string()))
-        })
-        .ok_or_else(|| "missing vi_template_id".to_string())?;
+        let template_id = item
+            .get("vi_template_id")
+            .and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+                    .or_else(|| v.as_str().map(|s| s.to_string()))
+            })
+            .or_else(|| {
+                item.get("general_template_id").and_then(|v| {
+                    v.as_i64()
+                        .map(|n| n.to_string())
+                        .or_else(|| v.as_u64().map(|n| n.to_string()))
+                        .or_else(|| v.as_str().map(|s| s.to_string()))
+                })
+            })
+            .ok_or_else(|| "missing template id".to_string())?;
         let name = item
             .get("name")
             .and_then(|v| v.as_str())
@@ -757,5 +767,24 @@ mod tests {
         assert_eq!(items[0].fail_policy, "continue");
         assert_eq!(items[0].limits.len(), 1);
         assert_eq!(items[0].limits[0].output, "Power_dBm");
+    }
+
+    #[test]
+    fn queue_items_for_run_accepts_general_template_id_when_vi_template_id_is_null() {
+        let body = serde_json::json!({
+            "items": [{
+                "position": 0,
+                "id": "q1",
+                "vi_template_id": null,
+                "general_template_id": 88,
+                "name": "Delay",
+                "kind": "delay",
+                "vi_path": ""
+            }]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].template_id, "88");
+        assert_eq!(items[0].kind, "delay");
     }
 }
