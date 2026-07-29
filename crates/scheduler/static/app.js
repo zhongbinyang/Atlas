@@ -132,7 +132,7 @@ function parseRoute() {
 
 function setHash(path) {
   const next = '#/' + path.replace(/^\//, '');
-  if (location.hash === next) applyRoute(parseRoute());
+  if (location.hash === next) applyCurrentRoute();
   else location.hash = next;
 }
 
@@ -149,32 +149,46 @@ function showView(id) {
   document.getElementById('nav-sequences')?.classList.toggle('active', id === 'view-sequences');
 }
 
-async function applyRoute(route) {
+async function applyRoute(route, isCurrent) {
   if (route.name === 'sequences') {
     showView('view-sequences');
     await fetchAgents();
+    if (!isCurrent()) return;
     renderAgents();
     updateViTemplatesAgentFilter();
-    await fetchSequenceTemplates();
+    await fetchSequenceTemplates(isCurrent);
+    if (!isCurrent()) return;
     return;
   }
   if (route.name === 'functions') {
     showView('view-functions');
     await fetchAgents();
+    if (!isCurrent()) return;
     renderAgents();
     updateViTemplatesAgentFilter();
-    await fetchViTemplates();
+    await fetchViTemplates(isCurrent);
+    if (!isCurrent()) return;
     return;
   }
   if (route.name === 'agent') {
     showView('view-agent-detail');
     await fetchAgents();
+    if (!isCurrent()) return;
     renderAgentDetail(route.agentId);
     return;
   }
   showView('view-machines');
   await fetchAgents();
+  if (!isCurrent()) return;
   renderAgents();
+}
+
+const runRoute = dashboardRuntime.createLatestTaskRunner(applyRoute, {
+  onError: (error) => console.error('dashboard route load failed', error),
+});
+
+function applyCurrentRoute() {
+  return runRoute(parseRoute());
 }
 
 async function fetchAgents() {
@@ -649,26 +663,22 @@ document.getElementById('nav-functions').addEventListener('click', () => setHash
 document.getElementById('nav-sequences').addEventListener('click', () => setHash('sequences'));
 document.getElementById('agent-detail-back').addEventListener('click', () => setHash('machines'));
 
-window.addEventListener('hashchange', () => applyRoute(parseRoute()));
+window.addEventListener('hashchange', applyCurrentRoute);
 
-async function refreshCurrent() {
-  await applyRoute(parseRoute());
+function refreshCurrent() {
+  return applyCurrentRoute();
 }
 
 async function refreshDynamic() {
   const route = parseRoute();
   if (route.name !== 'machines' && route.name !== 'agent') return;
 
-  try {
-    await fetchAgents();
-    const currentRoute = parseRoute();
-    if (currentRoute.name !== route.name) return;
-    if (route.name === 'agent' && currentRoute.agentId !== route.agentId) return;
-    if (route.name === 'agent') renderAgentDetail(route.agentId);
-    else renderAgents();
-  } catch (error) {
-    console.error('automatic refresh failed', error);
-  }
+  await fetchAgents();
+  const currentRoute = parseRoute();
+  if (currentRoute.name !== route.name) return;
+  if (route.name === 'agent' && currentRoute.agentId !== route.agentId) return;
+  if (route.name === 'agent') renderAgentDetail(route.agentId);
+  else renderAgents();
 }
 
 function updateViTemplatesAgentFilter() {
@@ -716,7 +726,7 @@ function templateConfigSummary(t) {
   return (t.vi_path || '—') + timeout;
 }
 
-async function fetchViTemplates() {
+async function fetchViTemplates(shouldCommit = () => true) {
   const agentFilterEl = document.getElementById('vi-templates-agent-filter');
   const sourceFilterEl = document.getElementById('vi-templates-source-filter');
   const agentId = agentFilterEl && agentFilterEl.value ? agentFilterEl.value : '';
@@ -726,16 +736,19 @@ async function fetchViTemplates() {
   if (!source || source === 'labview') reqs.push(fetch('/api/vi-templates' + query));
   if (!source || source === 'general') reqs.push(fetch('/api/general-templates' + query));
   const responses = await Promise.all(reqs);
+  if (!shouldCommit()) return;
   const merged = [];
   for (const resp of responses) {
     if (!resp.ok) continue;
     const data = await resp.json();
+    if (!shouldCommit()) return;
     if (!Array.isArray(data)) continue;
     const inferredSource = resp.url.indexOf('/api/general-templates') >= 0 ? 'general' : 'labview';
     for (const item of data) {
       merged.push(Object.assign({}, item, { _source: inferredSource }));
     }
   }
+  if (!shouldCommit()) return;
   viTemplates = merged;
   renderViTemplates();
 }
@@ -873,12 +886,14 @@ async function deleteTemplate(t) {
   return deleteViTemplate(t);
 }
 
-async function fetchSequenceTemplates() {
+async function fetchSequenceTemplates(shouldCommit = () => true) {
   const tbody = document.getElementById('sequence-templates-body');
   if (!tbody) return;
   try {
     const resp = await fetch('/api/sequence-templates');
+    if (!shouldCommit()) return;
     const data = await resp.json();
+    if (!shouldCommit()) return;
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
@@ -887,6 +902,7 @@ async function fetchSequenceTemplates() {
     sequenceTemplates = Array.isArray(data) ? data : [];
     renderSequenceTemplates();
   } catch (e) {
+    if (!shouldCommit()) return;
     tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
@@ -945,8 +961,7 @@ const refreshController = dashboardRuntime.createRefreshController({
   delayMs: POLL_MS,
   document,
   refresh: refreshDynamic,
+  onError: (error) => console.error('automatic refresh failed', error),
 });
 
-applyRoute(parseRoute())
-  .catch((error) => console.error('initial dashboard load failed', error))
-  .finally(() => refreshController.start());
+applyCurrentRoute().finally(() => refreshController.start());

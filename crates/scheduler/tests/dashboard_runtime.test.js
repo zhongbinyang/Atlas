@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  createLatestTaskRunner,
   createRequestDeduper,
   createRefreshController,
   reconcileKeyedChildren,
@@ -88,6 +89,56 @@ test('request deduper reuses an in-flight request and allows a new request after
   assert.equal(await next, 'second result');
 });
 
+test('request deduper releases a rejected request so the next call can retry', async () => {
+  let attempts = 0;
+  const load = createRequestDeduper(() => {
+    attempts += 1;
+    if (attempts === 1) return Promise.reject(new Error('temporary failure'));
+    return Promise.resolve('recovered');
+  });
+
+  const first = load();
+  assert.equal(load(), first, 'the rejected in-flight request is still shared');
+  await assert.rejects(first, /temporary failure/);
+  assert.equal(await load(), 'recovered');
+  assert.equal(attempts, 2);
+});
+
+test('latest task runner prevents an older route from committing after a newer route', async () => {
+  const agentRequest = deferred();
+  const functionsRequest = deferred();
+  const commits = [];
+  const runRoute = createLatestTaskRunner(async (route, isCurrent) => {
+    await (route === 'agent' ? agentRequest.promise : functionsRequest.promise);
+    if (isCurrent()) commits.push(route);
+  });
+
+  const oldRoute = runRoute('agent');
+  await flushPromises();
+  const currentRoute = runRoute('functions');
+  await flushPromises();
+
+  functionsRequest.resolve();
+  await currentRoute;
+  agentRequest.resolve();
+  await oldRoute;
+
+  assert.deepEqual(commits, ['functions']);
+});
+
+test('latest task runner consumes entry-point rejection and reports it', async () => {
+  const errors = [];
+  const runRoute = createLatestTaskRunner(
+    async () => {
+      throw new Error('route failed');
+    },
+    { onError: (error) => errors.push(error.message) },
+  );
+
+  await assert.doesNotReject(runRoute('machines'));
+  assert.deepEqual(errors, ['route failed']);
+});
+
 test('refresh controller schedules the next refresh only after the current one settles', async () => {
   const timers = createTimers();
   const document = createVisibilityDocument();
@@ -128,6 +179,29 @@ test('refresh controller schedules the next refresh only after the current one s
   assert.equal(maxActive, 1);
   assert.equal(timers.nextActive().delay, 2000);
 
+  controller.stop();
+});
+
+test('refresh controller consumes automatic rejection and schedules another refresh', async () => {
+  const timers = createTimers();
+  const document = createVisibilityDocument();
+  const errors = [];
+  const controller = createRefreshController({
+    delayMs: 2000,
+    document,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    refresh: () => Promise.reject(new Error('refresh failed')),
+    onError: (error) => errors.push(error.message),
+  });
+
+  controller.start();
+  timers.fire(timers.nextActive());
+  await flushPromises();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(errors, ['refresh failed']);
+  assert.equal(timers.nextActive().delay, 2000);
   controller.stop();
 });
 

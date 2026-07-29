@@ -5,6 +5,21 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  function createLatestTaskRunner(task, options) {
+    const onError = options?.onError || function () {};
+    let generation = 0;
+
+    return function runLatest(value) {
+      const currentGeneration = ++generation;
+      const isCurrent = () => currentGeneration === generation;
+      return Promise.resolve()
+        .then(() => task(value, isCurrent))
+        .catch((error) => {
+          onError(error);
+        });
+    };
+  }
+
   function createRequestDeduper(request) {
     let activeRequest = null;
 
@@ -23,6 +38,7 @@
     const delayMs = options.delayMs;
     const documentRef = options.document;
     const refresh = options.refresh;
+    const onError = options.onError || function () {};
     const setTimer = options.setTimeout || setTimeout;
     const clearTimer = options.clearTimeout || clearTimeout;
     let timer = null;
@@ -40,8 +56,20 @@
       if (!started || documentRef.hidden) return;
       timer = setTimer(() => {
         timer = null;
-        void refreshNow();
+        refreshAutomatically();
       }, delayMs);
+    }
+
+    function reportError(error) {
+      try {
+        onError(error);
+      } catch (reportingError) {
+        if (typeof console !== 'undefined') console.error(reportingError);
+      }
+    }
+
+    function refreshAutomatically() {
+      void refreshNow().catch(reportError);
     }
 
     function refreshNow() {
@@ -63,7 +91,7 @@
         cancelTimer();
         return;
       }
-      void refreshNow();
+      refreshAutomatically();
     }
 
     function start() {
@@ -109,6 +137,7 @@
   }
 
   return {
+    createLatestTaskRunner,
     createRequestDeduper,
     createRefreshController,
     reconcileKeyedChildren,
