@@ -1529,18 +1529,29 @@ async fn put_vi_run_queue(
     Path(id): Path<String>,
     Json(req): Json<ReplaceViRunQueueRequest>,
 ) -> impl IntoResponse {
-    let items: Vec<ViRunQueueReplaceItem> = req
-        .items
-        .into_iter()
-        .map(|item| ViRunQueueReplaceItem {
+    let mut items = Vec::with_capacity(req.items.len());
+    for (i, item) in req.items.into_iter().enumerate() {
+        let limits_json = match serde_json::to_string(&item.limits) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: format!("items[{i}].limits: {err}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        items.push(ViRunQueueReplaceItem {
             vi_template_id: item.vi_template_id,
             enabled: item.enabled,
             breakpoint: item.breakpoint,
             fail_policy: item.fail_policy,
-            limits_json: serde_json::to_string(&item.limits).unwrap_or_else(|_| "[]".into()),
+            limits_json,
             note: item.note,
-        })
-        .collect();
+        });
+    }
 
     match s.store.replace_vi_run_queue(&id, &items).await {
         Ok(items) => match vi_run_queue_views(items) {

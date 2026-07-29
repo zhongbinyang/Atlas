@@ -79,6 +79,7 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`breakpoint`（执行**前**暂停）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec 上下限；API 字段名 `limits`，库表 `limits_json`）。
 4. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
 5. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI 运行栏提供 SN/工单、开始/继续/中止与总体结果。
+6. **阶段 1 限制**：暂停期间可 **中止**；**无法** 取消正在执行的 continue / LabVIEW 步骤。断点会话仅存于 Agent 内存，**Agent 重启后会丢失**。
 
 ### WebUI 入口
 

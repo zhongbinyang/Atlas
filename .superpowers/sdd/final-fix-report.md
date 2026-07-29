@@ -14,3 +14,18 @@
 ## Tests
 
 `cargo test --workspace` — 20 passed (7 agent, 2 common, 11 scheduler).
+
+---
+
+**Commit:** `fix: harden pause resume and limits PUT errors`
+
+## Changes
+
+1. **pause_index lookup** — `pause_index` returns `Result`; continue handler responds 409 when `before_position` is missing from queue (clears session, releases busy slot). Initial run path returns 500 on the same failure.
+2. **limits PUT serialization** — `put_vi_run_queue` returns 400 Bad Request when `serde_json::to_string` fails for `limits` instead of silently storing `"[]"`.
+3. **README** — Documented phase-1 limits: abort while paused only; no mid-execution cancel; breakpoint session is in-memory.
+
+## Tests
+
+- `cargo test -p agent` — 61 passed
+- `cargo test -p scheduler vi_run_queue` — 7 passed

@@ -857,11 +857,19 @@ async fn general_delay_templates(State(s): State<AppState>) -> impl IntoResponse
     }
 }
 
-fn pause_index(items: &[crate::labview_sequence::QueueItemForRun], pause: &SequencePause) -> usize {
+fn pause_index(
+    items: &[crate::labview_sequence::QueueItemForRun],
+    pause: &SequencePause,
+) -> Result<usize, String> {
     items
         .iter()
         .position(|i| i.position == pause.before_position)
-        .unwrap_or(0)
+        .ok_or_else(|| {
+            format!(
+                "pause position {} not found in run queue",
+                pause.before_position
+            )
+        })
 }
 
 async fn labview_run_sequence(
@@ -953,7 +961,18 @@ async fn labview_run_sequence(
     .await;
 
     if let Some(ref pause) = resp.pause {
-        let next_index = pause_index(&items, pause);
+        let next_index = match pause_index(&items, pause) {
+            Ok(idx) => idx,
+            Err(msg) => {
+                s.sequence_session.clear().await;
+                s.slot.release().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorBody { error: msg }),
+                )
+                    .into_response();
+            }
+        };
         s.sequence_session
             .set(SequenceSession {
                 items,
@@ -1001,7 +1020,18 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
     .await;
 
     if let Some(ref pause) = resp.pause {
-        let next_index = pause_index(&session.items, pause);
+        let next_index = match pause_index(&session.items, pause) {
+            Ok(idx) => idx,
+            Err(msg) => {
+                s.sequence_session.clear().await;
+                s.slot.release().await;
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorBody { error: msg }),
+                )
+                    .into_response();
+            }
+        };
         s.sequence_session
             .set(SequenceSession {
                 items: session.items,
