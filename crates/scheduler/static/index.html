@@ -63,8 +63,8 @@
                 <th>当前机台</th>
                 <th>来源机台</th>
                 <th>VI 路径</th>
+                <th>入参</th>
                 <th>超时</th>
-                <th>操作</th>
               </tr>
             </thead>
             <tbody id="vi-templates-body">
@@ -158,30 +158,6 @@
       <div class="modal-body">
         <pre id="file-preview-pre" hidden></pre>
         <img id="file-preview-img" alt="预览" hidden>
-      </div>
-    </div>
-  </div>
-
-  <div id="vi-distribute-modal" class="modal" hidden>
-    <div class="modal-backdrop" data-close="vi-distribute-modal"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h2 id="vi-distribute-title">分发 VI 模板</h2>
-        <button id="vi-distribute-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <p class="msg">分发将在目标机台创建副本，源机台仍保留原模板</p>
-        <p class="label">目标 Agent（单选）</p>
-        <div id="vi-distribute-agents" class="vi-distribute-agents"></div>
-        <label class="lv-path-label vi-distribute-path-label">
-          <span class="label">VI 路径（可选，覆盖源路径）</span>
-          <input id="vi-distribute-path" type="text" class="lv-path-input mono" placeholder="目标机 VI 路径">
-        </label>
-        <pre id="vi-distribute-results" class="mono lv-pre"></pre>
-        <div class="lv-actions vi-distribute-actions">
-          <button id="vi-distribute-submit" type="button" class="btn-primary">确认分发</button>
-          <button id="vi-distribute-cancel" type="button" class="btn-sm">取消</button>
-        </div>
       </div>
     </div>
   </div>

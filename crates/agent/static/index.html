@@ -134,7 +134,7 @@
     </section>
 
     <section id="lv-registered-section">
-      <h3>已注册功能</h3>
+      <h3>本机已注册功能</h3>
       <p id="lv-registered-msg" class="msg" hidden></p>
       <div class="table-scroll">
         <table>
@@ -142,11 +142,35 @@
             <tr>
               <th>名称</th>
               <th>VI 路径</th>
+              <th>入参</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="lv-registered-body">
-            <tr><td colspan="3" class="empty">加载中…</td></tr>
+            <tr><td colspan="4" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="lv-center-all-section">
+      <h3>中心全部功能</h3>
+      <p class="muted-hint">浏览中心所有机台已注册项；「加到本机」会复制一份到本站，源机台记录保留。</p>
+      <p id="lv-center-all-msg" class="msg" hidden></p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>当前机台</th>
+              <th>来源机台</th>
+              <th>VI 路径</th>
+              <th>入参</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="lv-center-all-body">
+            <tr><td colspan="6" class="empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>

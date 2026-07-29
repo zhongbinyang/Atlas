@@ -55,6 +55,77 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+const INPUTS_SUMMARY_MAX = 48;
+let inputsPopoverEl = null;
+let inputsPopoverHideTimer = null;
+let localAgentId = null;
+
+function formatInputsSummary(inputs) {
+  let raw;
+  try {
+    raw = JSON.stringify(inputs == null ? [] : inputs);
+  } catch (e) {
+    raw = String(inputs);
+  }
+  if (raw.length <= INPUTS_SUMMARY_MAX) return raw;
+  return raw.slice(0, INPUTS_SUMMARY_MAX) + '…';
+}
+
+function formatInputsPretty(inputs) {
+  try {
+    return JSON.stringify(inputs == null ? [] : inputs, null, 2);
+  } catch (e) {
+    return String(inputs);
+  }
+}
+
+function ensureInputsPopover() {
+  if (!inputsPopoverEl) {
+    inputsPopoverEl = document.createElement('pre');
+    inputsPopoverEl.className = 'inputs-popover mono';
+    inputsPopoverEl.hidden = true;
+    document.body.appendChild(inputsPopoverEl);
+    inputsPopoverEl.addEventListener('mouseenter', () => {
+      if (inputsPopoverHideTimer) {
+        clearTimeout(inputsPopoverHideTimer);
+        inputsPopoverHideTimer = null;
+      }
+    });
+    inputsPopoverEl.addEventListener('mouseleave', scheduleHideInputsPopover);
+  }
+  return inputsPopoverEl;
+}
+
+function scheduleHideInputsPopover() {
+  if (inputsPopoverHideTimer) clearTimeout(inputsPopoverHideTimer);
+  inputsPopoverHideTimer = setTimeout(() => {
+    if (inputsPopoverEl) inputsPopoverEl.hidden = true;
+  }, 150);
+}
+
+function attachInputsHover(cell, inputs) {
+  cell.classList.add('inputs-cell');
+  const summary = document.createElement('span');
+  summary.className = 'inputs-summary mono';
+  summary.textContent = formatInputsSummary(inputs);
+  cell.appendChild(summary);
+  cell.addEventListener('mouseenter', () => {
+    if (inputsPopoverHideTimer) {
+      clearTimeout(inputsPopoverHideTimer);
+      inputsPopoverHideTimer = null;
+    }
+    const pop = ensureInputsPopover();
+    pop.textContent = formatInputsPretty(inputs);
+    const rect = summary.getBoundingClientRect();
+    pop.hidden = false;
+    const top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+    const left = Math.min(Math.max(8, rect.left), window.innerWidth - 340);
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+  });
+  cell.addEventListener('mouseleave', scheduleHideInputsPopover);
+}
+
 /** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
 function normalizeFsPath(raw) {
   let s = String(raw == null ? '' : raw).trim();
@@ -385,10 +456,6 @@ async function renameRegisteredTemplate(t) {
   }
 }
 
-async function refreshTemplateLists() {
-  await Promise.all([fetchRegisteredTemplates(), loadSeqRegistered()]);
-}
-
 async function trialRegisteredTemplate(t) {
   const viPath = t.vi_path;
   if (!viPath) {
@@ -432,11 +499,12 @@ function renderRegisteredTemplates(templates) {
   const tbody = document.getElementById('lv-registered-body');
   tbody.innerHTML = '';
   if (!templates || templates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无已注册功能</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无已注册功能</td></tr>';
     return;
   }
   for (let i = 0; i < templates.length; i++) {
     const t = templates[i];
+    if (t.agent_id) localAgentId = t.agent_id;
     const row = document.createElement('tr');
     const name = escapeHtml(t.name || t.id || '—');
     const viPath = escapeHtml(t.vi_path || '—');
@@ -466,9 +534,113 @@ function renderRegisteredTemplates(templates) {
     actions.appendChild(loadBtn);
     row.innerHTML =
       '<td>' + name + '</td>' +
-      '<td class="mono">' + viPath + '</td>';
+      '<td class="mono">' + viPath + '</td>' +
+      '<td class="inputs-cell-host"></td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     row.appendChild(actions);
     tbody.appendChild(row);
+  }
+}
+
+function showCenterAllMsg(text, ok) {
+  const msg = document.getElementById('lv-center-all-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = ok ? 'msg ok' : 'msg err';
+}
+
+function renderCenterAllTemplates(templates) {
+  const tbody = document.getElementById('lv-center-all-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">中心暂无已注册功能</td></tr>';
+    return;
+  }
+  for (let i = 0; i < templates.length; i++) {
+    const t = templates[i];
+    const row = document.createElement('tr');
+    const agentCol = escapeHtml(t.agent_name || (t.agent_id ? t.agent_id.slice(0, 8) : '—'));
+    const originCol = escapeHtml(t.origin_agent_name || '—');
+    row.innerHTML =
+      '<td>' + escapeHtml(t.name || t.id || '—') + '</td>' +
+      '<td>' + agentCol + '</td>' +
+      '<td>' + originCol + '</td>' +
+      '<td class="mono">' + escapeHtml(t.vi_path || '—') + '</td>' +
+      '<td class="inputs-cell-host"></td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
+    const actions = document.createElement('td');
+    if (localAgentId && t.agent_id === localAgentId) {
+      actions.textContent = '已在本机';
+      actions.className = 'muted-hint';
+    } else {
+      const claimBtn = document.createElement('button');
+      claimBtn.type = 'button';
+      claimBtn.textContent = '加到本机';
+      claimBtn.addEventListener('click', function () {
+        claimCenterTemplate(t);
+      });
+      actions.appendChild(claimBtn);
+    }
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function ensureLocalAgentId() {
+  if (localAgentId) return localAgentId;
+  try {
+    const resp = await fetch('/api/labview/agent-id');
+    const data = await resp.json().catch(function () { return {}; });
+    if (resp.ok && data.agent_id) {
+      localAgentId = data.agent_id;
+      return localAgentId;
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+async function claimCenterTemplate(t) {
+  showCenterAllMsg('加到本机中: ' + (t.name || t.id) + '…', true);
+  try {
+    const resp = await fetch('/api/labview/templates/' + encodeURIComponent(t.id) + '/claim', {
+      method: 'POST',
+    });
+    const data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showCenterAllMsg('加到本机失败: ' + err, false);
+      return;
+    }
+    showCenterAllMsg('已复制到本机: ' + (data.name || data.id), true);
+    await refreshTemplateLists();
+  } catch (e) {
+    showCenterAllMsg('加到本机失败: ' + e.message, false);
+  }
+}
+
+async function fetchCenterAllTemplates() {
+  const tbody = document.getElementById('lv-center-all-body');
+  if (!tbody) return;
+  await ensureLocalAgentId();
+  try {
+    const resp = await fetch('/api/labview/all-templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML =
+        '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      showCenterAllMsg('加载失败: ' + err, false);
+      return;
+    }
+    renderCenterAllTemplates(Array.isArray(data) ? data : []);
+    const msg = document.getElementById('lv-center-all-msg');
+    if (msg && msg.className.indexOf('err') === -1) msg.hidden = true;
+  } catch (e) {
+    tbody.innerHTML =
+      '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    showCenterAllMsg('加载失败: ' + e.message, false);
   }
 }
 
@@ -480,7 +652,7 @@ async function fetchRegisteredTemplates() {
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       tbody.innerHTML =
-        '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+        '<tr><td colspan="4" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       showRegisteredMsg('加载失败: ' + err, false);
       return;
     }
@@ -488,9 +660,13 @@ async function fetchRegisteredTemplates() {
     document.getElementById('lv-registered-msg').hidden = true;
   } catch (e) {
     tbody.innerHTML =
-      '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+      '<tr><td colspan="4" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
     showRegisteredMsg('加载失败: ' + e.message, false);
   }
+}
+
+async function refreshTemplateLists() {
+  await Promise.all([fetchRegisteredTemplates(), fetchCenterAllTemplates(), loadSeqRegistered()]);
 }
 
 document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
@@ -846,6 +1022,6 @@ document.getElementById('seq-run-btn').addEventListener('click', runSequence);
 fetchStatus();
 fetchTasks();
 loadLabviewConfig();
-fetchRegisteredTemplates();
+refreshTemplateLists();
 setInterval(fetchStatus, POLL_MS);
 setInterval(fetchTasks, POLL_MS);

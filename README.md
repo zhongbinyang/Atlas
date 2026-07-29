@@ -1,6 +1,6 @@
 # ATLAS 光模块测试监控系统
 
-Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 SQLite 保存机台、VI 模板与任务，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。
+Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `10.102.30.18/atlas`）保存机台、VI 模板与任务，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。
 
 WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能**；Agent 为紧凑状态条 + VI / 序列工作台。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
 
@@ -30,7 +30,7 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 |------|--------|------|
 | `SCHEDULER_BIND` | `0.0.0.0` | 监听地址 |
 | `SCHEDULER_PORT` | `26630` | 监听端口 |
-| `SCHEDULER_DATABASE_URL` | `sqlite:data/scheduler.db` | SQLite 连接串 |
+| `SCHEDULER_DATABASE_URL` | `postgres://postgres:postgres@10.102.30.18:5432/atlas` | PostgreSQL 连接串 |
 | `SCHEDULER_SCREENSHOT_DIR` | `data/screenshots` | 截图归档根目录 |
 | `SCHEDULER_POLL_STATUS_INTERVAL_SECS` | `5` | Agent 状态巡检间隔（秒） |
 | `SCHEDULER_POLL_TASK_INTERVAL_SECS` | `1` | 任务下发 / 结果轮询间隔（秒） |
@@ -62,7 +62,7 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 
 1. **查询参数（inspect）**：对目标 VI 绝对路径调用 `labview-runner-cli --action inspect`，返回 inputs/outputs JSON；在 WebUI 表格中编辑各参数的默认 `value`（`name` / `className` 只读）。
 2. **试跑（run）**：用当前 inputs 同步执行 `--action run`，返回 outputs JSON；可选「显示前面板」与 CLI `--timeout`（秒）。
-3. **注册**：**仅在 Agent WebUI** 填写 **显示名称**（必填），将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 SQLite 表 `vi_templates`，并绑定目标 Agent。同一 Agent **可多次注册相同 VI 路径**（每次生成独立 `id`）。中心 WebUI **不提供** VI 登记 / inspect / 试跑表单。
+3. **注册**：**仅在 Agent WebUI** 填写 **显示名称**（必填），将 VI 路径、inputs、前面板/超时选项及 **注册时刻的 CLI/getinfo 路径快照** 写入中心 PostgreSQL 表 `vi_templates`，并绑定目标 Agent。同一 Agent **可多次注册相同 VI 路径**（每次生成独立 `id`）。中心 WebUI **不提供** VI 登记 / inspect / 试跑表单。
 4. **下发（API）**：`POST /api/vi-templates/{id}/dispatch` 仍可将模板拼成 `cmd` 入队 Shell 任务队列；中心 WebUI **不再暴露**「作业」界面，任务结果请通过 API 或 Agent 侧查看。
 
 ### 已注册列表与分发（试跑）
@@ -83,16 +83,16 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 
 | 位置 | 路由 / 分区 | 说明 |
 |------|-------------|------|
-| Agent WebUI（`:26631`） | VI / **序列** | VI 工作台：inspect、试跑、**注册到中心**；**序列** 页双列表编排队列并 **按序执行** |
+| Agent WebUI（`:26631`） | VI / **序列** | VI 工作台：inspect、试跑、**注册到中心**；**本机已注册** + **中心全部功能**（悬停查看入参；**加到本机** 复制）；**序列** 页双列表编排队列并 **按序执行** |
 | ATLAS 中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
 | ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览 + **截图** / **历史** / **文件** |
-| ATLAS 中心 WebUI | `#/functions` | **已注册功能**：按机台筛选；**重命名** / **分发** / **删除**（无中心注册） |
+| ATLAS 中心 WebUI | `#/functions` | **已注册功能**（只读）：按机台筛选；展示入参摘要（悬停查看完整 JSON）；无重命名/分发/删除 |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。Shell 任务 API 仍存在，但中心 WebUI **不再提供**「作业」界面。
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/registered-templates`（`?agent_id=` 由中心过滤，Agent 仅列本机），`GET/PUT /api/labview/run-queue`（代理中心队列），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/registered-templates`（本机），`GET /api/labview/all-templates`（中心全量），`GET /api/labview/agent-id`，`POST /api/labview/templates/{id}/claim`（复制到本机，代理中心 distribute），`GET/PUT /api/labview/run-queue`（代理中心队列），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
 - 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/PATCH/DELETE /api/vi-templates`（注册 `name` 必填；列表支持 `?agent_id=`），`POST /api/vi-templates/{id}/distribute`（**单目标** `{ target_agent_id, vi_path? }`；在目标机台 **复制** 为新模板，源机台保留，返回新模板对象），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
@@ -108,8 +108,8 @@ cargo build --release
 **终端 A — 调度中心：**
 
 ```powershell
-$env:SCHEDULER_DATABASE_URL = "sqlite:data/scheduler.db"
-cargo run -p scheduler
+$env:SCHEDULER_DATABASE_URL = "postgres://postgres:postgres@10.102.30.18:5432/atlas"
+cargo run --release -p scheduler
 ```
 
 浏览器打开 `http://127.0.0.1:26630` 进入 ATLAS 中心 WebUI。
@@ -118,7 +118,7 @@ cargo run -p scheduler
 
 ```powershell
 $env:AGENT_CENTER_URL = "http://127.0.0.1:26630"
-cargo run -p agent
+cargo run --release -p agent
 ```
 
 浏览器打开 `http://127.0.0.1:26631` 进入 Agent WebUI。
@@ -138,7 +138,7 @@ ATLAS 中心 WebUI 的 Agent **详情页**（`#/agents/{id}`）提供 **截图**
 
 **捕获范围：** Agent 仅截取 **主显示器**（primary monitor）；多显示器环境下非主屏内容不会出现在截图中。
 
-**代理与存储：** 截图由调度中心代为调用 Agent，PNG 永久保存在 `data/screenshots/{agent_id}/{id}.png`（可用环境变量 `SCHEDULER_SCREENSHOT_DIR` 更改根目录）。元数据写入 SQLite `screenshots` 表。单张图片上限 20 MiB；非 PNG 或 Agent 不可达时返回相应错误（502/503/404）。
+**代理与存储：** 截图由调度中心代为调用 Agent，PNG 永久保存在 `data/screenshots/{agent_id}/{id}.png`（可用环境变量 `SCHEDULER_SCREENSHOT_DIR` 更改根目录）。元数据写入 PostgreSQL `screenshots` 表。单张图片上限 20 MiB；非 PNG 或 Agent 不可达时返回相应错误（502/503/404）。
 
 **磁盘风险：** 截图文件 **不会自动清理**，`data/screenshots/` 目录会随使用 **持续增长**，请自行定期删除旧文件或迁移存储。
 
@@ -150,7 +150,7 @@ ATLAS 中心 WebUI 的 Agent **详情页**提供 **文件** 操作，只读浏�
 
 - **列表与导航**：面包屑进入子目录；目录行可 **打开**，文件名与大小列于表格。
 - **预览与下载**：仅 **`.txt`**、**`.gif`**（扩展名大小写不敏感）支持 **预览** 与 **下载**；其它扩展名仅列名，无内容操作。
-- **代理与存储：** 请求由调度中心代理转发至在线 Agent 的 `GET /api/files` 与 `GET /api/files/content`；**中心不落盘**，内容不经 SQLite 归档。
+- **代理与存储：** 请求由调度中心代理转发至在线 Agent 的 `GET /api/files` 与 `GET /api/files/content`；**中心不落盘**，内容不经中心数据库归档。
 - **根目录：** Agent 需设置环境变量 **`AGENT_FILES_ROOT`** 指向存在的本地目录；未配置或路径无效时 Agent 返回 503，中心 WebUI 提示错误。
 - **大小限制：** 单文件读取上限 **20 MiB**；超出或非 txt/gif 扩展名返回相应错误（413/403 等）。
 - **路径安全：** 相对路径不可逃逸出 `AGENT_FILES_ROOT`（规范化 + canonicalize 校验）。
@@ -164,11 +164,11 @@ ATLAS 中心 WebUI 的 Agent **详情页**提供 **文件** 操作，只读浏�
 3. **机台卡片 → 详情**：点击卡片进入 `#/agents/{id}`；**返回机台** 回到卡片网格。
 4. **桌面截图**：在 Agent 详情点击 **截图**，弹窗显示主屏 PNG；点击 **历史** 可浏览已归档记录。
 5. **文件浏览**：将 Agent 的 `AGENT_FILES_ROOT` 指向样例结果目录；在 Agent 详情点击 **文件**，浏览根下 `Log.txt` 与进入 `EyeDiagram/35` 预览 `CH1.gif`，并验证下载。
-6. **已注册功能页**：打开 `#/functions`；按机台筛选；对模板 **重命名**、**分发**（单选目标，确认警示文案）、**删除**。
+6. **已注册功能页**：打开 `#/functions`；按机台筛选；只读查看名称/机台/路径/入参（悬停看完整 JSON）；无操作按钮。
 7. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
-   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「已注册功能」出现该项且可试跑。
+   - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「本机已注册功能」出现该项且可试跑；入参列可悬停查看。
    - 中心 `#/functions`：模板表可见刚注册项，**当前机台** / **来源机台** 均为注册 Agent。
-   - 中心：**分发**（单选目标）到另一在线 Agent；目标 Agent 端「已注册功能」出现 **新副本**（新 `id`），来源机台不变，**源 Agent 列表仍保留** 原项。
+   - Agent「中心全部功能」：可见其他机台模板；对非本机项点击 **加到本机**，本机列表出现 **新副本**（新 `id`），源机台原项保留。
    - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
 8. **Shell 任务（API 仅）**：中心 WebUI 无「作业」界面；如需验证队列，使用 `POST /api/templates`、`POST /api/tasks` 等 API（见设计规格）。
 

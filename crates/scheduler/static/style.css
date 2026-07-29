@@ -740,3 +740,41 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+/* Inputs hover popover (registered functions) */
+.inputs-cell,
+.inputs-cell-host {
+  max-width: 14rem;
+  vertical-align: middle;
+}
+
+.inputs-summary {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inputs-popover {
+  position: fixed;
+  z-index: 2000;
+  margin: 0;
+  min-width: 16rem;
+  max-width: min(36rem, calc(100vw - 24px));
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0.65rem 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(21, 32, 43, 0.18);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

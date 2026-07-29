@@ -121,6 +121,43 @@ pub async fn list_vi_templates_for_agent(
     Ok((status, value))
 }
 
+pub async fn list_all_vi_templates(
+    client: &reqwest::Client,
+    center_url: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/vi-templates", center_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn distribute_vi_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    template_id: &str,
+    target_agent_id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/vi-templates/{}/distribute",
+        center_url.trim_end_matches('/'),
+        template_id
+    );
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "target_agent_id": target_agent_id }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
 pub async fn get_vi_run_queue(
     client: &reqwest::Client,
     center_url: &str,

@@ -4,10 +4,11 @@ let agents = [];
 let viTemplates = [];
 let historyAgentId = null;
 let historyOffset = 0;
-let distributeTemplate = null;
 const HISTORY_LIMIT = 50;
 let filesAgentId = null;
 let filesPath = '';
+let inputsPopoverEl = null;
+let inputsPopoverHideTimer = null;
 
 function escapeHtml(str) {
   return String(str)
@@ -15,6 +16,74 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+const INPUTS_SUMMARY_MAX = 48;
+
+function formatInputsSummary(inputs) {
+  let raw;
+  try {
+    raw = JSON.stringify(inputs == null ? [] : inputs);
+  } catch (e) {
+    raw = String(inputs);
+  }
+  if (raw.length <= INPUTS_SUMMARY_MAX) return raw;
+  return raw.slice(0, INPUTS_SUMMARY_MAX) + '…';
+}
+
+function formatInputsPretty(inputs) {
+  try {
+    return JSON.stringify(inputs == null ? [] : inputs, null, 2);
+  } catch (e) {
+    return String(inputs);
+  }
+}
+
+function ensureInputsPopover() {
+  if (!inputsPopoverEl) {
+    inputsPopoverEl = document.createElement('pre');
+    inputsPopoverEl.className = 'inputs-popover mono';
+    inputsPopoverEl.hidden = true;
+    document.body.appendChild(inputsPopoverEl);
+    inputsPopoverEl.addEventListener('mouseenter', () => {
+      if (inputsPopoverHideTimer) {
+        clearTimeout(inputsPopoverHideTimer);
+        inputsPopoverHideTimer = null;
+      }
+    });
+    inputsPopoverEl.addEventListener('mouseleave', scheduleHideInputsPopover);
+  }
+  return inputsPopoverEl;
+}
+
+function scheduleHideInputsPopover() {
+  if (inputsPopoverHideTimer) clearTimeout(inputsPopoverHideTimer);
+  inputsPopoverHideTimer = setTimeout(() => {
+    if (inputsPopoverEl) inputsPopoverEl.hidden = true;
+  }, 150);
+}
+
+function attachInputsHover(cell, inputs) {
+  cell.classList.add('inputs-cell');
+  const summary = document.createElement('span');
+  summary.className = 'inputs-summary mono';
+  summary.textContent = formatInputsSummary(inputs);
+  cell.appendChild(summary);
+  cell.addEventListener('mouseenter', () => {
+    if (inputsPopoverHideTimer) {
+      clearTimeout(inputsPopoverHideTimer);
+      inputsPopoverHideTimer = null;
+    }
+    const pop = ensureInputsPopover();
+    pop.textContent = formatInputsPretty(inputs);
+    const rect = summary.getBoundingClientRect();
+    pop.hidden = false;
+    const top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+    const left = Math.min(Math.max(8, rect.left), window.innerWidth - 340);
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+  });
+  cell.addEventListener('mouseleave', scheduleHideInputsPopover);
 }
 
 /** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
@@ -140,79 +209,6 @@ function closeFilePreviewModal() {
   document.getElementById('file-preview-pre').textContent = '';
   document.getElementById('file-preview-img').hidden = true;
   document.getElementById('file-preview-img').removeAttribute('src');
-}
-
-function openDistributeModal(t) {
-  distributeTemplate = t;
-  document.getElementById('vi-distribute-title').textContent = '分发 — ' + t.name;
-  const container = document.getElementById('vi-distribute-agents');
-  container.innerHTML = '';
-  const others = agents.filter(a => a.id !== t.agent_id);
-  if (others.length === 0) {
-    container.innerHTML = '<p class="empty">无其他 Agent 可分发</p>';
-  } else {
-    for (const a of others) {
-      const label = document.createElement('label');
-      label.className = 'lv-check';
-      const rb = document.createElement('input');
-      rb.type = 'radio';
-      rb.name = 'vi-distribute-target';
-      rb.value = a.id;
-      label.appendChild(rb);
-      label.appendChild(document.createTextNode(a.name || a.id.slice(0, 8)));
-      container.appendChild(label);
-    }
-  }
-  document.getElementById('vi-distribute-path').value = t.vi_path || '';
-  document.getElementById('vi-distribute-results').textContent = '';
-  document.getElementById('vi-distribute-modal').hidden = false;
-}
-
-function closeDistributeModal() {
-  document.getElementById('vi-distribute-modal').hidden = true;
-  distributeTemplate = null;
-  document.getElementById('vi-distribute-results').textContent = '';
-}
-
-async function submitDistribute() {
-  if (!distributeTemplate) return;
-  const selected = document.querySelector('#vi-distribute-agents input[type=radio]:checked');
-  const resultsEl = document.getElementById('vi-distribute-results');
-  if (!selected) {
-    resultsEl.textContent = '请选择一个目标 Agent';
-    return;
-  }
-  const pathRaw = normalizeFsPath(document.getElementById('vi-distribute-path').value);
-  const body = {
-    target_agent_id: selected.value,
-    vi_path: pathRaw || null,
-  };
-  resultsEl.textContent = '分发中…';
-  try {
-    const resp = await fetch(
-      '/api/vi-templates/' + encodeURIComponent(distributeTemplate.id) + '/distribute',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-    );
-    const data = await resp.json();
-    if (!resp.ok) {
-      resultsEl.textContent = '分发失败: ' + (data.error || resp.status);
-      return;
-    }
-    const agent = agents.find(a => a.id === data.agent_id);
-    const agentName = data.agent_name || (agent ? agent.name : null) ||
-      (data.agent_id ? data.agent_id.slice(0, 8) : '—');
-    const idShort = data.id ? data.id.slice(0, 8) + '…' : '';
-    resultsEl.textContent = '已复制到 ' + agentName +
-      (idShort ? '（新 id: ' + idShort + '）' : '') +
-      '；源机台仍保留原模板';
-    await fetchViTemplates();
-  } catch (e) {
-    resultsEl.textContent = '分发失败: ' + e.message;
-  }
 }
 
 function joinFilesPath(base, name) {
@@ -523,9 +519,6 @@ document.getElementById('shot-close').addEventListener('click', closeShotModal);
 document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);
 document.getElementById('files-close').addEventListener('click', closeFilesModal);
 document.getElementById('file-preview-close').addEventListener('click', closeFilePreviewModal);
-document.getElementById('vi-distribute-close').addEventListener('click', closeDistributeModal);
-document.getElementById('vi-distribute-cancel').addEventListener('click', closeDistributeModal);
-document.getElementById('vi-distribute-submit').addEventListener('click', submitDistribute);
 
 document.querySelectorAll('.modal-backdrop').forEach(el => {
   el.addEventListener('click', () => {
@@ -534,7 +527,6 @@ document.querySelectorAll('.modal-backdrop').forEach(el => {
     else if (id === 'shot-history-modal') closeShotHistoryModal();
     else if (id === 'files-modal') closeFilesModal();
     else if (id === 'file-preview-modal') closeFilePreviewModal();
-    else if (id === 'vi-distribute-modal') closeDistributeModal();
   });
 });
 
@@ -608,57 +600,10 @@ function renderViTemplates() {
       '<td>' + escapeHtml(agentCol) + '</td>' +
       '<td>' + escapeHtml(originCol) + '</td>' +
       '<td class="mono">' + escapeHtml(t.vi_path) + '</td>' +
-      '<td>' + escapeHtml(timeout) + '</td>' +
-      '<td class="row-actions">' +
-        '<button type="button" class="btn-sm btn-vi-rename">重命名</button>' +
-        '<button type="button" class="btn-sm btn-vi-distribute">分发</button>' +
-        '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
-      '</td>';
-    row.querySelector('.btn-vi-rename').addEventListener('click', () => renameViTemplate(t));
-    row.querySelector('.btn-vi-distribute').addEventListener('click', () => openDistributeModal(t));
-    row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t.id));
+      '<td class="inputs-cell-host"></td>' +
+      '<td>' + escapeHtml(timeout) + '</td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     tbody.appendChild(row);
-  }
-}
-
-async function renameViTemplate(t) {
-  const current = t.name || '';
-  const next = prompt('重命名', current);
-  if (next == null) return;
-  const name = String(next).trim();
-  if (!name) {
-    showViTemplatesMsg('名称不能为空', false);
-    return;
-  }
-  if (name === current) return;
-  showViTemplatesMsg('重命名中…', true);
-  try {
-    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      showViTemplatesMsg('重命名失败: ' + (data.error || resp.status), false);
-      return;
-    }
-    showViTemplatesMsg('已重命名: ' + (data.name || name), true);
-    await fetchViTemplates();
-  } catch (e) {
-    showViTemplatesMsg('重命名失败: ' + e.message, false);
-  }
-}
-
-async function deleteViTemplate(id) {
-  if (!confirm('确定删除此 VI 模板？')) return;
-  const resp = await fetch('/api/vi-templates/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (resp.ok || resp.status === 204) {
-    showViTemplatesMsg('已删除', true);
-    await fetchViTemplates();
-  } else {
-    const data = await resp.json().catch(() => ({}));
-    showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
   }
 }
 
