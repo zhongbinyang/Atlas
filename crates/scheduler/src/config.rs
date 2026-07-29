@@ -15,8 +15,9 @@ impl SchedulerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(26630),
-            database_url: std::env::var("SCHEDULER_DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite:data/scheduler.db".into()),
+            database_url: std::env::var("SCHEDULER_DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://postgres:postgres@10.102.30.18:5432/atlas?sslmode=disable".into()
+            }),
             screenshot_dir: std::env::var("SCHEDULER_SCREENSHOT_DIR")
                 .unwrap_or_else(|_| "data/screenshots".into()),
             poll_status_interval_secs: std::env::var("SCHEDULER_POLL_STATUS_INTERVAL_SECS")

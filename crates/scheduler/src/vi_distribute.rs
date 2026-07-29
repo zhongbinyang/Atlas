@@ -7,7 +7,6 @@ use crate::store::{Store, TransferError, ViTemplate};
 pub enum TransferApiError {
     NotFound,
     AgentNotFound,
-    SameAgent,
     Config(String),
     Db(String),
 }
@@ -40,10 +39,6 @@ pub async fn copy_template(
     target_agent_id: &str,
     vi_path_override: Option<&str>,
 ) -> Result<ViTemplate, TransferApiError> {
-    if target_agent_id == source.agent_id {
-        return Err(TransferApiError::SameAgent);
-    }
-
     let agent = match store.get_agent(target_agent_id).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(TransferApiError::AgentNotFound),
@@ -64,7 +59,7 @@ pub async fn copy_template(
 
     store
         .copy_vi_template(
-            &source.id,
+            source.id,
             target_agent_id,
             &cli_path,
             &getinfo_path,
@@ -74,7 +69,6 @@ pub async fn copy_template(
         .map_err(|e| match e {
             TransferError::NotFound => TransferApiError::NotFound,
             TransferError::AgentNotFound => TransferApiError::AgentNotFound,
-            TransferError::SameAgent => TransferApiError::SameAgent,
             TransferError::Db(e) => TransferApiError::Db(e.to_string()),
         })
 }
@@ -82,13 +76,9 @@ pub async fn copy_template(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
 
-    async fn test_store() -> Store {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        let pool = crate::db::connect(&url).await.unwrap();
-        Store::new(pool)
+    async fn test_store() -> crate::db::GuardedStore {
+        crate::db::GuardedStore::new().await
     }
 
     async fn start_mock_labview() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -131,7 +121,7 @@ mod tests {
             .insert_vi_template(
                 "Add",
                 &agent_a.id,
-                &agent_a.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -153,55 +143,21 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(copied.id, source.id);
-        assert_eq!(copied.agent_id, agent_b.id);
         assert_eq!(copied.origin_agent_id, agent_a.id);
         assert_eq!(copied.vi_path, source.vi_path);
         assert_eq!(copied.cli_path, r"C:\cli\LabVIEWCLI.exe");
 
+        // Filter is by origin_agent_id: both rows stay under agent_a.
         let listed_a = store
-            .list_vi_templates(Some(&agent_a.id))
+            .list_vi_templates(Some(&agent_a.id), None)
             .await
             .unwrap();
-        assert_eq!(listed_a.len(), 1);
-        assert_eq!(listed_a[0].id, source.id);
+        assert_eq!(listed_a.len(), 2);
 
         let listed_b = store
-            .list_vi_templates(Some(&agent_b.id))
+            .list_vi_templates(Some(&agent_b.id), None)
             .await
             .unwrap();
-        assert_eq!(listed_b.len(), 1);
-        assert_eq!(listed_b[0].id, copied.id);
-    }
-
-    #[tokio::test]
-    async fn copy_to_self_errors() {
-        let store = test_store().await;
-        let agent = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
-        let inputs = serde_json::json!([]);
-        let source = store
-            .insert_vi_template(
-                "Add",
-                &agent.id,
-                &agent.id,
-                r"C:\x\Add.vi",
-                r"C:\cli.exe",
-                r"C:\getinfo.vi",
-                &inputs,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let err = copy_template(
-            &store,
-            &reqwest::Client::new(),
-            &source,
-            &agent.id,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, TransferApiError::SameAgent));
+        assert!(listed_b.is_empty());
     }
 }

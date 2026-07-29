@@ -14,6 +14,7 @@ pub struct QueueItemForRun {
     pub queue_item_id: String,
     pub template_id: String,
     pub name: String,
+    pub kind: String,
     pub vi_path: String,
     pub inputs: Value,
     pub show_front_panel: bool,
@@ -56,15 +57,22 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing id".to_string())?
             .to_string();
-        let template_id = item
-            .get("vi_template_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing vi_template_id".to_string())?
-            .to_string();
+        let template_id = item.get("vi_template_id").and_then(|v| {
+            v.as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                .or_else(|| v.as_str().map(|s| s.to_string()))
+        })
+        .ok_or_else(|| "missing vi_template_id".to_string())?;
         let name = item
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("")
+            .to_string();
+        let kind = item
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("labview")
             .to_string();
         let vi_path = item
             .get("vi_path")
@@ -93,6 +101,7 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             queue_item_id,
             template_id,
             name,
+            kind,
             vi_path,
             inputs,
             show_front_panel,
@@ -171,6 +180,11 @@ async fn run_one_step(
     getinfo: &Path,
     item: &QueueItemForRun,
 ) -> Result<Value, String> {
+    if crate::general::is_delay_template(Some(item.kind.as_str()), &item.vi_path) {
+        let delay_ms = crate::general::delay_ms_from_inputs(&item.inputs)?;
+        return Ok(crate::general::run_delay_ms(delay_ms).await);
+    }
+
     let vi = std::path::PathBuf::from(normalize_fs_path(&item.vi_path));
     ensure_vi(&vi).map_err(|e| error_message(&e))?;
 
@@ -208,6 +222,7 @@ mod tests {
             queue_item_id: format!("q-{position}"),
             template_id: format!("t-{position}"),
             name: name.into(),
+            kind: "labview".into(),
             vi_path: r"C:\x\Add.vi".into(),
             inputs: Value::Array(vec![]),
             show_front_panel: false,

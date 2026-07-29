@@ -19,6 +19,7 @@
       </div>
       <nav class="page-tabs">
         <button type="button" class="tab active" data-page="workbench">VI</button>
+        <button type="button" class="tab" data-page="general">通用</button>
         <button type="button" class="tab" data-page="sequence">序列</button>
       </nav>
     </div>
@@ -52,25 +53,6 @@
         <div id="metric-busy">—</div>
       </div>
       <p id="register-msg" class="msg status-rail-msg" hidden></p>
-    </section>
-
-    <section id="tasks-section">
-      <h2>近期任务</h2>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>命令</th>
-              <th>状态</th>
-              <th>退出码</th>
-            </tr>
-          </thead>
-          <tbody id="tasks-body">
-            <tr><td colspan="4" class="empty">暂无任务</td></tr>
-          </tbody>
-        </table>
-      </div>
     </section>
 
     <div id="page-workbench">
@@ -133,36 +115,16 @@
       <p id="lv-msg" class="msg" hidden></p>
     </section>
 
-    <section id="lv-registered-section">
-      <h3>本机已注册功能</h3>
-      <p id="lv-registered-msg" class="msg" hidden></p>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>VI 路径</th>
-              <th>入参</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="lv-registered-body">
-            <tr><td colspan="4" class="empty">加载中…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
     <section id="lv-center-all-section">
       <h3>中心全部功能</h3>
-      <p class="muted-hint">浏览中心所有机台已注册项；「加到本机」会复制一份到本站，源机台记录保留。</p>
+      <p class="muted-hint">中心仅保留一份注册记录；可试跑、重命名或加载到编辑区。序列页可选用全部中心功能。</p>
       <p id="lv-center-all-msg" class="msg" hidden></p>
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
+              <th>ID</th>
               <th>名称</th>
-              <th>当前机台</th>
               <th>来源机台</th>
               <th>VI 路径</th>
               <th>入参</th>
@@ -177,23 +139,70 @@
     </section>
     </div>
 
+    <div id="page-general" hidden>
+      <section id="general-section">
+        <h2>通用 · 延迟</h2>
+        <p class="muted-hint">配置延迟毫秒数后可试跑或注册到中心；序列页可与 VI 混排执行。</p>
+        <div class="lv-toolbar">
+          <label class="lv-path-label">
+            <span class="label">名称</span>
+            <input id="gen-delay-name" type="text" class="lv-path-input" placeholder="显示名称（必填）" required>
+          </label>
+          <label class="lv-path-label">
+            <span class="label">延迟 (ms)</span>
+            <input id="gen-delay-ms" type="number" min="0" step="1" class="lv-path-input mono" placeholder="例如 1000" value="1000">
+          </label>
+          <div class="lv-actions">
+            <button id="gen-delay-run-btn" type="button">试跑</button>
+            <button id="gen-delay-register-btn" type="button" class="btn-primary">注册到中心</button>
+          </div>
+        </div>
+        <pre id="gen-delay-out" class="mono lv-pre" hidden></pre>
+        <p id="gen-delay-msg" class="msg" hidden></p>
+      </section>
+
+      <section id="gen-center-section">
+        <h3>中心延迟功能</h3>
+        <p id="gen-center-msg" class="msg" hidden></p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>名称</th>
+                <th>来源机台</th>
+                <th>延迟(ms)</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="gen-center-body">
+              <tr><td colspan="5" class="empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
     <div id="page-sequence" hidden>
       <section class="seq-panel">
         <h2>执行序列</h2>
         <div class="seq-columns">
           <div class="seq-col">
-            <h3>已注册功能</h3>
+            <h3>中心全部功能</h3>
             <div class="table-scroll">
               <table>
                 <thead>
                   <tr>
+                    <th>ID</th>
                     <th>名称</th>
+                    <th>来源机台</th>
                     <th>VI 路径</th>
+                    <th>入参</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="seq-registered-body">
-                  <tr><td colspan="3" class="empty">加载中…</td></tr>
+                  <tr><td colspan="6" class="empty">加载中…</td></tr>
                 </tbody>
               </table>
             </div>
@@ -205,12 +214,14 @@
                 <thead>
                   <tr>
                     <th>#</th>
+                    <th>ID</th>
                     <th>名称</th>
+                    <th>入参</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="seq-selected-body">
-                  <tr><td colspan="3" class="empty">队列为空，从左侧添加</td></tr>
+                  <tr><td colspan="5" class="empty">队列为空，从左侧添加</td></tr>
                 </tbody>
               </table>
             </div>

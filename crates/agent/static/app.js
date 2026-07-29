@@ -14,30 +14,6 @@ async function fetchStatus() {
   document.getElementById('uptime').textContent = formatUptime(data.uptime_secs);
 }
 
-async function fetchTasks() {
-  const resp = await fetch('/api/tasks');
-  if (!resp.ok) return;
-  const tasks = await resp.json();
-  const tbody = document.getElementById('tasks-body');
-  tbody.innerHTML = '';
-  if (tasks.length === 0) {
-    const row = document.createElement('tr');
-    row.innerHTML = '<td colspan="4" class="empty">暂无任务</td>';
-    tbody.appendChild(row);
-    return;
-  }
-  for (const t of tasks) {
-    const row = document.createElement('tr');
-    const exitCode = t.exit_code != null ? String(t.exit_code) : '—';
-    row.innerHTML =
-      '<td>' + escapeHtml(t.id) + '</td>' +
-      '<td>' + escapeHtml(t.command) + '</td>' +
-      '<td>' + escapeHtml(t.status) + '</td>' +
-      '<td>' + escapeHtml(exitCode) + '</td>';
-    tbody.appendChild(row);
-  }
-}
-
 function formatUptime(secs) {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -58,7 +34,6 @@ function escapeHtml(str) {
 const INPUTS_SUMMARY_MAX = 48;
 let inputsPopoverEl = null;
 let inputsPopoverHideTimer = null;
-let localAgentId = null;
 
 function formatInputsSummary(inputs) {
   let raw;
@@ -403,8 +378,9 @@ async function registerViTemplate() {
   }
 }
 
-function showRegisteredMsg(text, ok) {
-  const msg = document.getElementById('lv-registered-msg');
+function showCenterAllMsg(text, ok) {
+  const msg = document.getElementById('lv-center-all-msg');
+  if (!msg) return;
   msg.hidden = false;
   msg.textContent = text;
   msg.className = ok ? 'msg ok' : 'msg err';
@@ -432,11 +408,11 @@ async function renameRegisteredTemplate(t) {
   if (next == null) return;
   const name = String(next).trim();
   if (!name) {
-    showRegisteredMsg('名称不能为空', false);
+    showCenterAllMsg('名称不能为空', false);
     return;
   }
   if (name === current) return;
-  showRegisteredMsg('重命名中…', true);
+  showCenterAllMsg('重命名中…', true);
   try {
     const resp = await fetch('/api/labview/templates/' + encodeURIComponent(t.id), {
       method: 'PATCH',
@@ -446,27 +422,63 @@ async function renameRegisteredTemplate(t) {
     const data = await resp.json().catch(function () { return {}; });
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
-      showRegisteredMsg('重命名失败: ' + err, false);
+      showCenterAllMsg('重命名失败: ' + err, false);
       return;
     }
-    showRegisteredMsg('已重命名: ' + (data.name || name), true);
+    showCenterAllMsg('已重命名: ' + (data.name || name), true);
     await refreshTemplateLists();
   } catch (e) {
-    showRegisteredMsg('重命名失败: ' + e.message, false);
+    showCenterAllMsg('重命名失败: ' + e.message, false);
   }
 }
 
+function delayMsFromInputs(inputs) {
+  if (!Array.isArray(inputs)) return null;
+  for (let i = 0; i < inputs.length; i++) {
+    if (inputs[i] && inputs[i].name === 'delay_ms' && inputs[i].value != null) {
+      const n = Number(inputs[i].value);
+      if (Number.isFinite(n) && n >= 0) return Math.round(n);
+    }
+  }
+  return null;
+}
+
 async function trialRegisteredTemplate(t) {
+  if (t.kind === 'delay' || t.vi_path === '__builtin__/delay') {
+    const ms = delayMsFromInputs(t.inputs);
+    if (ms == null) {
+      showCenterAllMsg('模板缺少 delay_ms', false);
+      return;
+    }
+    showCenterAllMsg('延迟试跑中: ' + (t.name || t.id) + '…', true);
+    try {
+      const resp = await fetch('/api/general/delay/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delay_ms: ms }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        const err = data.error && (data.error.message || data.error) || resp.status;
+        showCenterAllMsg('试跑失败: ' + err, false);
+        return;
+      }
+      showCenterAllMsg('试跑完成: ' + (t.name || t.id) + ' (' + ms + ' ms)', true);
+    } catch (e) {
+      showCenterAllMsg('试跑失败: ' + e.message, false);
+    }
+    return;
+  }
   const viPath = t.vi_path;
   if (!viPath) {
-    showRegisteredMsg('模板缺少 VI 路径', false);
+    showCenterAllMsg('模板缺少 VI 路径', false);
     return;
   }
   const opts = { show_front_panel: !!t.show_front_panel };
   if (t.timeout_secs != null && t.timeout_secs > 0) {
     opts.timeout_secs = t.timeout_secs;
   }
-  showRegisteredMsg('试跑中: ' + (t.name || t.id) + '…', true);
+  showCenterAllMsg('试跑中: ' + (t.name || t.id) + '…', true);
   const outEl = document.getElementById('lv-run-out');
   outEl.hidden = false;
   outEl.textContent = '…';
@@ -485,29 +497,35 @@ async function trialRegisteredTemplate(t) {
     outEl.textContent = JSON.stringify(data, null, 2);
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
-      showRegisteredMsg('试跑失败: ' + err, false);
+      showCenterAllMsg('试跑失败: ' + err, false);
       return;
     }
-    showRegisteredMsg('试跑完成: ' + (t.name || t.id), true);
+    showCenterAllMsg('试跑完成: ' + (t.name || t.id), true);
   } catch (e) {
     outEl.textContent = e.message;
-    showRegisteredMsg('试跑失败: ' + e.message, false);
+    showCenterAllMsg('试跑失败: ' + e.message, false);
   }
 }
 
-function renderRegisteredTemplates(templates) {
-  const tbody = document.getElementById('lv-registered-body');
+function renderCenterAllTemplates(templates) {
+  const tbody = document.getElementById('lv-center-all-body');
+  if (!tbody) return;
   tbody.innerHTML = '';
   if (!templates || templates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无已注册功能</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">中心暂无已注册功能</td></tr>';
     return;
   }
   for (let i = 0; i < templates.length; i++) {
     const t = templates[i];
-    if (t.agent_id) localAgentId = t.agent_id;
     const row = document.createElement('tr');
-    const name = escapeHtml(t.name || t.id || '—');
-    const viPath = escapeHtml(t.vi_path || '—');
+    const originCol = escapeHtml(t.origin_agent_name || '—');
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td>' + escapeHtml(t.name || t.id || '—') + '</td>' +
+      '<td>' + originCol + '</td>' +
+      '<td class="mono">' + escapeHtml(t.vi_path || '—') + '</td>' +
+      '<td class="inputs-cell-host"></td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     const trialBtn = document.createElement('button');
     trialBtn.type = 'button';
     trialBtn.textContent = '试跑';
@@ -532,98 +550,14 @@ function renderRegisteredTemplates(templates) {
     actions.appendChild(renameBtn);
     actions.appendChild(document.createTextNode(' '));
     actions.appendChild(loadBtn);
-    row.innerHTML =
-      '<td>' + name + '</td>' +
-      '<td class="mono">' + viPath + '</td>' +
-      '<td class="inputs-cell-host"></td>';
-    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     row.appendChild(actions);
     tbody.appendChild(row);
-  }
-}
-
-function showCenterAllMsg(text, ok) {
-  const msg = document.getElementById('lv-center-all-msg');
-  if (!msg) return;
-  msg.hidden = false;
-  msg.textContent = text;
-  msg.className = ok ? 'msg ok' : 'msg err';
-}
-
-function renderCenterAllTemplates(templates) {
-  const tbody = document.getElementById('lv-center-all-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (!templates || templates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">中心暂无已注册功能</td></tr>';
-    return;
-  }
-  for (let i = 0; i < templates.length; i++) {
-    const t = templates[i];
-    const row = document.createElement('tr');
-    const agentCol = escapeHtml(t.agent_name || (t.agent_id ? t.agent_id.slice(0, 8) : '—'));
-    const originCol = escapeHtml(t.origin_agent_name || '—');
-    row.innerHTML =
-      '<td>' + escapeHtml(t.name || t.id || '—') + '</td>' +
-      '<td>' + agentCol + '</td>' +
-      '<td>' + originCol + '</td>' +
-      '<td class="mono">' + escapeHtml(t.vi_path || '—') + '</td>' +
-      '<td class="inputs-cell-host"></td>';
-    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
-    const actions = document.createElement('td');
-    if (localAgentId && t.agent_id === localAgentId) {
-      actions.textContent = '已在本机';
-      actions.className = 'muted-hint';
-    } else {
-      const claimBtn = document.createElement('button');
-      claimBtn.type = 'button';
-      claimBtn.textContent = '加到本机';
-      claimBtn.addEventListener('click', function () {
-        claimCenterTemplate(t);
-      });
-      actions.appendChild(claimBtn);
-    }
-    row.appendChild(actions);
-    tbody.appendChild(row);
-  }
-}
-
-async function ensureLocalAgentId() {
-  if (localAgentId) return localAgentId;
-  try {
-    const resp = await fetch('/api/labview/agent-id');
-    const data = await resp.json().catch(function () { return {}; });
-    if (resp.ok && data.agent_id) {
-      localAgentId = data.agent_id;
-      return localAgentId;
-    }
-  } catch (e) { /* ignore */ }
-  return null;
-}
-
-async function claimCenterTemplate(t) {
-  showCenterAllMsg('加到本机中: ' + (t.name || t.id) + '…', true);
-  try {
-    const resp = await fetch('/api/labview/templates/' + encodeURIComponent(t.id) + '/claim', {
-      method: 'POST',
-    });
-    const data = await resp.json().catch(function () { return {}; });
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showCenterAllMsg('加到本机失败: ' + err, false);
-      return;
-    }
-    showCenterAllMsg('已复制到本机: ' + (data.name || data.id), true);
-    await refreshTemplateLists();
-  } catch (e) {
-    showCenterAllMsg('加到本机失败: ' + e.message, false);
   }
 }
 
 async function fetchCenterAllTemplates() {
   const tbody = document.getElementById('lv-center-all-body');
   if (!tbody) return;
-  await ensureLocalAgentId();
   try {
     const resp = await fetch('/api/labview/all-templates');
     const data = await resp.json();
@@ -644,29 +578,8 @@ async function fetchCenterAllTemplates() {
   }
 }
 
-async function fetchRegisteredTemplates() {
-  const tbody = document.getElementById('lv-registered-body');
-  try {
-    const resp = await fetch('/api/labview/registered-templates');
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      tbody.innerHTML =
-        '<tr><td colspan="4" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
-      showRegisteredMsg('加载失败: ' + err, false);
-      return;
-    }
-    renderRegisteredTemplates(Array.isArray(data) ? data : []);
-    document.getElementById('lv-registered-msg').hidden = true;
-  } catch (e) {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
-    showRegisteredMsg('加载失败: ' + e.message, false);
-  }
-}
-
 async function refreshTemplateLists() {
-  await Promise.all([fetchRegisteredTemplates(), fetchCenterAllTemplates(), loadSeqRegistered()]);
+  await Promise.all([fetchCenterAllTemplates(), loadSeqRegistered()]);
 }
 
 document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
@@ -683,14 +596,20 @@ let seqDragIndex = null;
 
 function showPage(page) {
   const workbench = document.getElementById('page-workbench');
+  const general = document.getElementById('page-general');
   const sequence = document.getElementById('page-sequence');
   workbench.hidden = page !== 'workbench';
+  if (general) general.hidden = page !== 'general';
   sequence.hidden = page !== 'sequence';
   document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
     btn.classList.toggle('active', btn.getAttribute('data-page') === page);
   });
   if (page === 'sequence') {
     loadSequencePage();
+  } else if (page === 'general') {
+    fetchGeneralDelayTemplates();
+  } else if (page === 'workbench') {
+    fetchCenterAllTemplates();
   }
 }
 
@@ -725,19 +644,19 @@ async function loadSequencePage() {
 async function loadSeqRegistered() {
   const tbody = document.getElementById('seq-registered-body');
   try {
-    const resp = await fetch('/api/labview/registered-templates');
+    const resp = await fetch('/api/labview/all-templates');
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       tbody.innerHTML =
-        '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+        '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
     seqRegistered = Array.isArray(data) ? data : [];
     renderSeqRegistered();
   } catch (e) {
     tbody.innerHTML =
-      '<tr><td colspan="3" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+      '<tr><td colspan="6" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
@@ -745,13 +664,14 @@ function renderSeqRegistered() {
   const tbody = document.getElementById('seq-registered-body');
   tbody.innerHTML = '';
   if (!seqRegistered.length) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无已注册功能</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无中心已注册功能</td></tr>';
     return;
   }
   for (let i = 0; i < seqRegistered.length; i++) {
     const t = seqRegistered[i];
     const row = document.createElement('tr');
     const name = escapeHtml(t.name || t.id || '—');
+    const origin = escapeHtml(t.origin_agent_name || '—');
     const viPath = escapeHtml(t.vi_path || '—');
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
@@ -762,7 +682,13 @@ function renderSeqRegistered() {
     });
     const actions = document.createElement('td');
     actions.appendChild(addBtn);
-    row.innerHTML = '<td>' + name + '</td><td class="mono">' + viPath + '</td>';
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td>' + name + '</td>' +
+      '<td>' + origin + '</td>' +
+      '<td class="mono">' + viPath + '</td>' +
+      '<td class="inputs-cell-host"></td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
     row.appendChild(actions);
     tbody.appendChild(row);
   }
@@ -791,7 +717,7 @@ function renderSeqSelected() {
   const tbody = document.getElementById('seq-selected-body');
   tbody.innerHTML = '';
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty">队列为空，从左侧添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">队列为空，从左侧添加</td></tr>';
     document.getElementById('seq-run-btn').disabled = seqRunning;
     return;
   }
@@ -802,7 +728,13 @@ function renderSeqSelected() {
     row.draggable = !seqRunning;
     row.className = 'seq-row';
     const name = escapeHtml(item.name || item.vi_template_id || '—');
-    row.innerHTML = '<td class="mono">' + (i + 1) + '</td><td>' + name + '</td>';
+    const idCol = escapeHtml(String(item.vi_template_id ?? '—'));
+    row.innerHTML =
+      '<td class="mono">' + (i + 1) + '</td>' +
+      '<td class="mono">' + idCol + '</td>' +
+      '<td>' + name + '</td>' +
+      '<td class="inputs-cell-host"></td>';
+    attachInputsHover(row.querySelector('.inputs-cell-host'), item.inputs);
     const actions = document.createElement('td');
     actions.className = 'seq-row-actions';
     const upBtn = document.createElement('button');
@@ -879,6 +811,7 @@ async function addToQueue(template) {
     vi_template_id: templateId,
     name: template.name || templateId,
     vi_path: template.vi_path || '',
+    inputs: template.inputs || [],
   });
   renderSeqSelected();
   await saveQueue();
@@ -1017,11 +950,181 @@ async function runSequence() {
   }
 }
 
+
+function showGenDelayMsg(text, ok) {
+  const msg = document.getElementById('gen-delay-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+function showGenCenterMsg(text, ok) {
+  const msg = document.getElementById('gen-center-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+async function runGeneralDelay() {
+  const ms = Number(document.getElementById('gen-delay-ms').value);
+  if (!Number.isFinite(ms) || ms < 0) {
+    showGenDelayMsg('请输入有效的延迟毫秒数', false);
+    return;
+  }
+  const outEl = document.getElementById('gen-delay-out');
+  outEl.hidden = false;
+  outEl.textContent = '…';
+  showGenDelayMsg('试跑中…', true);
+  try {
+    const resp = await fetch('/api/general/delay/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delay_ms: Math.round(ms) }),
+    });
+    const data = await resp.json();
+    outEl.textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showGenDelayMsg('试跑失败: ' + err, false);
+      return;
+    }
+    showGenDelayMsg('试跑完成 (' + Math.round(ms) + ' ms)', true);
+  } catch (e) {
+    outEl.textContent = e.message;
+    showGenDelayMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+async function registerGeneralDelay() {
+  const name = String(document.getElementById('gen-delay-name').value || '').trim();
+  const ms = Number(document.getElementById('gen-delay-ms').value);
+  if (!name) {
+    showGenDelayMsg('名称不能为空', false);
+    return;
+  }
+  if (!Number.isFinite(ms) || ms < 0) {
+    showGenDelayMsg('请输入有效的延迟毫秒数', false);
+    return;
+  }
+  showGenDelayMsg('注册中…', true);
+  try {
+    const resp = await fetch('/api/general/delay/register-template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, delay_ms: Math.round(ms) }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showGenDelayMsg('注册失败: ' + err, false);
+      return;
+    }
+    showGenDelayMsg('已注册: ' + (data.name || name) + ' (ID ' + data.id + ')', true);
+    await fetchGeneralDelayTemplates();
+  } catch (e) {
+    showGenDelayMsg('注册失败: ' + e.message, false);
+  }
+}
+
+function renderGeneralDelayTemplates(templates) {
+  const tbody = document.getElementById('gen-center-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册延迟功能</td></tr>';
+    return;
+  }
+  for (let i = 0; i < templates.length; i++) {
+    const t = templates[i];
+    const row = document.createElement('tr');
+    const ms = delayMsFromInputs(t.inputs);
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td>' + escapeHtml(t.name || '—') + '</td>' +
+      '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(ms != null ? String(ms) : '—') + '</td>';
+    const trialBtn = document.createElement('button');
+    trialBtn.type = 'button';
+    trialBtn.textContent = '试跑';
+    trialBtn.addEventListener('click', function () { trialGeneralDelayTemplate(t); });
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.textContent = '重命名';
+    renameBtn.addEventListener('click', async function () {
+      await renameRegisteredTemplate(t);
+      await fetchGeneralDelayTemplates();
+    });
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.textContent = '加载';
+    loadBtn.addEventListener('click', function () {
+      document.getElementById('gen-delay-name').value = t.name || '';
+      const dms = delayMsFromInputs(t.inputs);
+      document.getElementById('gen-delay-ms').value = dms != null ? String(dms) : '1000';
+      showGenDelayMsg('已加载: ' + (t.name || t.id), true);
+    });
+    const actions = document.createElement('td');
+    actions.appendChild(trialBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(renameBtn);
+    actions.appendChild(document.createTextNode(' '));
+    actions.appendChild(loadBtn);
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function trialGeneralDelayTemplate(t) {
+  const ms = delayMsFromInputs(t.inputs);
+  if (ms == null) {
+    showGenCenterMsg('模板缺少 delay_ms', false);
+    return;
+  }
+  showGenCenterMsg('试跑中: ' + (t.name || t.id) + '…', true);
+  try {
+    const resp = await fetch('/api/general/delay/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delay_ms: ms }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showGenCenterMsg('试跑失败: ' + err, false);
+      return;
+    }
+    showGenCenterMsg('试跑完成: ' + (t.name || t.id) + ' (' + ms + ' ms)', true);
+  } catch (e) {
+    showGenCenterMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+async function fetchGeneralDelayTemplates() {
+  const tbody = document.getElementById('gen-center-body');
+  if (!tbody) return;
+  try {
+    const resp = await fetch('/api/general/delay/templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    renderGeneralDelayTemplates(Array.isArray(data) ? data : []);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
 
 fetchStatus();
-fetchTasks();
 loadLabviewConfig();
 refreshTemplateLists();
+const genRunBtn = document.getElementById('gen-delay-run-btn');
+const genRegBtn = document.getElementById('gen-delay-register-btn');
+if (genRunBtn) genRunBtn.addEventListener('click', runGeneralDelay);
+if (genRegBtn) genRegBtn.addEventListener('click', registerGeneralDelay);
 setInterval(fetchStatus, POLL_MS);
-setInterval(fetchTasks, POLL_MS);

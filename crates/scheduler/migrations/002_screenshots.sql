@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS screenshots (
   agent_id TEXT NOT NULL,
   file_path TEXT NOT NULL,
   content_type TEXT NOT NULL,
-  byte_size INTEGER NOT NULL,
+  byte_size BIGINT NOT NULL,
   width INTEGER,
   height INTEGER,
   created_at TEXT NOT NULL,

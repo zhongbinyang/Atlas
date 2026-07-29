@@ -125,7 +125,26 @@ pub async fn list_all_vi_templates(
     client: &reqwest::Client,
     center_url: &str,
 ) -> Result<(reqwest::StatusCode, Value), String> {
-    let url = format!("{}/api/vi-templates", center_url.trim_end_matches('/'));
+    list_vi_templates_filtered(client, center_url, None).await
+}
+
+pub async fn list_vi_templates_by_kind(
+    client: &reqwest::Client,
+    center_url: &str,
+    kind: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    list_vi_templates_filtered(client, center_url, Some(kind)).await
+}
+
+async fn list_vi_templates_filtered(
+    client: &reqwest::Client,
+    center_url: &str,
+    kind: Option<&str>,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let mut url = format!("{}/api/vi-templates", center_url.trim_end_matches('/'));
+    if let Some(kind) = kind {
+        url.push_str(&format!("?kind={}", kind));
+    }
     let resp = client
         .get(&url)
         .send()

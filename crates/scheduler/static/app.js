@@ -587,23 +587,80 @@ function renderViTemplates() {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (viTemplates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无已注册功能，请在机台端注册</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无已注册功能，请在机台端注册</td></tr>';
     return;
   }
   for (const t of viTemplates) {
     const row = document.createElement('tr');
-    const agentCol = t.agent_name || t.agent_id.slice(0, 8);
     const originCol = t.origin_agent_name || '—';
     const timeout = t.timeout_secs != null ? t.timeout_secs + 's' : '—';
+    const kindLabel = t.kind === 'delay' ? '延迟' : (t.kind === 'labview' ? 'VI' : (t.kind || '—'));
+    const pathCol = t.kind === 'delay' ? '—' : t.vi_path;
     row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id)) + '</td>' +
       '<td>' + escapeHtml(t.name) + '</td>' +
-      '<td>' + escapeHtml(agentCol) + '</td>' +
+      '<td>' + escapeHtml(kindLabel) + '</td>' +
       '<td>' + escapeHtml(originCol) + '</td>' +
-      '<td class="mono">' + escapeHtml(t.vi_path) + '</td>' +
+      '<td class="mono">' + escapeHtml(pathCol) + '</td>' +
       '<td class="inputs-cell-host"></td>' +
-      '<td>' + escapeHtml(timeout) + '</td>';
+      '<td>' + escapeHtml(timeout) + '</td>' +
+      '<td class="row-actions">' +
+        '<button type="button" class="btn-sm btn-vi-edit">修改</button>' +
+        '<button type="button" class="btn-sm btn-danger btn-vi-delete">删除</button>' +
+      '</td>';
     attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
+    row.querySelector('.btn-vi-edit').addEventListener('click', () => editViTemplate(t));
+    row.querySelector('.btn-vi-delete').addEventListener('click', () => deleteViTemplate(t));
     tbody.appendChild(row);
+  }
+}
+
+async function editViTemplate(t) {
+  const current = t.name || '';
+  const next = prompt('修改名称', current);
+  if (next == null) return;
+  const name = String(next).trim();
+  if (!name) {
+    showViTemplatesMsg('名称不能为空', false);
+    return;
+  }
+  if (name === current) return;
+  showViTemplatesMsg('修改中…', true);
+  try {
+    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showViTemplatesMsg('修改失败: ' + (data.error || resp.status), false);
+      return;
+    }
+    showViTemplatesMsg('已修改: ' + (data.name || name), true);
+    await fetchViTemplates();
+  } catch (e) {
+    showViTemplatesMsg('修改失败: ' + e.message, false);
+  }
+}
+
+async function deleteViTemplate(t) {
+  const label = t.name || t.id || '此模板';
+  if (!confirm('确定删除「' + label + '」？相关序列队列中的引用也会清除。')) return;
+  showViTemplatesMsg('删除中…', true);
+  try {
+    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
+      method: 'DELETE',
+    });
+    if (resp.ok || resp.status === 204) {
+      showViTemplatesMsg('已删除', true);
+      await fetchViTemplates();
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+  } catch (e) {
+    showViTemplatesMsg('删除失败: ' + e.message, false);
   }
 }
 

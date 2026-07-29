@@ -161,6 +161,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/labview/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
         .route("/api/labview/run-sequence", post(labview_run_sequence))
+        .route("/api/general/delay/run", post(general_delay_run))
+        .route(
+            "/api/general/delay/register-template",
+            post(general_delay_register),
+        )
+        .route("/api/general/delay/templates", get(general_delay_templates))
         .with_state(state)
 }
 
@@ -694,6 +700,121 @@ async fn labview_run_queue_put(
                 let axum_status =
                     StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
                 (axum_status, Json(resp_body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+#[derive(Deserialize)]
+struct DelayRunRequest {
+    delay_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct DelayRegisterRequest {
+    name: String,
+    delay_ms: u64,
+}
+
+async fn general_delay_run(
+    State(s): State<AppState>,
+    Json(req): Json<DelayRunRequest>,
+) -> impl IntoResponse {
+    if let Err("busy") = s.slot.try_acquire().await {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "agent is busy" })),
+        )
+            .into_response();
+    }
+    let result = crate::general::run_delay_ms(req.delay_ms).await;
+    s.slot.release().await;
+    (StatusCode::OK, Json(result)).into_response()
+}
+
+async fn general_delay_register(
+    State(s): State<AppState>,
+    Json(req): Json<DelayRegisterRequest>,
+) -> impl IntoResponse {
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "name is required" })),
+        )
+            .into_response();
+    }
+
+    let agent_id = match crate::register::resolve_agent_id(
+        &s.http_client,
+        &s.center_url,
+        &s.hostname,
+        &s.ip,
+        s.port,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) if e == "agent not found on center" => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+
+    let center_body = serde_json::json!({
+        "agent_id": agent_id,
+        "kind": crate::general::KIND_DELAY,
+        "vi_path": crate::general::DELAY_VI_PATH,
+        "cli_path": "",
+        "getinfo_path": "",
+        "inputs": crate::general::delay_inputs(req.delay_ms),
+        "name": req.name.trim(),
+        "show_front_panel": false,
+        "timeout_secs": null,
+    });
+
+    match crate::register::register_vi_template(&s.http_client, &s.center_url, &center_body).await {
+        Ok((status, body)) => {
+            let axum_status =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (axum_status, Json(body)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody { error: e }),
+        )
+            .into_response(),
+    }
+}
+
+async fn general_delay_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::list_vi_templates_by_kind(
+            &s.http_client,
+            &s.center_url,
+            crate::general::KIND_DELAY,
+        )
+        .await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
             }
             Err(e) => (
                 StatusCode::BAD_GATEWAY,
@@ -1255,8 +1376,6 @@ mod tests {
                 {
                     "id": "tpl-a",
                     "name": "A",
-                    "agent_id": "agent-uuid-1",
-                    "agent_name": "test-host",
                     "origin_agent_id": "agent-uuid-1",
                     "origin_agent_name": "test-host",
                     "vi_path": "C:\\a.vi",
@@ -1270,8 +1389,6 @@ mod tests {
                 {
                     "id": "tpl-b",
                     "name": "B",
-                    "agent_id": "agent-other",
-                    "agent_name": "other",
                     "origin_agent_id": "agent-other",
                     "origin_agent_name": "other",
                     "vi_path": "C:\\b.vi",
@@ -1334,9 +1451,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "tpl-copy",
                 "name": "Copied",
-                "agent_id": "agent-uuid-1",
                 "origin_agent_id": "agent-other",
-                "agent_name": "test-host",
                 "origin_agent_name": "other",
                 "vi_path": "C:\\x\\Add.vi",
                 "cli_path": "C:\\cli.exe",
@@ -1364,8 +1479,8 @@ mod tests {
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body.get("id").and_then(|v| v.as_str()), Some("tpl-copy"));
         assert_eq!(
-            body.get("agent_id").and_then(|v| v.as_str()),
-            Some("agent-uuid-1")
+            body.get("origin_agent_id").and_then(|v| v.as_str()),
+            Some("agent-other")
         );
     }
 

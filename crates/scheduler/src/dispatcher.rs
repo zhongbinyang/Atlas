@@ -351,11 +351,8 @@ mod tests {
         (addr.ip().to_string(), addr.port(), handle)
     }
 
-    async fn test_store() -> Store {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        let pool = crate::db::connect(&url).await.unwrap();
-        Store::new(pool)
+    async fn test_store() -> crate::db::GuardedStore {
+        crate::db::GuardedStore::new().await
     }
 
     async fn seed_online_agent(store: &Store, ip: &str, port: u16) -> crate::store::Agent {

@@ -119,6 +119,7 @@ body {
 }
 
 #page-workbench[hidden],
+#page-general[hidden],
 #page-sequence[hidden] {
   display: none;
 }

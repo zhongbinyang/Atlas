@@ -1,7 +1,9 @@
+mod advertise;
 mod api;
 mod capture;
 mod config;
 mod files;
+mod general;
 mod labview;
 mod labview_sequence;
 mod executor;
@@ -31,11 +33,8 @@ async fn main() {
         .hostname
         .clone()
         .unwrap_or_else(|| hostname::get().unwrap().to_string_lossy().into_owned());
-    let ip = cfg.advertise_ip.clone().unwrap_or_else(|| {
-        local_ip_address::local_ip()
-            .map(|i| i.to_string())
-            .unwrap_or_else(|_| "127.0.0.1".into())
-    });
+    let ip = advertise::resolve_advertise_ip(cfg.advertise_ip.as_deref(), &cfg.center_url);
+    tracing::info!(%ip, "advertise ip selected");
 
     let http_client = register::http_client();
     let state = AppState {

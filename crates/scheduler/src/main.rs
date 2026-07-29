@@ -40,9 +40,17 @@ async fn main() {
         .init();
 
     let cfg = SchedulerConfig::load();
-    let pool = db::connect(&cfg.database_url)
-        .await
-        .expect("database connection failed");
+    tracing::info!(
+        database_url = %db::redact_database_url(&cfg.database_url),
+        "connecting to postgres"
+    );
+    let pool = db::connect(&cfg.database_url).await.unwrap_or_else(|e| {
+        panic!(
+            "database connection failed ({}) url={}",
+            e,
+            db::redact_database_url(&cfg.database_url)
+        );
+    });
     let store = Store::new(pool);
     let client = http_client();
     let labview_client = labview_http_client();

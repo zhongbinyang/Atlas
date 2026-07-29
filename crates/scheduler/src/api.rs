@@ -146,11 +146,10 @@ pub struct UpdateTemplateRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViTemplateView {
-    pub id: String,
+    pub id: i64,
     pub name: String,
-    pub agent_id: String,
+    pub kind: String,
     pub origin_agent_id: String,
-    pub agent_name: String,
     pub origin_agent_name: String,
     pub vi_path: String,
     pub cli_path: String,
@@ -175,9 +174,8 @@ impl TryFrom<ViTemplateEnriched> for ViTemplateView {
         Ok(Self {
             id: e.template.id,
             name: e.template.name,
-            agent_id: e.template.agent_id,
+            kind: e.template.kind,
             origin_agent_id: e.template.origin_agent_id,
-            agent_name: agent_display_name(e.agent_name),
             origin_agent_name: agent_display_name(e.origin_agent_name),
             vi_path: e.template.vi_path,
             cli_path: e.template.cli_path,
@@ -193,6 +191,7 @@ impl TryFrom<ViTemplateEnriched> for ViTemplateView {
 #[derive(Debug, Deserialize)]
 pub struct ListViTemplatesQuery {
     pub agent_id: Option<String>,
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +211,8 @@ pub struct PatchViTemplateRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreateViTemplateRequest {
     pub agent_id: String,
+    #[serde(default = "default_vi_kind")]
+    pub kind: String,
     pub vi_path: String,
     pub cli_path: String,
     pub getinfo_path: String,
@@ -222,12 +223,17 @@ pub struct CreateViTemplateRequest {
     pub timeout_secs: Option<i64>,
 }
 
+fn default_vi_kind() -> String {
+    "labview".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViRunQueueItemView {
     pub id: String,
-    pub vi_template_id: String,
+    pub vi_template_id: i64,
     pub position: i64,
     pub name: String,
+    pub kind: String,
     pub vi_path: String,
     pub inputs: serde_json::Value,
     pub show_front_panel: bool,
@@ -246,7 +252,7 @@ pub struct ReplaceViRunQueueRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ReplaceViRunQueueItem {
-    pub vi_template_id: String,
+    pub vi_template_id: i64,
 }
 
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
@@ -257,6 +263,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         vi_template_id: item.vi_template_id,
         position: item.position,
         name: item.template_name,
+        kind: item.kind,
         vi_path: item.vi_path,
         inputs,
         show_front_panel: item.show_front_panel,
@@ -775,6 +782,32 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     if req.name.trim().is_empty() {
         return Some("name is required");
     }
+    let kind = req.kind.trim();
+    if kind != "labview" && kind != "delay" {
+        return Some("kind must be labview or delay");
+    }
+    if !req.inputs.is_array() {
+        return Some("inputs must be an array");
+    }
+    if req.timeout_secs == Some(0) {
+        return Some("timeout_secs must be greater than 0");
+    }
+    if kind == "delay" {
+        let has_delay_ms = req.inputs.as_array().is_some_and(|arr| {
+            arr.iter().any(|item| {
+                item.get("name").and_then(|v| v.as_str()) == Some("delay_ms")
+                    && item.get("value").is_some_and(|v| {
+                        v.as_u64().is_some()
+                            || v.as_i64().is_some_and(|n| n >= 0)
+                            || v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0)
+                    })
+            })
+        });
+        if !has_delay_ms {
+            return Some("delay kind requires inputs delay_ms");
+        }
+        return None;
+    }
     if crate::labview_cmd::normalize_fs_path(&req.vi_path).is_empty() {
         return Some("vi_path is required");
     }
@@ -783,12 +816,6 @@ fn validate_vi_template_create(req: &CreateViTemplateRequest) -> Option<&'static
     }
     if crate::labview_cmd::normalize_fs_path(&req.getinfo_path).is_empty() {
         return Some("getinfo_path is required");
-    }
-    if !req.inputs.is_array() {
-        return Some("inputs must be an array");
-    }
-    if req.timeout_secs == Some(0) {
-        return Some("timeout_secs must be greater than 0");
     }
     None
 }
@@ -814,12 +841,6 @@ fn transfer_error_response(err: TransferApiError) -> (StatusCode, Json<ErrorBody
                 error: "agent not found".into(),
             }),
         ),
-        TransferApiError::SameAgent => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "cannot distribute to source agent".into(),
-            }),
-        ),
         TransferApiError::Config(msg) => {
             tracing::error!("labview config for transfer: {msg}");
             (
@@ -839,7 +860,8 @@ async fn list_vi_templates(
     Query(q): Query<ListViTemplatesQuery>,
 ) -> impl IntoResponse {
     let agent_filter = q.agent_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
-    match s.store.list_vi_templates_enriched(agent_filter).await {
+    let kind_filter = q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    match s.store.list_vi_templates_enriched(agent_filter, kind_filter).await {
         Ok(templates) => {
             let mut views = Vec::with_capacity(templates.len());
             for t in templates {
@@ -889,17 +911,49 @@ async fn create_vi_template(
         }
     }
 
-    let vi_path = crate::labview_cmd::normalize_fs_path(&req.vi_path);
-    let cli_path = crate::labview_cmd::normalize_fs_path(&req.cli_path);
-    let getinfo_path = crate::labview_cmd::normalize_fs_path(&req.getinfo_path);
+    let kind = req.kind.trim();
+    let (vi_path, cli_path, getinfo_path) = if kind == "delay" {
+        (
+            "__builtin__/delay".to_string(),
+            String::new(),
+            String::new(),
+        )
+    } else {
+        (
+            crate::labview_cmd::normalize_fs_path(&req.vi_path),
+            crate::labview_cmd::normalize_fs_path(&req.cli_path),
+            crate::labview_cmd::normalize_fs_path(&req.getinfo_path),
+        )
+    };
     let name = req.name.trim();
+
+    match s
+        .store
+        .find_duplicate_vi_template(name, &req.inputs, None)
+        .await
+    {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "a template with the same name and inputs already exists".into(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("find duplicate vi template: {e}");
+            return db_error().into_response();
+        }
+    }
 
     match s
         .store
         .insert_vi_template(
             name,
             req.agent_id.trim(),
-            req.agent_id.trim(),
+            kind,
             &vi_path,
             &cli_path,
             &getinfo_path,
@@ -909,7 +963,7 @@ async fn create_vi_template(
         )
         .await
     {
-        Ok(template) => match s.store.get_vi_template_enriched(&template.id).await {
+        Ok(template) => match s.store.get_vi_template_enriched(template.id).await {
             Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
                 Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
                 Err(e) => {
@@ -932,9 +986,9 @@ async fn create_vi_template(
 
 async fn get_vi_template(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    match s.store.get_vi_template_enriched(&id).await {
+    match s.store.get_vi_template_enriched(id).await {
         Ok(Some(template)) => match ViTemplateView::try_from(template) {
             Ok(view) => (StatusCode::OK, Json(view)).into_response(),
             Err(e) => {
@@ -958,7 +1012,7 @@ async fn get_vi_template(
 
 async fn patch_vi_template(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<i64>,
     Json(req): Json<PatchViTemplateRequest>,
 ) -> impl IntoResponse {
     if !patch_vi_template_has_fields(&req) {
@@ -989,8 +1043,58 @@ async fn patch_vi_template(
         timeout_secs: req.timeout_secs,
     };
 
-    match s.store.patch_vi_template(&id, patch).await {
-        Ok(Some(_)) => match s.store.get_vi_template_enriched(&id).await {
+    if patch.name.is_some() || patch.inputs.is_some() {
+        let current = match s.store.get_vi_template(id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorBody {
+                        error: "vi template not found".into(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!("get vi template for patch dup check: {e}");
+                return db_error().into_response();
+            }
+        };
+        let check_name = patch.name.as_deref().unwrap_or(current.name.as_str());
+        let check_inputs = match &patch.inputs {
+            Some(v) => v.clone(),
+            None => match serde_json::from_str(&current.inputs_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("parse inputs_json for patch dup check: {e}");
+                    return db_error().into_response();
+                }
+            },
+        };
+        match s
+            .store
+            .find_duplicate_vi_template(check_name, &check_inputs, Some(id))
+            .await
+        {
+            Ok(Some(_)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorBody {
+                        error: "a template with the same name and inputs already exists".into(),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!("find duplicate vi template on patch: {e}");
+                return db_error().into_response();
+            }
+        }
+    }
+
+    match s.store.patch_vi_template(id, patch).await {
+        Ok(Some(_)) => match s.store.get_vi_template_enriched(id).await {
             Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
                 Ok(view) => (StatusCode::OK, Json(view)).into_response(),
                 Err(e) => {
@@ -1020,7 +1124,7 @@ async fn patch_vi_template(
 
 async fn distribute_vi_template(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<i64>,
     Json(req): Json<DistributeViTemplateRequest>,
 ) -> impl IntoResponse {
     if req.target_agent_id.trim().is_empty() {
@@ -1033,7 +1137,7 @@ async fn distribute_vi_template(
             .into_response();
     }
 
-    let source = match s.store.get_vi_template(&id).await {
+    let source = match s.store.get_vi_template(id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
             return (
@@ -1063,7 +1167,7 @@ async fn distribute_vi_template(
         Err(e) => return transfer_error_response(e).into_response(),
     };
 
-    match s.store.get_vi_template_enriched(&copied.id).await {
+    match s.store.get_vi_template_enriched(copied.id).await {
         Ok(Some(enriched)) => match ViTemplateView::try_from(enriched) {
             Ok(view) => (StatusCode::OK, Json(view)).into_response(),
             Err(e) => {
@@ -1081,9 +1185,9 @@ async fn distribute_vi_template(
 
 async fn delete_vi_template(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    match s.store.delete_vi_template(&id).await {
+    match s.store.delete_vi_template(id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
@@ -1391,7 +1495,7 @@ async fn put_vi_run_queue(
     Path(id): Path<String>,
     Json(req): Json<ReplaceViRunQueueRequest>,
 ) -> impl IntoResponse {
-    let template_ids: Vec<String> = req
+    let template_ids: Vec<i64> = req
         .items
         .into_iter()
         .map(|item| item.vi_template_id)
@@ -1550,16 +1654,15 @@ mod tests {
 
     struct TestApp {
         router: Router,
-        _db_dir: tempfile::TempDir,
+        _db: crate::db::TestDb,
+        _shot_dir: tempfile::TempDir,
         screenshot_dir: String,
     }
 
     async fn test_app() -> TestApp {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        let pool = crate::db::connect(&url).await.unwrap();
-        let screenshot_dir = dir.path().join("shots");
-        let screenshot_dir_str = screenshot_dir.to_string_lossy().to_string();
+        let db = crate::db::TestDb::create().await;
+        let shot_dir = tempfile::tempdir().unwrap();
+        let screenshot_dir_str = shot_dir.path().join("shots").to_string_lossy().to_string();
         let labview_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -1567,12 +1670,13 @@ mod tests {
             .unwrap();
         TestApp {
             router: router(AppState {
-                store: Store::new(pool),
+                store: Store::new(db.pool.clone()),
                 client: reqwest::Client::new(),
                 labview_client,
                 screenshot_dir: screenshot_dir_str.clone(),
             }),
-            _db_dir: dir,
+            _db: db,
+            _shot_dir: shot_dir,
             screenshot_dir: screenshot_dir_str,
         }
     }
@@ -2547,7 +2651,7 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let created: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(created.name, "Add");
-        assert_eq!(created.agent_id, agent_id);
+        assert_eq!(created.origin_agent_id, agent_id);
         assert_eq!(created.vi_path, r"C:\x\Add.vi");
         assert!(created.show_front_panel);
         assert_eq!(created.timeout_secs, Some(30));
@@ -2669,8 +2773,8 @@ mod tests {
 
         let (_, tpl_a) = create_vi_template_http(app, &agent_a, "A", r"C:\a.vi").await;
         let (_, tpl_b) = create_vi_template_http(app, &agent_b, "B", r"C:\b.vi").await;
-        assert_eq!(tpl_a.agent_id, agent_a);
-        assert_eq!(tpl_b.agent_id, agent_b);
+        assert_eq!(tpl_a.origin_agent_id, agent_a);
+        assert_eq!(tpl_b.origin_agent_id, agent_b);
 
         let resp = app
             .clone()
@@ -2704,6 +2808,90 @@ mod tests {
         assert_eq!(status2, StatusCode::CREATED);
         assert_ne!(second.id, first.id);
         assert_eq!(second.origin_agent_id, agent_id);
+    }
+
+    #[tokio::test]
+    async fn create_same_name_and_inputs_conflict() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+        let inputs = serde_json::json!([{"name":"a","className":"Digital","value":1.0}]);
+
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "Add",
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": inputs,
+            "show_front_panel": false,
+            "timeout_secs": null
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body2 = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "Add",
+            "vi_path": r"C:\y\Other.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": inputs,
+            "show_front_panel": true,
+            "timeout_secs": 10
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body2))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(err.error.contains("same name and inputs"));
+    }
+
+    #[tokio::test]
+    async fn create_same_name_different_inputs_ok() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let body1 = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "Add",
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": [{"name":"a","className":"Digital","value":1.0}],
+            "show_front_panel": false
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body1))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body2 = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "Add",
+            "vi_path": r"C:\x\Add.vi",
+            "cli_path": r"C:\cli.exe",
+            "getinfo_path": r"C:\getinfo.vi",
+            "inputs": [{"name":"a","className":"Digital","value":2.0}],
+            "show_front_panel": false
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/vi-templates", &body2))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -2798,7 +2986,6 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let copied: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
         assert_ne!(copied.id, source.id);
-        assert_eq!(copied.agent_id, agent_b);
         assert_eq!(copied.origin_agent_id, agent_a);
         assert_eq!(copied.vi_path, source.vi_path);
 
@@ -2814,8 +3001,7 @@ mod tests {
             .unwrap();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list_a: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(list_a.len(), 1);
-        assert_eq!(list_a[0].id, source.id);
+        assert_eq!(list_a.len(), 2);
 
         let resp = app
             .clone()
@@ -2829,15 +3015,15 @@ mod tests {
             .unwrap();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list_b: Vec<ViTemplateView> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(list_b.len(), 1);
-        assert_eq!(list_b[0].id, copied.id);
+        assert!(list_b.is_empty());
     }
 
     #[tokio::test]
-    async fn distribute_to_self_400() {
+    async fn distribute_to_self_ok() {
         let test = test_app().await;
         let app = &test.router;
-        let agent_id = register_agent_id(app).await;
+        let (addr, _mock) = start_mock_agent_labview().await;
+        let agent_id = register_agent_at(app, &addr.ip().to_string(), addr.port()).await;
         let (_, source) =
             create_vi_template_http(app, &agent_id, "Add", r"C:\x\Add.vi").await;
 
@@ -2853,10 +3039,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(err.error, "cannot distribute to source agent");
+        let copied: ViTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(copied.id, source.id);
+        assert_eq!(copied.origin_agent_id, agent_id);
     }
 
     #[tokio::test]
@@ -2995,7 +3182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vi_run_queue_put_rejects_other_agents_template() {
+    async fn vi_run_queue_put_allows_other_agents_template() {
         let test = test_app().await;
         let app = &test.router;
         let agent_a = register_agent_at(app, "192.168.1.10", 26631).await;
@@ -3014,25 +3201,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert!(err.error.contains(&tpl_b.id));
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/agents/{agent_a}/vi-run-queue"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(list.items.is_empty());
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].vi_template_id, tpl_b.id);
     }
 
     #[tokio::test]

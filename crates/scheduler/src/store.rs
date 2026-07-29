@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -80,10 +80,10 @@ pub struct TaskUpdate {
 
 #[derive(Debug, Clone)]
 pub struct ViTemplate {
-    pub id: String,
+    pub id: i64,
     pub name: String,
-    pub agent_id: String,
     pub origin_agent_id: String,
+    pub kind: String,
     pub vi_path: String,
     pub cli_path: String,
     pub getinfo_path: String,
@@ -97,10 +97,11 @@ pub struct ViTemplate {
 pub struct ViRunQueueItem {
     pub id: String,
     pub agent_id: String,
-    pub vi_template_id: String,
+    pub vi_template_id: i64,
     pub position: i64,
     pub created_at: String,
     pub template_name: String,
+    pub kind: String,
     pub vi_path: String,
     pub inputs_json: String,
     pub show_front_panel: bool,
@@ -110,7 +111,7 @@ pub struct ViRunQueueItem {
 #[derive(Debug)]
 pub enum QueueReplaceError {
     AgentNotFound,
-    BadTemplate { vi_template_id: String },
+    BadTemplate { vi_template_id: i64 },
     Db(sqlx::Error),
 }
 
@@ -126,14 +127,12 @@ pub struct ViTemplatePatch {
 pub enum TransferError {
     NotFound,
     AgentNotFound,
-    SameAgent,
     Db(sqlx::Error),
 }
 
 #[derive(Debug, Clone)]
 pub struct ViTemplateEnriched {
     pub template: ViTemplate,
-    pub agent_name: Option<String>,
     pub origin_agent_name: Option<String>,
 }
 
@@ -151,15 +150,15 @@ pub struct Screenshot {
 
 #[derive(Clone)]
 pub struct Store {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl Store {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 
@@ -174,8 +173,8 @@ impl Store {
         let row = sqlx::query_as::<_, AgentRow>(
             r#"
             INSERT INTO agents (id, name, ip, port, status, cpu_percent, memory_percent, busy, created_at)
-            VALUES (?, ?, ?, ?, 'offline', 0, 0, 0, ?)
-            ON CONFLICT(name, ip, port) DO UPDATE SET name = excluded.name
+            VALUES ($1, $2, $3, $4, 'offline', 0, 0, 0, $5)
+            ON CONFLICT (name, ip, port) DO UPDATE SET name = EXCLUDED.name
             RETURNING id, name, ip, port, status, cpu_percent, memory_percent, busy, last_seen_at, created_at
             "#,
         )
@@ -207,7 +206,7 @@ impl Store {
             r#"
             SELECT id, name, ip, port, status, cpu_percent, memory_percent, busy, last_seen_at, created_at
             FROM agents
-            WHERE id = ?
+            WHERE id = $1
             "#,
         )
         .bind(id)
@@ -217,7 +216,7 @@ impl Store {
     }
 
     pub async fn update_agent_status(&self, id: &str, status: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE agents SET status = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET status = $1 WHERE id = $2")
             .bind(status)
             .bind(id)
             .execute(&self.pool)
@@ -237,8 +236,8 @@ impl Store {
         sqlx::query(
             r#"
             UPDATE agents
-            SET status = ?, cpu_percent = ?, memory_percent = ?, busy = ?, last_seen_at = ?
-            WHERE id = ?
+            SET status = $1, cpu_percent = $2, memory_percent = $3, busy = $4, last_seen_at = $5
+            WHERE id = $6
             "#,
         )
         .bind(status)
@@ -269,7 +268,7 @@ impl Store {
         let row = sqlx::query_as::<_, TemplateRow>(
             r#"
             INSERT INTO task_templates (id, name, shell, command, workdir, timeout_secs, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id, name, shell, command, workdir, timeout_secs, created_at
             "#,
         )
@@ -303,7 +302,7 @@ impl Store {
             r#"
             SELECT id, name, shell, command, workdir, timeout_secs, created_at
             FROM task_templates
-            WHERE id = ?
+            WHERE id = $1
             "#,
         )
         .bind(id)
@@ -332,8 +331,8 @@ impl Store {
         sqlx::query(
             r#"
             UPDATE task_templates
-            SET name = ?, shell = ?, command = ?, workdir = ?, timeout_secs = ?
-            WHERE id = ?
+            SET name = $1, shell = $2, command = $3, workdir = $4, timeout_secs = $5
+            WHERE id = $6
             "#,
         )
         .bind(&name)
@@ -348,7 +347,7 @@ impl Store {
     }
 
     pub async fn delete_template(&self, id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM task_templates WHERE id = ?")
+        let result = sqlx::query("DELETE FROM task_templates WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -364,7 +363,7 @@ impl Store {
                 id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
                 status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, '', '', NULL, ?, NULL, NULL)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued', NULL, '', '', NULL, $9, NULL, NULL)
             RETURNING
                 id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
                 status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
@@ -406,7 +405,7 @@ impl Store {
                 id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
                 status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
             FROM tasks
-            WHERE id = ?
+            WHERE id = $1
             "#,
         )
         .bind(id)
@@ -446,9 +445,9 @@ impl Store {
         sqlx::query(
             r#"
             UPDATE tasks
-            SET status = ?, exit_code = ?, stdout = ?, stderr = ?, agent_task_id = ?,
-                started_at = ?, finished_at = ?
-            WHERE id = ?
+            SET status = $1, exit_code = $2, stdout = $3, stderr = $4, agent_task_id = $5,
+                started_at = $6, finished_at = $7
+            WHERE id = $8
             "#,
         )
         .bind(&status)
@@ -480,7 +479,7 @@ impl Store {
             INSERT INTO screenshots (
                 id, agent_id, file_path, content_type, byte_size, width, height, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, agent_id, file_path, content_type, byte_size, width, height, created_at
             "#,
         )
@@ -521,7 +520,7 @@ impl Store {
 
     pub async fn count_screenshots(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
         let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM screenshots WHERE agent_id = ?")
+            sqlx::query_as("SELECT COUNT(*) FROM screenshots WHERE agent_id = $1")
                 .bind(agent_id)
                 .fetch_one(&self.pool)
                 .await?;
@@ -538,9 +537,9 @@ impl Store {
             r#"
             SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
             FROM screenshots
-            WHERE agent_id = ?
+            WHERE agent_id = $1
             ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
+            LIMIT $2 OFFSET $3
             "#,
         )
         .bind(agent_id)
@@ -556,7 +555,7 @@ impl Store {
             r#"
             SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
             FROM screenshots
-            WHERE id = ?
+            WHERE id = $1
             "#,
         )
         .bind(id)
@@ -568,8 +567,8 @@ impl Store {
     pub async fn insert_vi_template(
         &self,
         name: &str,
-        agent_id: &str,
         origin_agent_id: &str,
+        kind: &str,
         vi_path: &str,
         cli_path: &str,
         getinfo_path: &str,
@@ -577,26 +576,24 @@ impl Store {
         show_front_panel: bool,
         timeout_secs: Option<i64>,
     ) -> Result<ViTemplate, sqlx::Error> {
-        let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let inputs_json = serde_json::to_string(inputs)
             .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             INSERT INTO vi_templates (
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, show_front_panel, timeout_secs, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, show_front_panel, timeout_secs, created_at
             "#,
         )
-        .bind(&id)
         .bind(name)
-        .bind(agent_id)
         .bind(origin_agent_id)
+        .bind(kind)
         .bind(vi_path)
         .bind(cli_path)
         .bind(getinfo_path)
@@ -609,9 +606,44 @@ impl Store {
         Ok(row.into_vi_template())
     }
 
+    /// True when another template already has the same display name and equivalent inputs JSON.
+    /// When `exclude_id` is set, that row is ignored (for rename/patch).
+    pub async fn find_duplicate_vi_template(
+        &self,
+        name: &str,
+        inputs: &serde_json::Value,
+        exclude_id: Option<i64>,
+    ) -> Result<Option<ViTemplate>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            SELECT
+                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            FROM vi_templates
+            WHERE name = $1
+            "#,
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            if exclude_id.is_some_and(|ex| ex == row.id) {
+                continue;
+            }
+            let existing: serde_json::Value = match serde_json::from_str(&row.inputs_json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if &existing == inputs {
+                return Ok(Some(row.into_vi_template()));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn patch_vi_template(
         &self,
-        id: &str,
+        id: i64,
         patch: ViTemplatePatch,
     ) -> Result<Option<ViTemplate>, sqlx::Error> {
         let current = match self.get_vi_template(id).await? {
@@ -632,8 +664,8 @@ impl Store {
         sqlx::query(
             r#"
             UPDATE vi_templates
-            SET name = ?, inputs_json = ?, show_front_panel = ?, timeout_secs = ?
-            WHERE id = ?
+            SET name = $1, inputs_json = $2, show_front_panel = $3, timeout_secs = $4
+            WHERE id = $5
             "#,
         )
         .bind(&name)
@@ -646,10 +678,10 @@ impl Store {
         self.get_vi_template(id).await
     }
 
-    /// INSERT a copy on the target agent; source row is unchanged.
+    /// INSERT a copy; source row is unchanged. Origin stays with the source template.
     pub async fn copy_vi_template(
         &self,
-        source_id: &str,
+        source_id: i64,
         target_agent_id: &str,
         cli_path: &str,
         getinfo_path: &str,
@@ -660,10 +692,6 @@ impl Store {
             .await
             .map_err(TransferError::Db)?
             .ok_or(TransferError::NotFound)?;
-
-        if source.agent_id == target_agent_id {
-            return Err(TransferError::SameAgent);
-        }
 
         if self
             .get_agent(target_agent_id)
@@ -680,8 +708,8 @@ impl Store {
 
         self.insert_vi_template(
             &source.name,
-            target_agent_id,
             &source.origin_agent_id,
+            &source.kind,
             vi_path,
             cli_path,
             getinfo_path,
@@ -695,7 +723,7 @@ impl Store {
 
     pub async fn transfer_vi_template(
         &self,
-        id: &str,
+        id: i64,
         target_agent_id: &str,
         cli_path: &str,
         getinfo_path: &str,
@@ -706,10 +734,6 @@ impl Store {
             .await
             .map_err(TransferError::Db)?
             .ok_or(TransferError::NotFound)?;
-
-        if source.agent_id == target_agent_id {
-            return Err(TransferError::SameAgent);
-        }
 
         if self
             .get_agent(target_agent_id)
@@ -727,11 +751,10 @@ impl Store {
         sqlx::query(
             r#"
             UPDATE vi_templates
-            SET agent_id = ?, vi_path = ?, cli_path = ?, getinfo_path = ?
-            WHERE id = ?
+            SET vi_path = $1, cli_path = $2, getinfo_path = $3
+            WHERE id = $4
             "#,
         )
-        .bind(target_agent_id)
         .bind(vi_path)
         .bind(cli_path)
         .bind(getinfo_path)
@@ -740,7 +763,7 @@ impl Store {
         .await
         .map_err(TransferError::Db)?;
 
-        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = ?")
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -757,7 +780,8 @@ impl Store {
     pub async fn create_vi_template(
         &self,
         name: &str,
-        agent_id: &str,
+        origin_agent_id: &str,
+        kind: &str,
         vi_path: &str,
         cli_path: &str,
         getinfo_path: &str,
@@ -767,8 +791,8 @@ impl Store {
     ) -> Result<ViTemplate, sqlx::Error> {
         self.insert_vi_template(
             name,
-            agent_id,
-            agent_id,
+            origin_agent_id,
+            kind,
             vi_path,
             cli_path,
             getinfo_path,
@@ -782,91 +806,64 @@ impl Store {
     pub async fn list_vi_templates(
         &self,
         agent_id: Option<&str>,
+        kind: Option<&str>,
     ) -> Result<Vec<ViTemplate>, sqlx::Error> {
-        let rows = if let Some(agent_id) = agent_id {
-            sqlx::query_as::<_, ViTemplateRow>(
-                r#"
-                SELECT
-                    id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                    inputs_json, show_front_panel, timeout_secs, created_at
-                FROM vi_templates
-                WHERE agent_id = ?
-                ORDER BY created_at ASC
-                "#,
-            )
-            .bind(agent_id)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as::<_, ViTemplateRow>(
-                r#"
-                SELECT
-                    id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
-                    inputs_json, show_front_panel, timeout_secs, created_at
-                FROM vi_templates
-                ORDER BY created_at ASC
-                "#,
-            )
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let rows = sqlx::query_as::<_, ViTemplateRow>(
+            r#"
+            SELECT
+                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                inputs_json, show_front_panel, timeout_secs, created_at
+            FROM vi_templates
+            WHERE ($1::text IS NULL OR origin_agent_id = $1)
+              AND ($2::text IS NULL OR kind = $2)
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(agent_id)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.into_iter().map(|r| r.into_vi_template()).collect())
     }
 
     pub async fn list_vi_templates_enriched(
         &self,
         agent_id: Option<&str>,
+        kind: Option<&str>,
     ) -> Result<Vec<ViTemplateEnriched>, sqlx::Error> {
-        let rows = if let Some(agent_id) = agent_id {
-            sqlx::query_as::<_, ViTemplateEnrichedRow>(
-                r#"
-                SELECT
-                    t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
-                    t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
-                    t.created_at, a.name AS agent_name, o.name AS origin_agent_name
-                FROM vi_templates t
-                LEFT JOIN agents a ON a.id = t.agent_id
-                LEFT JOIN agents o ON o.id = t.origin_agent_id
-                WHERE t.agent_id = ?
-                ORDER BY t.created_at ASC
-                "#,
-            )
-            .bind(agent_id)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as::<_, ViTemplateEnrichedRow>(
-                r#"
-                SELECT
-                    t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
-                    t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
-                    t.created_at, a.name AS agent_name, o.name AS origin_agent_name
-                FROM vi_templates t
-                LEFT JOIN agents a ON a.id = t.agent_id
-                LEFT JOIN agents o ON o.id = t.origin_agent_id
-                ORDER BY t.created_at ASC
-                "#,
-            )
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let rows = sqlx::query_as::<_, ViTemplateEnrichedRow>(
+            r#"
+            SELECT
+                t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
+                t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
+                t.created_at, o.name AS origin_agent_name
+            FROM vi_templates t
+            LEFT JOIN agents o ON o.id = t.origin_agent_id
+            WHERE ($1::text IS NULL OR t.origin_agent_id = $1)
+              AND ($2::text IS NULL OR t.kind = $2)
+            ORDER BY t.created_at ASC
+            "#,
+        )
+        .bind(agent_id)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
     }
 
     pub async fn get_vi_template_enriched(
         &self,
-        id: &str,
+        id: i64,
     ) -> Result<Option<ViTemplateEnriched>, sqlx::Error> {
         let row = sqlx::query_as::<_, ViTemplateEnrichedRow>(
             r#"
             SELECT
-                t.id, t.name, t.agent_id, t.origin_agent_id, t.vi_path, t.cli_path,
+                t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
                 t.getinfo_path, t.inputs_json, t.show_front_panel, t.timeout_secs,
-                t.created_at, a.name AS agent_name, o.name AS origin_agent_name
+                t.created_at, o.name AS origin_agent_name
             FROM vi_templates t
-            LEFT JOIN agents a ON a.id = t.agent_id
             LEFT JOIN agents o ON o.id = t.origin_agent_id
-            WHERE t.id = ?
+            WHERE t.id = $1
             "#,
         )
         .bind(id)
@@ -875,14 +872,14 @@ impl Store {
         Ok(row.map(|r| r.into_enriched()))
     }
 
-    pub async fn get_vi_template(&self, id: &str) -> Result<Option<ViTemplate>, sqlx::Error> {
+    pub async fn get_vi_template(&self, id: i64) -> Result<Option<ViTemplate>, sqlx::Error> {
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             SELECT
-                id, name, agent_id, origin_agent_id, vi_path, cli_path, getinfo_path,
+                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
-            WHERE id = ?
+            WHERE id = $1
             "#,
         )
         .bind(id)
@@ -895,11 +892,11 @@ impl Store {
         let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
             r#"
             SELECT q.id, q.agent_id, q.vi_template_id, q.position, q.created_at,
-                   t.name AS template_name, t.vi_path,
+                   t.name AS template_name, t.kind, t.vi_path,
                    t.inputs_json, t.show_front_panel, t.timeout_secs
             FROM vi_run_queue_items q
             JOIN vi_templates t ON t.id = q.vi_template_id
-            WHERE q.agent_id = ?
+            WHERE q.agent_id = $1
             ORDER BY q.position ASC
             "#,
         )
@@ -912,42 +909,39 @@ impl Store {
     pub async fn replace_vi_run_queue(
         &self,
         agent_id: &str,
-        template_ids: &[String],
+        template_ids: &[i64],
     ) -> Result<Vec<ViRunQueueItem>, QueueReplaceError> {
         if self.get_agent(agent_id).await.map_err(QueueReplaceError::Db)?.is_none() {
             return Err(QueueReplaceError::AgentNotFound);
         }
 
-        for template_id in template_ids {
+        for &template_id in template_ids {
             let template = self
                 .get_vi_template(template_id)
                 .await
                 .map_err(QueueReplaceError::Db)?;
-            match template {
-                Some(t) if t.agent_id == agent_id => {}
-                _ => {
-                    return Err(QueueReplaceError::BadTemplate {
-                        vi_template_id: template_id.clone(),
-                    });
-                }
+            if template.is_none() {
+                return Err(QueueReplaceError::BadTemplate {
+                    vi_template_id: template_id,
+                });
             }
         }
 
         let mut tx = self.pool.begin().await.map_err(QueueReplaceError::Db)?;
 
-        sqlx::query("DELETE FROM vi_run_queue_items WHERE agent_id = ?")
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE agent_id = $1")
             .bind(agent_id)
             .execute(&mut *tx)
             .await
             .map_err(QueueReplaceError::Db)?;
 
         let now = Utc::now().to_rfc3339();
-        for (position, template_id) in template_ids.iter().enumerate() {
+        for (position, &template_id) in template_ids.iter().enumerate() {
             let id = Uuid::new_v4().to_string();
             sqlx::query(
                 r#"
                 INSERT INTO vi_run_queue_items (id, agent_id, vi_template_id, position, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5)
                 "#,
             )
             .bind(&id)
@@ -967,12 +961,12 @@ impl Store {
             .map_err(QueueReplaceError::Db)
     }
 
-    pub async fn delete_vi_template(&self, id: &str) -> Result<bool, sqlx::Error> {
-        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = ?")
+    pub async fn delete_vi_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE vi_template_id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        let result = sqlx::query("DELETE FROM vi_templates WHERE id = ?")
+        let result = sqlx::query("DELETE FROM vi_templates WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -1093,10 +1087,10 @@ struct ScreenshotRow {
 
 #[derive(sqlx::FromRow)]
 struct ViTemplateRow {
-    id: String,
+    id: i64,
     name: String,
-    agent_id: String,
     origin_agent_id: String,
+    kind: String,
     vi_path: String,
     cli_path: String,
     getinfo_path: String,
@@ -1110,10 +1104,11 @@ struct ViTemplateRow {
 struct ViRunQueueItemRow {
     id: String,
     agent_id: String,
-    vi_template_id: String,
+    vi_template_id: i64,
     position: i64,
     created_at: String,
     template_name: String,
+    kind: String,
     vi_path: String,
     inputs_json: String,
     show_front_panel: i64,
@@ -1129,6 +1124,7 @@ impl ViRunQueueItemRow {
             position: self.position,
             created_at: self.created_at,
             template_name: self.template_name,
+            kind: self.kind,
             vi_path: self.vi_path,
             inputs_json: self.inputs_json,
             show_front_panel: self.show_front_panel != 0,
@@ -1139,10 +1135,10 @@ impl ViRunQueueItemRow {
 
 #[derive(sqlx::FromRow)]
 struct ViTemplateEnrichedRow {
-    id: String,
+    id: i64,
     name: String,
-    agent_id: String,
     origin_agent_id: String,
+    kind: String,
     vi_path: String,
     cli_path: String,
     getinfo_path: String,
@@ -1150,7 +1146,6 @@ struct ViTemplateEnrichedRow {
     show_front_panel: i64,
     timeout_secs: Option<i64>,
     created_at: String,
-    agent_name: Option<String>,
     origin_agent_name: Option<String>,
 }
 
@@ -1159,8 +1154,8 @@ impl ViTemplateRow {
         ViTemplate {
             id: self.id,
             name: self.name,
-            agent_id: self.agent_id,
             origin_agent_id: self.origin_agent_id,
+            kind: self.kind,
             vi_path: self.vi_path,
             cli_path: self.cli_path,
             getinfo_path: self.getinfo_path,
@@ -1178,8 +1173,8 @@ impl ViTemplateEnrichedRow {
             template: ViTemplate {
                 id: self.id,
                 name: self.name,
-                agent_id: self.agent_id,
                 origin_agent_id: self.origin_agent_id,
+                kind: self.kind,
                 vi_path: self.vi_path,
                 cli_path: self.cli_path,
                 getinfo_path: self.getinfo_path,
@@ -1188,7 +1183,6 @@ impl ViTemplateEnrichedRow {
                 timeout_secs: self.timeout_secs,
                 created_at: self.created_at,
             },
-            agent_name: self.agent_name,
             origin_agent_name: self.origin_agent_name,
         }
     }
@@ -1213,11 +1207,8 @@ impl ScreenshotRow {
 mod tests {
     use super::*;
 
-    async fn test_store() -> Store {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        let pool = crate::db::connect(&url).await.unwrap();
-        Store::new(pool)
+    async fn test_store() -> crate::db::GuardedStore {
+        crate::db::GuardedStore::new().await
     }
 
     #[tokio::test]
@@ -1286,10 +1277,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_list_screenshots() {
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        let pool = crate::db::connect(&url).await.unwrap();
-        let store = Store::new(pool);
+        let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let meta = store
             .insert_screenshot(
@@ -1319,6 +1307,7 @@ mod tests {
             .create_vi_template(
                 "Add",
                 &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\labview-runner-cli\labview-runner-cli.exe",
                 r"C:\labview-runner-cli\getinfo.vi",
@@ -1329,7 +1318,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tpl.name, "Add");
-        assert_eq!(tpl.agent_id, agent.id);
+        assert_eq!(tpl.origin_agent_id, agent.id);
         assert_eq!(tpl.vi_path, r"C:\x\Add.vi");
         assert_eq!(tpl.cli_path, r"C:\labview-runner-cli\labview-runner-cli.exe");
         assert_eq!(tpl.getinfo_path, r"C:\labview-runner-cli\getinfo.vi");
@@ -1340,17 +1329,17 @@ mod tests {
 
         assert_eq!(tpl.origin_agent_id, agent.id);
 
-        let listed = store.list_vi_templates(None).await.unwrap();
+        let listed = store.list_vi_templates(None, None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, tpl.id);
 
-        let got = store.get_vi_template(&tpl.id).await.unwrap().unwrap();
+        let got = store.get_vi_template(tpl.id).await.unwrap().unwrap();
         assert_eq!(got.id, tpl.id);
         assert!(got.show_front_panel);
 
-        assert!(store.delete_vi_template(&tpl.id).await.unwrap());
-        assert!(store.get_vi_template(&tpl.id).await.unwrap().is_none());
-        assert!(!store.delete_vi_template(&tpl.id).await.unwrap());
+        assert!(store.delete_vi_template(tpl.id).await.unwrap());
+        assert!(store.get_vi_template(tpl.id).await.unwrap().is_none());
+        assert!(!store.delete_vi_template(tpl.id).await.unwrap());
     }
 
     #[tokio::test]
@@ -1362,6 +1351,7 @@ mod tests {
             .create_vi_template(
                 "NoPanel",
                 &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1384,7 +1374,7 @@ mod tests {
             .insert_vi_template(
                 "Add",
                 &agent.id,
-                &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1406,7 +1396,7 @@ mod tests {
             .insert_vi_template(
                 "First",
                 &agent.id,
-                &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1420,7 +1410,7 @@ mod tests {
             .insert_vi_template(
                 "Second",
                 &agent.id,
-                &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli2.exe",
                 r"C:\getinfo2.vi",
@@ -1432,7 +1422,7 @@ mod tests {
             .unwrap();
 
         assert_ne!(first.id, second.id);
-        let listed = store.list_vi_templates(Some(&agent.id)).await.unwrap();
+        let listed = store.list_vi_templates(Some(&agent.id), None).await.unwrap();
         assert_eq!(listed.len(), 2);
     }
 
@@ -1445,6 +1435,7 @@ mod tests {
             .create_vi_template(
                 "OldName",
                 &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1457,7 +1448,7 @@ mod tests {
 
         let patched = store
             .patch_vi_template(
-                &tpl.id,
+                tpl.id,
                 ViTemplatePatch {
                     name: Some("NewName".into()),
                     ..ViTemplatePatch::default()
@@ -1468,7 +1459,7 @@ mod tests {
             .unwrap();
         assert_eq!(patched.name, "NewName");
 
-        let got = store.get_vi_template(&tpl.id).await.unwrap().unwrap();
+        let got = store.get_vi_template(tpl.id).await.unwrap().unwrap();
         assert_eq!(got.name, "NewName");
     }
 
@@ -1482,6 +1473,7 @@ mod tests {
             .create_vi_template(
                 "CopyMe",
                 &agent_a.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1494,7 +1486,7 @@ mod tests {
 
         let copied = store
             .copy_vi_template(
-                &source.id,
+                source.id,
                 &agent_b.id,
                 r"C:\cli-b.exe",
                 r"C:\getinfo-b.vi",
@@ -1504,21 +1496,19 @@ mod tests {
             .unwrap();
 
         assert_ne!(copied.id, source.id);
-        assert_eq!(copied.agent_id, agent_b.id);
         assert_eq!(copied.origin_agent_id, agent_a.id);
         assert_eq!(copied.vi_path, source.vi_path);
 
-        let on_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
-        assert_eq!(on_a.len(), 1);
-        assert_eq!(on_a[0].id, source.id);
+        // Filter is by origin: both source and copy belong to agent_a.
+        let on_a = store.list_vi_templates(Some(&agent_a.id), None).await.unwrap();
+        assert_eq!(on_a.len(), 2);
 
-        let on_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
-        assert_eq!(on_b.len(), 1);
-        assert_eq!(on_b[0].id, copied.id);
+        let on_b = store.list_vi_templates(Some(&agent_b.id), None).await.unwrap();
+        assert!(on_b.is_empty());
     }
 
     #[tokio::test]
-    async fn transfer_moves_id_and_clears_queue() {
+    async fn transfer_updates_paths_and_clears_queue() {
         let store = test_store().await;
         let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
         let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
@@ -1527,6 +1517,7 @@ mod tests {
             .create_vi_template(
                 "MoveMe",
                 &agent_a.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1536,17 +1527,17 @@ mod tests {
             )
             .await
             .unwrap();
-        let template_id = tpl.id.clone();
+        let template_id = tpl.id;
 
         store
-            .replace_vi_run_queue(&agent_a.id, &[template_id.clone()])
+            .replace_vi_run_queue(&agent_a.id, &[template_id])
             .await
             .unwrap();
         assert_eq!(store.list_vi_run_queue(&agent_a.id).await.unwrap().len(), 1);
 
         let transferred = store
             .transfer_vi_template(
-                &template_id,
+                template_id,
                 &agent_b.id,
                 r"C:\cli-b.exe",
                 r"C:\getinfo-b.vi",
@@ -1556,22 +1547,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(transferred.id, template_id);
-        assert_eq!(transferred.agent_id, agent_b.id);
         assert_eq!(transferred.origin_agent_id, agent_a.id);
         assert_eq!(transferred.cli_path, r"C:\cli-b.exe");
         assert_eq!(transferred.getinfo_path, r"C:\getinfo-b.vi");
 
-        let on_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
-        assert!(on_a.is_empty());
+        // Origin unchanged; filter by agent_a still finds the row.
+        let on_a = store.list_vi_templates(Some(&agent_a.id), None).await.unwrap();
+        assert_eq!(on_a.len(), 1);
+        assert_eq!(on_a[0].id, template_id);
         assert!(store.list_vi_run_queue(&agent_a.id).await.unwrap().is_empty());
 
-        let on_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
-        assert_eq!(on_b.len(), 1);
-        assert_eq!(on_b[0].id, template_id);
+        let on_b = store.list_vi_templates(Some(&agent_b.id), None).await.unwrap();
+        assert!(on_b.is_empty());
     }
 
     #[tokio::test]
-    async fn transfer_to_self_errors() {
+    async fn transfer_to_self_updates_paths() {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let inputs = serde_json::json!([]);
@@ -1579,6 +1570,7 @@ mod tests {
             .create_vi_template(
                 "Stay",
                 &agent.id,
+                "labview",
                 r"C:\x\Add.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1589,17 +1581,19 @@ mod tests {
             .await
             .unwrap();
 
-        let err = store
+        let updated = store
             .transfer_vi_template(
-                &tpl.id,
+                tpl.id,
                 &agent.id,
-                r"C:\cli.exe",
-                r"C:\getinfo.vi",
+                r"C:\cli-new.exe",
+                r"C:\getinfo-new.vi",
                 None,
             )
             .await
-            .unwrap_err();
-        assert!(matches!(err, TransferError::SameAgent));
+            .unwrap();
+        assert_eq!(updated.origin_agent_id, agent.id);
+        assert_eq!(updated.cli_path, r"C:\cli-new.exe");
+        assert_eq!(updated.getinfo_path, r"C:\getinfo-new.vi");
     }
 
     #[tokio::test]
@@ -1612,7 +1606,7 @@ mod tests {
             .insert_vi_template(
                 "A",
                 &agent_a.id,
-                &agent_a.id,
+                "labview",
                 r"C:\a.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1626,7 +1620,7 @@ mod tests {
             .insert_vi_template(
                 "B",
                 &agent_b.id,
-                &agent_b.id,
+                "labview",
                 r"C:\b.vi",
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1637,15 +1631,15 @@ mod tests {
             .await
             .unwrap();
 
-        let for_a = store.list_vi_templates(Some(&agent_a.id)).await.unwrap();
+        let for_a = store.list_vi_templates(Some(&agent_a.id), None).await.unwrap();
         assert_eq!(for_a.len(), 1);
         assert_eq!(for_a[0].name, "A");
 
-        let for_b = store.list_vi_templates(Some(&agent_b.id)).await.unwrap();
+        let for_b = store.list_vi_templates(Some(&agent_b.id), None).await.unwrap();
         assert_eq!(for_b.len(), 1);
         assert_eq!(for_b[0].name, "B");
 
-        let all = store.list_vi_templates(None).await.unwrap();
+        let all = store.list_vi_templates(None, None).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -1675,6 +1669,7 @@ mod tests {
             .create_vi_template(
                 name,
                 agent_id,
+                "labview",
                 vi_path,
                 r"C:\cli.exe",
                 r"C:\getinfo.vi",
@@ -1696,7 +1691,7 @@ mod tests {
         let replaced = store
             .replace_vi_run_queue(
                 &agent.id,
-                &[tpl_b.id.clone(), tpl_a.id.clone(), tpl_b.id.clone()],
+                &[tpl_b.id, tpl_a.id, tpl_b.id],
             )
             .await
             .unwrap();
@@ -1721,20 +1716,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vi_run_queue_rejects_foreign_template() {
+    async fn vi_run_queue_allows_foreign_template() {
         let store = test_store().await;
         let agent_a = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
         let agent_b = store.upsert_agent("b", "1.2.3.5", 26632).await.unwrap();
         let tpl_b = vi_template_for_agent(&store, &agent_b.id, "B", r"C:\b.vi").await;
 
-        let err = store
+        let replaced = store
             .replace_vi_run_queue(&agent_a.id, &[tpl_b.id])
+            .await
+            .unwrap();
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(replaced[0].vi_template_id, tpl_b.id);
+
+        let listed = store.list_vi_run_queue(&agent_a.id).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].vi_template_id, tpl_b.id);
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_rejects_unknown_template() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("a", "1.2.3.4", 26631).await.unwrap();
+
+        let err = store
+            .replace_vi_run_queue(&agent.id, &[999_999_999])
             .await
             .unwrap_err();
         assert!(matches!(err, QueueReplaceError::BadTemplate { .. }));
-
-        let listed = store.list_vi_run_queue(&agent_a.id).await.unwrap();
-        assert!(listed.is_empty());
+        assert!(store.list_vi_run_queue(&agent.id).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1744,13 +1754,13 @@ mod tests {
         let tpl = vi_template_for_agent(&store, &agent.id, "T", r"C:\t.vi").await;
 
         store
-            .replace_vi_run_queue(&agent.id, &[tpl.id.clone()])
+            .replace_vi_run_queue(&agent.id, &[tpl.id])
             .await
             .unwrap();
         assert_eq!(store.list_vi_run_queue(&agent.id).await.unwrap().len(), 1);
 
-        assert!(store.delete_vi_template(&tpl.id).await.unwrap());
-        assert!(store.get_vi_template(&tpl.id).await.unwrap().is_none());
+        assert!(store.delete_vi_template(tpl.id).await.unwrap());
+        assert!(store.get_vi_template(tpl.id).await.unwrap().is_none());
         assert!(store.list_vi_run_queue(&agent.id).await.unwrap().is_empty());
     }
 }
