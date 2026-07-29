@@ -16,13 +16,13 @@ mod web;
 
 use api::AppState;
 use config::AgentConfig;
-use metrics::MetricsSampler;
+use metrics::{MetricsSampler, MetricsSnapshot};
 use sequence_session::SequenceSessionSlot;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use task_slot::TaskSlot;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -40,13 +40,15 @@ async fn main() {
     tracing::info!(%ip, "advertise ip selected");
 
     let http_client = register::http_client();
+    let metrics = Arc::new(RwLock::new(MetricsSnapshot::default()));
+    metrics::start_metrics_sampler(MetricsSampler::new(), metrics.clone());
     let state = AppState {
         hostname: hostname.clone(),
         ip: ip.clone(),
         port: cfg.port,
         started: Instant::now(),
         slot: TaskSlot::new(),
-        metrics: Arc::new(Mutex::new(MetricsSampler::new())),
+        metrics,
         center_url: cfg.center_url.clone(),
         http_client: http_client.clone(),
         files_root: cfg.files_root.clone(),

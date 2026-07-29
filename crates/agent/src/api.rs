@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::files::{self, EntryKind, FilesError};
 use crate::labview::{
@@ -24,7 +24,7 @@ use crate::labview::{
 use crate::labview_sequence::{
     queue_items_for_run, run_sequence, SequencePause, SequenceResponse, SequenceRunOpts,
 };
-use crate::metrics::MetricsSampler;
+use crate::metrics::MetricsSnapshot;
 use crate::sequence_session::{SequenceSession, SequenceSessionSlot};
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
@@ -36,7 +36,7 @@ pub struct AppState {
     pub port: u16,
     pub started: Instant,
     pub slot: Arc<TaskSlot>,
-    pub metrics: Arc<Mutex<MetricsSampler>>,
+    pub metrics: Arc<RwLock<MetricsSnapshot>>,
     pub center_url: String,
     pub http_client: reqwest::Client,
     pub files_root: Option<PathBuf>,
@@ -330,13 +330,12 @@ async fn labview_run(
 }
 
 async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
-    let mut m = s.metrics.lock().await;
-    let (cpu, mem) = m.cpu_and_memory();
+    let metrics = *s.metrics.read().await;
     Json(AgentStatusResponse {
         hostname: s.hostname.clone(),
         ip: s.ip.clone(),
-        cpu_percent: cpu,
-        memory_percent: mem,
+        cpu_percent: metrics.cpu_percent,
+        memory_percent: metrics.memory_percent,
         busy: s.slot.is_busy().await,
         uptime_secs: s.started.elapsed().as_secs(),
     })
@@ -1280,7 +1279,7 @@ mod tests {
             port: 8080,
             started: Instant::now(),
             slot: TaskSlot::new(),
-            metrics: Arc::new(Mutex::new(MetricsSampler::new())),
+            metrics: Arc::new(RwLock::new(MetricsSnapshot::default())),
             center_url: "http://localhost:3000".into(),
             http_client: crate::register::http_client(),
             files_root: None,
@@ -1310,6 +1309,34 @@ mod tests {
             files_root: Some(root),
             ..test_state()
         }
+    }
+
+    #[tokio::test]
+    async fn status_responds_within_150_ms() {
+        let state = test_state();
+        *state.metrics.write().await = MetricsSnapshot {
+            cpu_percent: 12.5,
+            memory_percent: 34.5,
+        };
+        let app = router(state);
+        let started = Instant::now();
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: AgentStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body.cpu_percent, 12.5);
+        assert_eq!(body.memory_percent, 34.5);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "status request took {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
