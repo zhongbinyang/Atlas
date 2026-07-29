@@ -47,6 +47,12 @@ pub struct SequenceStepResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequencePause {
+    pub before_position: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceResponse {
     pub stopped: bool,
     pub failed_at: Option<usize>,
@@ -56,6 +62,8 @@ pub struct SequenceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_order: Option<String>,
     pub overall: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause: Option<SequencePause>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -250,19 +258,33 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
 pub async fn run_sequence_with_opts<F, Fut>(
     items: &[QueueItemForRun],
     opts: SequenceRunOpts,
+    run_one: F,
+) -> SequenceResponse
+where
+    F: FnMut(&QueueItemForRun) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    run_sequence_from_with_opts(items, 0, opts, Vec::new(), false, run_one).await
+}
+
+pub async fn run_sequence_from_with_opts<F, Fut>(
+    items: &[QueueItemForRun],
+    start_index: usize,
+    opts: SequenceRunOpts,
+    mut steps: Vec<SequenceStepResult>,
+    resume_breakpoint: bool,
     mut run_one: F,
 ) -> SequenceResponse
 where
     F: FnMut(&QueueItemForRun) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
 {
-    let mut steps = Vec::new();
     let mut stopped = false;
     let mut failed_at = None;
     let mut sn = opts.sn;
     let work_order = opts.work_order;
 
-    for (i, item) in items.iter().enumerate() {
+    for (i, item) in items.iter().enumerate().skip(start_index) {
         if !item.enabled {
             steps.push(SequenceStepResult {
                 position: item.position,
@@ -277,6 +299,22 @@ where
                 error: None,
             });
             continue;
+        }
+
+        if item.breakpoint && !(i == start_index && resume_breakpoint) {
+            let overall = compute_overall(&steps);
+            return SequenceResponse {
+                stopped: false,
+                failed_at: None,
+                steps,
+                sn,
+                work_order,
+                overall,
+                pause: Some(SequencePause {
+                    before_position: item.position,
+                    message: "breakpoint".into(),
+                }),
+            };
         }
 
         match run_one(item).await {
@@ -340,6 +378,7 @@ where
         sn,
         work_order,
         overall,
+        pause: None,
     }
 }
 
@@ -363,14 +402,20 @@ pub async fn run_sequence(
     cli: &Path,
     getinfo: &Path,
     items: &[QueueItemForRun],
+    start_index: usize,
     opts: SequenceRunOpts,
+    prior_steps: Vec<SequenceStepResult>,
+    resume_breakpoint: bool,
 ) -> SequenceResponse {
     let cli = cli.to_path_buf();
     let getinfo = getinfo.to_path_buf();
     let items = items.to_vec();
-    run_sequence_with_opts(
+    run_sequence_from_with_opts(
         &items,
+        start_index,
         opts,
+        prior_steps,
+        resume_breakpoint,
         |item| {
             let cli = cli.clone();
             let getinfo = getinfo.clone();
@@ -612,6 +657,64 @@ mod tests {
         assert_eq!(resp.steps.len(), 2);
         assert!(resp.steps.iter().all(|s| s.ok));
         assert_eq!(resp.overall, "pass");
+    }
+
+    #[tokio::test]
+    async fn pauses_before_breakpoint_step() {
+        let mut bp = sample_item(1, "breakpoint");
+        bp.breakpoint = true;
+        let items = vec![sample_item(0, "first"), bp, sample_item(2, "third")];
+        let mut call = 0usize;
+        let resp = run_sequence_with(&items, |_item| {
+            call += 1;
+            async move { Ok(serde_json::json!({})) }
+        })
+        .await;
+
+        assert_eq!(call, 1);
+        assert_eq!(resp.steps.len(), 1);
+        assert_eq!(resp.overall, "pass");
+        assert!(!resp.stopped);
+        let pause = resp.pause.expect("pause");
+        assert_eq!(pause.before_position, 1);
+        assert_eq!(pause.message, "breakpoint");
+    }
+
+    #[tokio::test]
+    async fn continue_executes_breakpoint_step() {
+        let mut bp = sample_item(1, "breakpoint");
+        bp.breakpoint = true;
+        let items = vec![sample_item(0, "first"), bp, sample_item(2, "third")];
+        let mut call = 0usize;
+        let resp1 = run_sequence_with(&items, |_item| {
+            call += 1;
+            async move { Ok(serde_json::json!({})) }
+        })
+        .await;
+
+        assert!(resp1.pause.is_some());
+        assert_eq!(call, 1);
+
+        let resp2 = run_sequence_from_with_opts(
+            &items,
+            1,
+            SequenceRunOpts {
+                sn: resp1.sn.clone(),
+                work_order: resp1.work_order.clone(),
+            },
+            resp1.steps,
+            true,
+            |_item| {
+                call += 1;
+                async move { Ok(serde_json::json!({})) }
+            },
+        )
+        .await;
+
+        assert!(resp2.pause.is_none());
+        assert_eq!(call, 3);
+        assert_eq!(resp2.steps.len(), 3);
+        assert_eq!(resp2.overall, "pass");
     }
 
     #[test]

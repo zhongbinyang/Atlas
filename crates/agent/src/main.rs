@@ -10,12 +10,14 @@ mod limits;
 mod executor;
 mod metrics;
 mod register;
+mod sequence_session;
 mod task_slot;
 mod web;
 
 use api::AppState;
 use config::AgentConfig;
 use metrics::MetricsSampler;
+use sequence_session::SequenceSessionSlot;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,6 +52,7 @@ async fn main() {
         files_root: cfg.files_root.clone(),
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
+        sequence_session: SequenceSessionSlot::new(),
     };
 
     let reg = common::RegisterAgentRequest {

@@ -21,8 +21,11 @@ use crate::labview::{
     normalize_fs_path, run_cli,
     LabviewError, LabviewParam,
 };
-use crate::labview_sequence::{queue_items_for_run, run_sequence, SequenceRunOpts};
+use crate::labview_sequence::{
+    queue_items_for_run, run_sequence, SequencePause, SequenceResponse, SequenceRunOpts,
+};
 use crate::metrics::MetricsSampler;
+use crate::sequence_session::{SequenceSession, SequenceSessionSlot};
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
 
@@ -39,6 +42,7 @@ pub struct AppState {
     pub files_root: Option<PathBuf>,
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
+    pub sequence_session: Arc<SequenceSessionSlot>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,6 +184,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/labview/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
         .route("/api/labview/run-sequence", post(labview_run_sequence))
+        .route(
+            "/api/labview/run-sequence/continue",
+            post(labview_run_sequence_continue),
+        )
+        .route(
+            "/api/labview/run-sequence/abort",
+            post(labview_run_sequence_abort),
+        )
         .route("/api/general/delay/run", post(general_delay_run))
         .route(
             "/api/general/delay/register-template",
@@ -845,6 +857,13 @@ async fn general_delay_templates(State(s): State<AppState>) -> impl IntoResponse
     }
 }
 
+fn pause_index(items: &[crate::labview_sequence::QueueItemForRun], pause: &SequencePause) -> usize {
+    items
+        .iter()
+        .position(|i| i.position == pause.before_position)
+        .unwrap_or(0)
+}
+
 async fn labview_run_sequence(
     State(s): State<AppState>,
     body: Option<Json<RunSequenceRequest>>,
@@ -922,8 +941,111 @@ async fn labview_run_sequence(
             .into_response();
     }
 
-    let resp = run_sequence(&s.labview_cli, &s.labview_getinfo, &items, run_opts).await;
+    let resp = run_sequence(
+        &s.labview_cli,
+        &s.labview_getinfo,
+        &items,
+        0,
+        run_opts,
+        Vec::new(),
+        false,
+    )
+    .await;
+
+    if let Some(ref pause) = resp.pause {
+        let next_index = pause_index(&items, pause);
+        s.sequence_session
+            .set(SequenceSession {
+                items,
+                next_index,
+                steps_so_far: resp.steps.clone(),
+                sn: resp.sn.clone(),
+                work_order: resp.work_order.clone(),
+                abort: false,
+            })
+            .await;
+        return (StatusCode::OK, Json(resp)).into_response();
+    }
+
+    s.sequence_session.clear().await;
     s.slot.release().await;
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoResponse {
+    let session = match s.sequence_session.take().await {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "no active sequence session".into(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let resp = run_sequence(
+        &s.labview_cli,
+        &s.labview_getinfo,
+        &session.items,
+        session.next_index,
+        SequenceRunOpts {
+            sn: session.sn.clone(),
+            work_order: session.work_order.clone(),
+        },
+        session.steps_so_far,
+        true,
+    )
+    .await;
+
+    if let Some(ref pause) = resp.pause {
+        let next_index = pause_index(&session.items, pause);
+        s.sequence_session
+            .set(SequenceSession {
+                items: session.items,
+                next_index,
+                steps_so_far: resp.steps.clone(),
+                sn: resp.sn.clone(),
+                work_order: resp.work_order.clone(),
+                abort: false,
+            })
+            .await;
+        return (StatusCode::OK, Json(resp)).into_response();
+    }
+
+    s.sequence_session.clear().await;
+    s.slot.release().await;
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
+    let session = match s.sequence_session.take().await {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "no active sequence session".into(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    s.sequence_session.clear().await;
+    s.slot.release().await;
+
+    let resp = SequenceResponse {
+        overall: "aborted".into(),
+        stopped: true,
+        failed_at: None,
+        steps: session.steps_so_far,
+        sn: session.sn,
+        work_order: session.work_order,
+        pause: None,
+    };
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -963,6 +1085,7 @@ mod tests {
             files_root: None,
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
+            sequence_session: SequenceSessionSlot::new(),
         }
     }
 
@@ -1705,5 +1828,35 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent is busy");
+    }
+
+    #[tokio::test]
+    async fn labview_run_sequence_continue_without_session_409() {
+        let app = router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/run-sequence/continue")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "no active sequence session");
+    }
+
+    #[tokio::test]
+    async fn labview_run_sequence_abort_without_session_409() {
+        let app = router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/labview/run-sequence/abort")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "no active sequence session");
     }
 }
