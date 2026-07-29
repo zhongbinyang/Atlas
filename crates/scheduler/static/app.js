@@ -1,4 +1,5 @@
 const POLL_MS = 2000;
+const dashboardRuntime = window.AtlasDashboardRuntime;
 
 let agents = [];
 let viTemplates = [];
@@ -10,6 +11,12 @@ let filesAgentId = null;
 let filesPath = '';
 let inputsPopoverEl = null;
 let inputsPopoverHideTimer = null;
+
+const requestAgents = dashboardRuntime.createRequestDeduper(async () => {
+  const resp = await fetch('/api/agents');
+  if (!resp.ok) return;
+  agents = await resp.json();
+});
 
 function escapeHtml(str) {
   return String(str)
@@ -146,12 +153,16 @@ async function applyRoute(route) {
   if (route.name === 'sequences') {
     showView('view-sequences');
     await fetchAgents();
+    renderAgents();
+    updateViTemplatesAgentFilter();
     await fetchSequenceTemplates();
     return;
   }
   if (route.name === 'functions') {
     showView('view-functions');
     await fetchAgents();
+    renderAgents();
+    updateViTemplatesAgentFilter();
     await fetchViTemplates();
     return;
   }
@@ -163,14 +174,11 @@ async function applyRoute(route) {
   }
   showView('view-machines');
   await fetchAgents();
+  renderAgents();
 }
 
 async function fetchAgents() {
-  const resp = await fetch('/api/agents');
-  if (!resp.ok) return;
-  agents = await resp.json();
-  renderAgents();
-  updateViTemplatesAgentFilter();
+  await requestAgents();
 }
 
 function formatByteSize(bytes) {
@@ -461,33 +469,124 @@ function statusLabel(a) {
   return a.busy ? '在线·忙碌' : '在线·空闲';
 }
 
+function createAgentCard() {
+  const card = document.createElement('button');
+  card.type = 'button';
+
+  const title = document.createElement('div');
+  title.className = 'agent-card-title';
+  const meta = document.createElement('div');
+  meta.className = 'agent-card-meta mono';
+  const status = document.createElement('div');
+  status.className = 'agent-card-status';
+  const dot = document.createElement('span');
+  const statusText = document.createElement('span');
+  status.append(dot, statusText);
+  const metrics = document.createElement('div');
+  metrics.className = 'agent-card-metrics';
+  const cpu = document.createElement('span');
+  const memory = document.createElement('span');
+  metrics.append(cpu, memory);
+  card.append(title, meta, status, metrics);
+  card._atlasFields = { title, meta, dot, statusText, cpu, memory };
+  card.addEventListener('click', () => {
+    setHash('agents/' + encodeURIComponent(card.dataset.agentId));
+  });
+  return card;
+}
+
+function updateAgentCard(card, agent) {
+  const kind = agentStatusKind(agent);
+  const fields = card._atlasFields;
+  card.dataset.agentId = agent.id;
+  card.className = 'agent-card agent-card-' + kind;
+  fields.title.textContent = agent.name;
+  fields.meta.textContent = agent.ip + ':' + agent.port;
+  fields.dot.className = 'dot ' + kind;
+  fields.statusText.textContent = statusLabel(agent);
+  fields.cpu.textContent = 'CPU ' + agent.cpu_percent.toFixed(1) + '%';
+  fields.memory.textContent = '内存 ' + agent.memory_percent.toFixed(1) + '%';
+}
+
 function renderAgents() {
   const grid = document.getElementById('agents-grid');
   const empty = document.getElementById('agents-empty');
   if (!grid) return;
-  grid.innerHTML = '';
-  if (!agents.length) {
-    empty.hidden = false;
-    return;
-  }
-  empty.hidden = true;
-  for (const a of agents) {
-    const kind = agentStatusKind(a);
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'agent-card agent-card-' + kind;
-    card.innerHTML =
-      '<div class="agent-card-title">' + escapeHtml(a.name) + '</div>' +
-      '<div class="agent-card-meta mono">' + escapeHtml(a.ip + ':' + a.port) + '</div>' +
-      '<div class="agent-card-status"><span class="dot ' + kind + '"></span>' +
-      escapeHtml(statusLabel(a)) + '</div>' +
-      '<div class="agent-card-metrics">' +
-      '<span>CPU ' + escapeHtml(String(a.cpu_percent.toFixed(1))) + '%</span>' +
-      '<span>内存 ' + escapeHtml(String(a.memory_percent.toFixed(1))) + '%</span>' +
-      '</div>';
-    card.addEventListener('click', () => setHash('agents/' + encodeURIComponent(a.id)));
-    grid.appendChild(card);
-  }
+  empty.hidden = agents.length !== 0;
+  dashboardRuntime.reconcileKeyedChildren(grid, agents, {
+    getKey: (agent) => agent.id,
+    getNodeKey: (card) => card.dataset.agentId,
+    createNode: createAgentCard,
+    updateNode: updateAgentCard,
+  });
+}
+
+function createDetailField(label, mono) {
+  const field = document.createElement('div');
+  const labelEl = document.createElement('span');
+  labelEl.className = 'label';
+  labelEl.textContent = label;
+  const value = document.createElement('div');
+  if (mono) value.className = 'mono';
+  field.append(labelEl, value);
+  return { field, value };
+}
+
+function ensureAgentDetailFields() {
+  const bar = document.getElementById('agent-detail-status');
+  if (bar._atlasFields) return bar._atlasFields;
+
+  const status = createDetailField('状态', false);
+  const statusDot = document.createElement('span');
+  const statusText = document.createElement('span');
+  status.value.append(statusDot, document.createTextNode(' '), statusText);
+  const address = createDetailField('地址', true);
+  const cpu = createDetailField('CPU', true);
+  const memory = createDetailField('内存', true);
+  const busy = createDetailField('忙碌', false);
+  const lastSeen = createDetailField('最近见面', true);
+  bar.append(
+    status.field,
+    address.field,
+    cpu.field,
+    memory.field,
+    busy.field,
+    lastSeen.field,
+  );
+  bar._atlasFields = {
+    statusDot,
+    statusText,
+    address: address.value,
+    cpu: cpu.value,
+    memory: memory.value,
+    busy: busy.value,
+    lastSeen: lastSeen.value,
+  };
+  return bar._atlasFields;
+}
+
+function ensureAgentDetailActions() {
+  const actions = document.getElementById('agent-detail-actions');
+  if (actions._atlasButtons) return actions._atlasButtons;
+
+  const shot = document.createElement('button');
+  shot.type = 'button';
+  shot.className = 'btn-primary';
+  shot.id = 'detail-shot';
+  shot.textContent = '截图';
+  const history = document.createElement('button');
+  history.type = 'button';
+  history.className = 'btn-sm';
+  history.id = 'detail-history';
+  history.textContent = '历史';
+  const files = document.createElement('button');
+  files.type = 'button';
+  files.className = 'btn-sm';
+  files.id = 'detail-files';
+  files.textContent = '文件';
+  actions.append(shot, history, files);
+  actions._atlasButtons = { shot, history, files };
+  return actions._atlasButtons;
 }
 
 function renderAgentDetail(agentId) {
@@ -497,29 +596,23 @@ function renderAgentDetail(agentId) {
     return;
   }
   document.getElementById('agent-detail-name').textContent = a.name;
-  const bar = document.getElementById('agent-detail-status');
-  bar.className = 'status-rail';
-  const seen = a.last_seen_at ? escapeHtml(a.last_seen_at) : '—';
-  bar.innerHTML =
-    '<div><span class="label">状态</span><div><span class="dot ' + agentStatusKind(a) + '"></span> ' +
-    escapeHtml(statusLabel(a)) + '</div></div>' +
-    '<div><span class="label">地址</span><div class="mono">' + escapeHtml(a.ip + ':' + a.port) + '</div></div>' +
-    '<div><span class="label">CPU</span><div class="mono">' + escapeHtml(a.cpu_percent.toFixed(1)) + '%</div></div>' +
-    '<div><span class="label">内存</span><div class="mono">' + escapeHtml(a.memory_percent.toFixed(1)) + '%</div></div>' +
-    '<div><span class="label">忙碌</span><div>' + (a.busy ? '是' : '否') + '</div></div>' +
-    '<div><span class="label">最近见面</span><div class="mono">' + seen + '</div></div>';
-  const actions = document.getElementById('agent-detail-actions');
+  const fields = ensureAgentDetailFields();
+  fields.statusDot.className = 'dot ' + agentStatusKind(a);
+  fields.statusText.textContent = statusLabel(a);
+  fields.address.textContent = a.ip + ':' + a.port;
+  fields.cpu.textContent = a.cpu_percent.toFixed(1) + '%';
+  fields.memory.textContent = a.memory_percent.toFixed(1) + '%';
+  fields.busy.textContent = a.busy ? '是' : '否';
+  fields.lastSeen.textContent = a.last_seen_at || '—';
+
+  const buttons = ensureAgentDetailActions();
   const offline = a.status === 'offline';
-  const dis = offline ? ' disabled' : '';
-  actions.innerHTML =
-    '<button type="button" class="btn-primary" id="detail-shot"' + dis + '>截图</button>' +
-    '<button type="button" class="btn-sm" id="detail-history"' + dis + '>历史</button>' +
-    '<button type="button" class="btn-sm" id="detail-files"' + dis + '>文件</button>';
-  if (!offline) {
-    document.getElementById('detail-shot').onclick = () => takeScreenshot(a.id);
-    document.getElementById('detail-history').onclick = () => openHistory(a.id);
-    document.getElementById('detail-files').onclick = () => openFiles(a.id);
-  }
+  buttons.shot.disabled = offline;
+  buttons.history.disabled = offline;
+  buttons.files.disabled = offline;
+  buttons.shot.onclick = offline ? null : () => takeScreenshot(a.id);
+  buttons.history.onclick = offline ? null : () => openHistory(a.id);
+  buttons.files.onclick = offline ? null : () => openFiles(a.id);
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
@@ -560,6 +653,22 @@ window.addEventListener('hashchange', () => applyRoute(parseRoute()));
 
 async function refreshCurrent() {
   await applyRoute(parseRoute());
+}
+
+async function refreshDynamic() {
+  const route = parseRoute();
+  if (route.name !== 'machines' && route.name !== 'agent') return;
+
+  try {
+    await fetchAgents();
+    const currentRoute = parseRoute();
+    if (currentRoute.name !== route.name) return;
+    if (route.name === 'agent' && currentRoute.agentId !== route.agentId) return;
+    if (route.name === 'agent') renderAgentDetail(route.agentId);
+    else renderAgents();
+  } catch (error) {
+    console.error('automatic refresh failed', error);
+  }
 }
 
 function updateViTemplatesAgentFilter() {
@@ -832,5 +941,12 @@ async function deleteSequenceTemplate(t) {
 document.getElementById('vi-templates-agent-filter').addEventListener('change', fetchViTemplates);
 document.getElementById('vi-templates-source-filter').addEventListener('change', fetchViTemplates);
 
-applyRoute(parseRoute());
-setInterval(refreshCurrent, POLL_MS);
+const refreshController = dashboardRuntime.createRefreshController({
+  delayMs: POLL_MS,
+  document,
+  refresh: refreshDynamic,
+});
+
+applyRoute(parseRoute())
+  .catch((error) => console.error('initial dashboard load failed', error))
+  .finally(() => refreshController.start());
