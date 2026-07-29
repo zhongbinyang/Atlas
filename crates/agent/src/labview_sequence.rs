@@ -7,8 +7,11 @@ use crate::labview::{
     build_run_args, ensure_vi, error_message, inputs_to_cli_object, normalize_fs_path, run_cli,
     LabviewError, LabviewParam,
 };
+use crate::limits::{
+    extract_sn_from_outputs, judge_limits, parse_limits_json, LimitRule, StepJudge,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct QueueItemForRun {
     pub position: usize,
     pub queue_item_id: String,
@@ -19,6 +22,10 @@ pub struct QueueItemForRun {
     pub inputs: Value,
     pub show_front_panel: bool,
     pub timeout_secs: Option<u64>,
+    pub enabled: bool,
+    pub breakpoint: bool,
+    pub fail_policy: String,
+    pub limits: Vec<LimitRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +35,11 @@ pub struct SequenceStepResult {
     pub template_id: String,
     pub name: String,
     pub ok: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measured: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,6 +51,112 @@ pub struct SequenceResponse {
     pub stopped: bool,
     pub failed_at: Option<usize>,
     pub steps: Vec<SequenceStepResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_order: Option<String>,
+    pub overall: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SequenceRunOpts {
+    pub sn: Option<String>,
+    pub work_order: Option<String>,
+}
+
+fn parse_limits_from_item(item: &Value) -> Result<Vec<LimitRule>, String> {
+    if let Some(v) = item.get("limits") {
+        if v.is_array() {
+            return serde_json::from_value(v.clone()).map_err(|e| e.to_string());
+        }
+        if let Some(s) = v.as_str() {
+            return parse_limits_json(s);
+        }
+    }
+    if let Some(s) = item.get("limits_json").and_then(|v| v.as_str()) {
+        return parse_limits_json(s);
+    }
+    Ok(vec![])
+}
+
+fn normalize_fail_policy(raw: &str) -> String {
+    if raw == "continue" {
+        "continue".into()
+    } else {
+        "stop".into()
+    }
+}
+
+fn judge_to_status(judge: &StepJudge) -> String {
+    match judge {
+        StepJudge::Ok => "ok".into(),
+        StepJudge::Pass => "pass".into(),
+        StepJudge::Fail { .. } => "fail".into(),
+        StepJudge::Error { .. } => "error".into(),
+    }
+}
+
+fn status_ok(status: &str) -> bool {
+    matches!(status, "pass" | "ok" | "skipped")
+}
+
+fn judge_message(judge: &StepJudge) -> Option<String> {
+    match judge {
+        StepJudge::Fail { message } | StepJudge::Error { message } => Some(message.clone()),
+        _ => None,
+    }
+}
+
+fn measured_from_limits(limits: &[LimitRule], outputs: &Value) -> Option<Value> {
+    if limits.is_empty() {
+        return None;
+    }
+    let root = outputs.get("outputs").unwrap_or(outputs);
+    let mut map = serde_json::Map::new();
+    for rule in limits {
+        if let Some(v) = root.get(&rule.output) {
+            map.insert(rule.output.clone(), v.clone());
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(Value::Object(map))
+    }
+}
+
+fn limits_value(rules: &[LimitRule]) -> Option<Value> {
+    if rules.is_empty() {
+        None
+    } else {
+        Some(Value::Array(
+            rules
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "output": r.output,
+                        "min": r.min,
+                        "max": r.max,
+                        "unit": r.unit,
+                    })
+                })
+                .collect(),
+        ))
+    }
+}
+
+fn compute_overall(steps: &[SequenceStepResult]) -> String {
+    if steps.iter().any(|s| s.status == "fail") {
+        "fail".into()
+    } else if steps.iter().any(|s| s.status == "error") {
+        "error".into()
+    } else {
+        "pass".into()
+    }
+}
+
+fn should_stop_on_status(status: &str, fail_policy: &str) -> bool {
+    matches!(status, "fail" | "error") && fail_policy != "continue"
 }
 
 pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String> {
@@ -87,15 +205,28 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             .get("show_front_panel")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let timeout_secs = item
-            .get("timeout_secs")
-            .and_then(|v| {
-                if v.is_null() {
-                    None
-                } else {
-                    v.as_u64().or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
-                }
-            });
+        let timeout_secs = item.get("timeout_secs").and_then(|v| {
+            if v.is_null() {
+                None
+            } else {
+                v.as_u64()
+                    .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
+            }
+        });
+        let enabled = item
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let breakpoint = item
+            .get("breakpoint")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let fail_policy = normalize_fail_policy(
+            item.get("fail_policy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("stop"),
+        );
+        let limits = parse_limits_from_item(item)?;
         out.push(QueueItemForRun {
             position,
             queue_item_id,
@@ -106,13 +237,21 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             inputs,
             show_front_panel,
             timeout_secs,
+            enabled,
+            breakpoint,
+            fail_policy,
+            limits,
         });
     }
     out.sort_by_key(|i| i.position);
     Ok(out)
 }
 
-pub async fn run_sequence_with<F, Fut>(items: &[QueueItemForRun], mut run_one: F) -> SequenceResponse
+pub async fn run_sequence_with_opts<F, Fut>(
+    items: &[QueueItemForRun],
+    opts: SequenceRunOpts,
+    mut run_one: F,
+) -> SequenceResponse
 where
     F: FnMut(&QueueItemForRun) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
@@ -120,19 +259,54 @@ where
     let mut steps = Vec::new();
     let mut stopped = false;
     let mut failed_at = None;
+    let mut sn = opts.sn;
+    let work_order = opts.work_order;
 
     for (i, item) in items.iter().enumerate() {
+        if !item.enabled {
+            steps.push(SequenceStepResult {
+                position: item.position,
+                queue_item_id: item.queue_item_id.clone(),
+                template_id: item.template_id.clone(),
+                name: item.name.clone(),
+                ok: true,
+                status: "skipped".into(),
+                measured: None,
+                limits: limits_value(&item.limits),
+                result: None,
+                error: None,
+            });
+            continue;
+        }
+
         match run_one(item).await {
             Ok(result) => {
+                if let Some(extracted) = extract_sn_from_outputs(&result) {
+                    sn = Some(extracted);
+                }
+
+                let judge = judge_limits(&item.limits, &result);
+                let status = judge_to_status(&judge);
+                let ok = status_ok(&status);
+
                 steps.push(SequenceStepResult {
                     position: item.position,
                     queue_item_id: item.queue_item_id.clone(),
                     template_id: item.template_id.clone(),
                     name: item.name.clone(),
-                    ok: true,
+                    ok,
+                    status: status.clone(),
+                    measured: measured_from_limits(&item.limits, &result),
+                    limits: limits_value(&item.limits),
                     result: Some(result),
-                    error: None,
+                    error: judge_message(&judge),
                 });
+
+                if should_stop_on_status(&status, &item.fail_policy) {
+                    stopped = true;
+                    failed_at = Some(i);
+                    break;
+                }
             }
             Err(err) => {
                 steps.push(SequenceStepResult {
@@ -141,21 +315,48 @@ where
                     template_id: item.template_id.clone(),
                     name: item.name.clone(),
                     ok: false,
+                    status: "error".into(),
+                    measured: None,
+                    limits: limits_value(&item.limits),
                     result: None,
                     error: Some(err),
                 });
-                stopped = true;
-                failed_at = Some(i);
-                break;
+
+                if should_stop_on_status("error", &item.fail_policy) {
+                    stopped = true;
+                    failed_at = Some(i);
+                    break;
+                }
             }
         }
     }
+
+    let overall = compute_overall(&steps);
 
     SequenceResponse {
         stopped,
         failed_at,
         steps,
+        sn,
+        work_order,
+        overall,
     }
+}
+
+pub async fn run_sequence_with<F, Fut>(items: &[QueueItemForRun], run_one: F) -> SequenceResponse
+where
+    F: FnMut(&QueueItemForRun) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    run_sequence_with_opts(
+        items,
+        SequenceRunOpts {
+            sn: None,
+            work_order: None,
+        },
+        run_one,
+    )
+    .await
 }
 
 pub async fn run_sequence(
@@ -166,12 +367,19 @@ pub async fn run_sequence(
     let cli = cli.to_path_buf();
     let getinfo = getinfo.to_path_buf();
     let items = items.to_vec();
-    run_sequence_with(&items, |item| {
-        let cli = cli.clone();
-        let getinfo = getinfo.clone();
-        let item = item.clone();
-        async move { run_one_step(&cli, &getinfo, &item).await }
-    })
+    run_sequence_with_opts(
+        &items,
+        SequenceRunOpts {
+            sn: None,
+            work_order: None,
+        },
+        |item| {
+            let cli = cli.clone();
+            let getinfo = getinfo.clone();
+            let item = item.clone();
+            async move { run_one_step(&cli, &getinfo, &item).await }
+        },
+    )
     .await
 }
 
@@ -227,7 +435,136 @@ mod tests {
             inputs: Value::Array(vec![]),
             show_front_panel: false,
             timeout_secs: None,
+            enabled: true,
+            breakpoint: false,
+            fail_policy: "stop".into(),
+            limits: vec![],
         }
+    }
+
+    fn sample_limit() -> LimitRule {
+        LimitRule {
+            output: "Power_dBm".into(),
+            min: Some(-5.0),
+            max: Some(3.0),
+            unit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn skips_disabled_steps() {
+        let mut disabled = sample_item(0, "disabled");
+        disabled.enabled = false;
+        let items = vec![disabled, sample_item(1, "enabled")];
+        let mut call = 0usize;
+        let resp = run_sequence_with(&items, |item| {
+            call += 1;
+            let name = item.name.clone();
+            async move {
+                Ok(serde_json::json!({ "name": name }))
+            }
+        })
+        .await;
+
+        assert_eq!(call, 1);
+        assert_eq!(resp.steps.len(), 2);
+        assert_eq!(resp.steps[0].status, "skipped");
+        assert!(resp.steps[0].ok);
+        assert_eq!(resp.steps[1].status, "ok");
+        assert_eq!(resp.overall, "pass");
+    }
+
+    #[tokio::test]
+    async fn fail_policy_stop_halts_on_limit_fail() {
+        let mut first = sample_item(0, "first");
+        first.limits = vec![sample_limit()];
+        let items = vec![first, sample_item(1, "second")];
+        let mut call = 0usize;
+        let resp = run_sequence_with(&items, |_item| {
+            call += 1;
+            async move { Ok(serde_json::json!({ "Power_dBm": 4.0 })) }
+        })
+        .await;
+
+        assert_eq!(call, 1);
+        assert!(resp.stopped);
+        assert_eq!(resp.failed_at, Some(0));
+        assert_eq!(resp.steps.len(), 1);
+        assert_eq!(resp.steps[0].status, "fail");
+        assert!(!resp.steps[0].ok);
+        assert_eq!(resp.overall, "fail");
+    }
+
+    #[tokio::test]
+    async fn fail_policy_continue_runs_next() {
+        let mut first = sample_item(0, "first");
+        first.limits = vec![sample_limit()];
+        first.fail_policy = "continue".into();
+        let items = vec![first, sample_item(1, "second")];
+        let mut call = 0usize;
+        let resp = run_sequence_with(&items, |_item| {
+            call += 1;
+            async move { Ok(serde_json::json!({ "Power_dBm": 4.0 })) }
+        })
+        .await;
+
+        assert_eq!(call, 2);
+        assert!(!resp.stopped);
+        assert_eq!(resp.steps.len(), 2);
+        assert_eq!(resp.steps[0].status, "fail");
+        assert_eq!(resp.steps[1].status, "ok");
+        assert_eq!(resp.overall, "fail");
+    }
+
+    #[tokio::test]
+    async fn sn_from_step_output_when_opts_empty() {
+        let items = vec![sample_item(0, "a")];
+        let resp = run_sequence_with_opts(
+            &items,
+            SequenceRunOpts {
+                sn: None,
+                work_order: None,
+            },
+            |_item| async move { Ok(serde_json::json!({ "SN": "DUT1" })) },
+        )
+        .await;
+
+        assert_eq!(resp.sn.as_deref(), Some("DUT1"));
+        assert_eq!(resp.overall, "pass");
+    }
+
+    #[tokio::test]
+    async fn missing_sn_still_runs() {
+        let items = vec![sample_item(0, "a"), sample_item(1, "b")];
+        let resp = run_sequence_with_opts(
+            &items,
+            SequenceRunOpts {
+                sn: None,
+                work_order: None,
+            },
+            |item| {
+                let name = item.name.clone();
+                async move { Ok(serde_json::json!({ "name": name })) }
+            },
+        )
+        .await;
+
+        assert!(resp.sn.is_none());
+        assert_eq!(resp.overall, "pass");
+        assert_eq!(resp.steps.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_limits_status_ok() {
+        let items = vec![sample_item(0, "a")];
+        let resp = run_sequence_with(&items, |_item| {
+            async move { Ok(serde_json::json!({ "x": 1 })) }
+        })
+        .await;
+
+        assert_eq!(resp.steps[0].status, "ok");
+        assert!(resp.steps[0].ok);
+        assert_eq!(resp.overall, "pass");
     }
 
     #[tokio::test]
@@ -255,8 +592,11 @@ mod tests {
         assert_eq!(resp.failed_at, Some(1));
         assert_eq!(resp.steps.len(), 2);
         assert!(resp.steps[0].ok);
+        assert_eq!(resp.steps[0].status, "ok");
         assert!(!resp.steps[1].ok);
+        assert_eq!(resp.steps[1].status, "error");
         assert_eq!(resp.steps[1].error.as_deref(), Some("step failed"));
+        assert_eq!(resp.overall, "error");
         assert_eq!(call, 2);
     }
 
@@ -273,5 +613,48 @@ mod tests {
         assert!(resp.failed_at.is_none());
         assert_eq!(resp.steps.len(), 2);
         assert!(resp.steps.iter().all(|s| s.ok));
+        assert_eq!(resp.overall, "pass");
+    }
+
+    #[test]
+    fn queue_items_for_run_parses_new_fields_with_defaults() {
+        let body = serde_json::json!({
+            "items": [{
+                "position": 0,
+                "id": "q1",
+                "vi_template_id": 42,
+                "name": "Add",
+                "vi_path": "C:\\x\\Add.vi"
+            }]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].enabled);
+        assert!(!items[0].breakpoint);
+        assert_eq!(items[0].fail_policy, "stop");
+        assert!(items[0].limits.is_empty());
+    }
+
+    #[test]
+    fn queue_items_for_run_parses_limits_array_and_meta() {
+        let body = serde_json::json!({
+            "items": [{
+                "position": 0,
+                "id": "q1",
+                "vi_template_id": 42,
+                "name": "Add",
+                "vi_path": "C:\\x\\Add.vi",
+                "enabled": false,
+                "breakpoint": true,
+                "fail_policy": "continue",
+                "limits": [{"output":"Power_dBm","min":-5.0,"max":3.0}]
+            }]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert!(!items[0].enabled);
+        assert!(items[0].breakpoint);
+        assert_eq!(items[0].fail_policy, "continue");
+        assert_eq!(items[0].limits.len(), 1);
+        assert_eq!(items[0].limits[0].output, "Power_dBm");
     }
 }
