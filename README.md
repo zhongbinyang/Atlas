@@ -76,7 +76,9 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 
 1. **Agent「序列」页**：左「**中心全部功能**」→ 右「选定」（同一模板可重复加入；支持拖拽与上下移动排序）。
 2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；可选用任意中心模板；增删改序后自动 `PUT` 保存。
-3. **按序执行**：`POST /api/labview/run-sequence` 在 Agent 服务端串行试跑各步，遇错即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
+3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`breakpoint`（执行**前**暂停）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec 上下限；API 字段名 `limits`，库表 `limits_json`）。
+4. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
+5. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI 运行栏提供 SN/工单、开始/继续/中止与总体结果。
 
 ### WebUI 入口
 
@@ -91,7 +93,7 @@ VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器
 
 ### 相关 API（摘要）
 
-- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/all-templates`（中心全量，工作台与序列共用），`GET/PUT /api/labview/run-queue`（代理中心队列；可引用任意中心模板），`POST /api/labview/run-sequence`（串行试跑，遇错停止）。
+- Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`（重命名等，代理中心 `PATCH`），`GET /api/labview/all-templates`（中心全量，工作台与序列共用），`GET/PUT /api/labview/run-queue`（代理中心队列；项含 `enabled`/`breakpoint`/`fail_policy`/`limits`），`POST /api/labview/run-sequence`（可选 `sn`/`work_order`；串行执行、逐步判定），`POST /api/labview/run-sequence/continue|abort`（断点续跑/中止）。
 - 中心：`POST /api/agents/{id}/labview/inspect|run`，`GET/POST/PATCH/DELETE /api/vi-templates`（注册 `name` 必填；列表 `?agent_id=` 按 **来源机台** 筛选），`POST /api/vi-templates/{id}/distribute`（API 仍可用；WebUI 不再暴露），`POST /api/vi-templates/{id}/dispatch`（任务队列下发），`GET/PUT /api/agents/{id}/vi-run-queue`（每机有序队列）。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。

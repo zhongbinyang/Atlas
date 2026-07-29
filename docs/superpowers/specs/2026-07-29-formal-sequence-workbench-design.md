@@ -1,7 +1,7 @@
 # Design: Formal optical-module sequence workbench (phase 1)
 
 Date: 2026-07-29  
-Status: draft for user review
+Status: approved / implemented
 
 ## Goal
 
