@@ -39,17 +39,17 @@ fn scheduler_and_agent_share_design_tokens() {
     assert_eq!(a, b, "design tokens must match between scheduler and agent");
 
     let expected = [
-        ("--bg", "#e8eef3"),
-        ("--surface", "#f4f7fa"),
-        ("--panel", "#ffffff"),
-        ("--border", "#c5d0db"),
-        ("--text", "#1a2332"),
-        ("--muted", "#5a6b7d"),
-        ("--accent", "#0b3d91"),
-        ("--ok", "#1f8a4c"),
-        ("--busy", "#c47a00"),
-        ("--err", "#c0392b"),
-        ("--radius", "4px"),
+        ("--bg", "#dce4ec"),
+        ("--surface", "#eef3f7"),
+        ("--panel", "#f7fafc"),
+        ("--border", "#b7c4d0"),
+        ("--text", "#15202b"),
+        ("--muted", "#5c6b7a"),
+        ("--accent", "#0a6e7a"),
+        ("--ok", "#1a7f4b"),
+        ("--busy", "#b86a00"),
+        ("--err", "#b33a2b"),
+        ("--radius", "3px"),
     ];
     for (k, v) in expected {
         assert_eq!(a.get(k).map(String::as_str), Some(v), "token {k}");
