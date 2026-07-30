@@ -59,3 +59,29 @@
   回归断言覆盖。
 - Rust 测试输出仍有仓库既有的 unused/dead-code 警告；本任务未引入新的 Rust
   生产代码。
+
+## 独立评审 Important 修复证据
+
+### RED
+
+- 命令：`node --test crates/scheduler/tests/dashboard_runtime.test.js`
+  - 输出：26 tests，25 passed，1 failed。
+  - 失败原因：焦点控制器错误地将 `aria-hidden="true"` 父容器中的按钮作为首个
+    可聚焦控件。
+- 命令：`cargo test -p scheduler --test static_tokens`
+  - 输出：3 tests，2 passed，1 failed。
+  - 失败原因：文件面包屑仍创建无 `href` 的 `a`，不具备原生键盘按钮语义。
+
+### GREEN
+
+- 命令：`node --test crates/scheduler/tests/dashboard_runtime.test.js`
+  - 输出：26 passed，0 failed。
+- 命令：`cargo test -p scheduler --test static_tokens`
+  - 输出：3 passed，0 failed。
+- 命令：`node --check crates/scheduler/static/dashboard-runtime.js`、
+  `node --check crates/scheduler/static/app.js`、`git diff --check`
+  - 输出：全部 exit 0。
+
+### 修复提交
+
+`73eb290b96a52efb81cbc4fe840ad02218c564c9`
