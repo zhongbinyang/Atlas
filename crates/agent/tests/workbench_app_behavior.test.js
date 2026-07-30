@@ -116,6 +116,30 @@ test('advanced details uses inert while native summary keeps built-in focusabili
   assert.deepEqual(summary.removedAttributes, ['tabindex', 'tabindex']);
 });
 
+test('workbench text synchronization only assigns when visible text changes', () => {
+  let assignments = 0;
+  let value = '未变化';
+  const element = {};
+  Object.defineProperty(element, 'textContent', {
+    get() {
+      return value;
+    },
+    set(next) {
+      assignments += 1;
+      value = next;
+    },
+  });
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('setTextIfChanged'), context);
+
+  assert.equal(context.setTextIfChanged(element, '未变化'), false);
+  assert.equal(assignments, 0);
+  assert.equal(context.setTextIfChanged(element, '已变化'), true);
+  assert.equal(assignments, 1);
+  assert.equal(value, '已变化');
+});
+
 test('VI status copy distinguishes not run, run awaiting Name, and ready to register', () => {
   const context = {};
   vm.createContext(context);

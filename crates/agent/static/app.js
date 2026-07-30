@@ -320,6 +320,12 @@ function syncLvTemplateLoadButtons(disabled) {
   });
 }
 
+function setTextIfChanged(element, text) {
+  if (element.textContent === text) return false;
+  element.textContent = text;
+  return true;
+}
+
 function syncLvWorkbench() {
   const snapshot = viWorkbench.snapshot();
   const controls = snapshot.controls;
@@ -342,29 +348,29 @@ function syncLvWorkbench() {
   setActionState(document.getElementById('lv-register-btn'), controls.register);
 
   const stageMessage = lvStageMessage(snapshot);
-  document.getElementById('lv-stage-status').textContent = stageMessage;
+  setTextIfChanged(document.getElementById('lv-stage-status'), stageMessage);
   const actionHint = document.getElementById('lv-action-hint');
+  let actionHintText = '';
   if (snapshot.state === 'empty') {
-    actionHint.textContent = '填写 VI 路径后可查询参数';
+    actionHintText = '填写 VI 路径后可查询参数';
   } else if (snapshot.state === 'ready_to_inspect') {
-    actionHint.textContent = '请先查询参数；成功后可试跑和注册';
+    actionHintText = '请先查询参数；成功后可试跑和注册';
   } else if (snapshot.state === 'ready_to_run') {
-    actionHint.textContent = stageMessage;
+    actionHintText = stageMessage;
   } else if (snapshot.state === 'ready_to_register') {
-    actionHint.textContent = '可以注册；也可再次试跑';
+    actionHintText = '可以注册；也可再次试跑';
   } else if (snapshot.pendingAction) {
-    actionHint.textContent = stageMessage + '，请稍候';
-  } else {
-    actionHint.textContent = '';
+    actionHintText = stageMessage + '，请稍候';
   }
-  actionHint.hidden = actionHint.textContent === '';
+  setTextIfChanged(actionHint, actionHintText);
+  actionHint.hidden = actionHintText === '';
   const stageElements = document.querySelectorAll('[data-lv-stage]');
   snapshot.stages.forEach(function (stageState, index) {
     const stage = stageElements[index];
     if (!stage) return;
     stage.dataset.status = stageState.status;
-    stage.querySelector('.lv-stage-state').textContent =
-      lvStageStatusText(stageState.status);
+    setTextIfChanged(stage.querySelector('.lv-stage-state'),
+      lvStageStatusText(stageState.status));
     if (stageState.status === 'current') stage.setAttribute('aria-current', 'step');
     else stage.removeAttribute('aria-current');
   });

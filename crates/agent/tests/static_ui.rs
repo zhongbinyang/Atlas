@@ -94,10 +94,14 @@ fn vi_workbench_exposes_staged_and_accessible_controls() {
         "schema counts need a polite status region"
     );
     assert!(
-        INDEX.contains(
-            "<p id=\"lv-action-hint\" class=\"lv-action-hint\" role=\"status\" aria-live=\"polite\">"
-        ),
-        "disabled VI actions need a visible reason"
+        INDEX.contains("<p id=\"lv-action-hint\" class=\"lv-action-hint\">")
+            && !INDEX.contains(
+                "<p id=\"lv-action-hint\" class=\"lv-action-hint\" role=\"status\" aria-live=\"polite\">"
+            )
+            && INDEX.contains(
+                "<p id=\"lv-stage-status\" class=\"lv-stage-status\" role=\"status\" aria-live=\"polite\">"
+            ),
+        "VI status and action hint must expose exactly one polite live region"
     );
     assert!(
         APP.contains(
@@ -181,6 +185,15 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         APP.contains("snapshot.stages.forEach(function (stageState, index) {"),
         "the stage rail must render runtime-derived naming progress"
     );
+    assert!(
+        APP.contains(
+            "setTextIfChanged(document.getElementById('lv-stage-status'), stageMessage);"
+        ) && APP.contains("setTextIfChanged(actionHint, actionHintText);")
+            && APP.contains(
+                "setTextIfChanged(stage.querySelector('.lv-stage-state'),"
+            ),
+        "VI synchronization must not reassign unchanged visible status text"
+    );
     assert_eq!(
         INDEX.matches("class=\"lv-stage-state\">待处理</span>").count(),
         4,
@@ -192,7 +205,7 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         "the initial current VI stage must expose visible status text"
     );
     assert!(
-        APP.contains("stage.querySelector('.lv-stage-state').textContent =")
+        APP.contains("setTextIfChanged(stage.querySelector('.lv-stage-state'),")
             && APP.contains("lvStageStatusText(stageState.status)"),
         "runtime stage status changes must update visible text"
     );

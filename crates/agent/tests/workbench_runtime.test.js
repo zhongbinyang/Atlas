@@ -221,6 +221,50 @@ test('a successful Run and valid Name move bidirectionally between run and regis
   assert.deepEqual(snapshot.runResult, runResult);
 });
 
+test('failed re-run derives ready to run after Name is cleared while running', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: 'Measure',
+    inputs: [],
+    outputs: [],
+  });
+  runtime.beginRun();
+  const runResult = { status: 'ok', outputs: { reading: 1.2 } };
+  runtime.runSucceeded(runResult);
+  assert.equal(runtime.snapshot().state, 'ready_to_register');
+
+  runtime.beginRun();
+  runtime.inputName('');
+  runtime.actionFailed('run');
+
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.deepEqual(snapshot.runResult, runResult);
+});
+
+test('failed re-run derives ready to register after Name is filled while running', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: '',
+    inputs: [],
+    outputs: [],
+  });
+  runtime.beginRun();
+  const runResult = { status: 'ok', outputs: { reading: 1.2 } };
+  runtime.runSucceeded(runResult);
+  assert.equal(runtime.snapshot().state, 'ready_to_run');
+
+  runtime.beginRun();
+  runtime.inputName('Measure');
+  runtime.actionFailed('run');
+
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_register');
+  assert.deepEqual(snapshot.runResult, runResult);
+});
+
 test('in-flight actions reject duplicate submissions and recover after failure', () => {
   const runtime = createWorkbenchRuntime();
   runtime.inputPath(String.raw`C:\VI\Measure.vi`);

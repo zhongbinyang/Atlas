@@ -260,7 +260,11 @@
 
     function actionFailed(action) {
       if (model.pendingAction !== action) return false;
-      model.state = model.returnState || (model.path ? 'ready_to_inspect' : 'empty');
+      if (action === 'run' && model.runResult !== null) {
+        model.state = hasValidName() ? 'ready_to_register' : 'ready_to_run';
+      } else {
+        model.state = model.returnState || (model.path ? 'ready_to_inspect' : 'empty');
+      }
       model.pendingAction = null;
       model.returnState = null;
       return true;

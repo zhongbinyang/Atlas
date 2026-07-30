@@ -129,16 +129,17 @@
     }
 
     function fallbackTarget(entry) {
-      const configured = entry?.fallback ?? options.fallback;
-      const candidate = typeof configured === 'function'
-        ? configured(current?.dialog || null)
-        : configured;
-      if (isValidFocusTarget(candidate)) return candidate;
       if (current?.dialog) {
         const controls = focusable(current.dialog);
         if (controls.length) return controls[0];
         if (isValidFocusTarget(current.dialog)) return current.dialog;
+        return null;
       }
+      const configured = entry?.fallback ?? options.fallback;
+      const candidate = typeof configured === 'function'
+        ? configured(null)
+        : configured;
+      if (isValidFocusTarget(candidate)) return candidate;
       return null;
     }
 
@@ -172,7 +173,10 @@
       if (current?.dialog === dialog) {
         if (openOptions?.onClose) current.onClose = openOptions.onClose;
         dialog.hidden = false;
-        focusFirst(dialog);
+        const active = documentRef.activeElement;
+        if (!isValidFocusTarget(active) || !(active === dialog || dialog.contains?.(active))) {
+          focusFirst(dialog);
+        }
         return;
       }
 

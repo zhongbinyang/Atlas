@@ -376,6 +376,57 @@ test('dialog controller uses its fallback for disconnected disabled or hidden re
   }
 });
 
+test('dialog controller keeps fallback focus inside the restored parent when a child trigger is invalid', () => {
+  for (const invalidate of [
+    (target) => { target.isConnected = false; },
+    (target) => { target.disabled = true; },
+    (target) => {
+      target.parentElement = {
+        hidden: true,
+        getAttribute() { return null; },
+      };
+    },
+  ]) {
+    const document = createKeyboardDocument();
+    const globalFallback = createFocusable(document);
+    const externalTrigger = createFocusable(document);
+    const parentFirstControl = createFocusable(document);
+    const childTrigger = createFocusable(document);
+    const parentDialog = createDialog(document, [parentFirstControl, childTrigger]);
+    const childDialog = createDialog(document, [createFocusable(document)]);
+    const controller = createDialogController({ document, fallback: globalFallback });
+
+    controller.open(parentDialog, { trigger: externalTrigger });
+    controller.open(childDialog, { parent: parentDialog, trigger: childTrigger });
+    invalidate(childTrigger);
+    controller.close(childDialog);
+
+    assert.equal(parentDialog.hidden, false);
+    assert.equal(document.activeElement, parentFirstControl);
+    assert.equal(globalFallback.focusCount, 0);
+  }
+});
+
+test('dialog controller preserves same-dialog pagination focus until that control is removed', () => {
+  const document = createKeyboardDocument();
+  const externalTrigger = createFocusable(document);
+  const firstControl = createFocusable(document);
+  const pagerButton = createFocusable(document);
+  const dialog = createDialog(document, [firstControl, pagerButton]);
+  const controller = createDialogController({ document });
+
+  controller.open(dialog, { trigger: externalTrigger });
+  document.activeElement = pagerButton;
+  controller.open(dialog, { trigger: pagerButton });
+  assert.equal(document.activeElement, pagerButton);
+  assert.equal(firstControl.focusCount, 1);
+
+  pagerButton.isConnected = false;
+  controller.open(dialog, { trigger: pagerButton });
+  assert.equal(document.activeElement, firstControl);
+  assert.equal(firstControl.focusCount, 2);
+});
+
 test('dialog controller does not retain a cancelled confirmation action for the next confirmation', async () => {
   const document = createKeyboardDocument();
   const trigger = createFocusable(document);
