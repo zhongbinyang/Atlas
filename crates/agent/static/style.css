@@ -701,7 +701,7 @@ th {
   font-size: 0.85rem;
 }
 
-#page-workbench .lv-actions {
+.lv-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;

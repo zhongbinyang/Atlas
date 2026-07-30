@@ -36,6 +36,7 @@
 - `crates/agent/static/index.html`
 - `crates/agent/static/style.css`
 - `crates/agent/tests/workbench_runtime.test.js`
+- `crates/agent/tests/workbench_app_behavior.test.js`
 - `crates/agent/tests/static_ui.rs`
 - `.superpowers/sdd/phase2-task-3-report.md`
 
@@ -107,8 +108,45 @@
   `#page-workbench ...`，不再影响通用工作台。
 - 新增 `crates/agent/tests/workbench_app_behavior.test.js`，执行从产品
   `app.js` 提取的实际清理函数并断言 DOM 结果。
-- `static_ui.rs` 改为要求作用域选择器并显式拒绝三类裸规则，保护通用页面。
+- `static_ui.rs` 要求 VI toolbar 和 mobile action 覆盖使用工作台作用域，同时保留
+  通用工作台依赖的共享 action 基础规则。
 
 ### Follow-up commit
 
 `HEAD` — `fix(agent): address VI workbench review`
+
+## Formal re-review CSS scope fix
+
+### RED
+
+- `cargo test -p agent --test static_ui vi_runtime_loads_before_the_application_and_has_mobile_layout_rules`
+  - 收紧测试的首次尝试因子串匹配误命中 scoped selector 而意外通过，未作为 RED
+    证据；测试改为要求行首精确裸规则后重新运行。
+  - 精确测试得到 0 passed、1 failed，失败消息为
+    `the shared action layout used by the general workbench must remain available`，
+    证明 Base 的共享 `.lv-actions` flex/wrap/gap 被错误收紧。
+
+### GREEN
+
+- 同一 targeted 静态测试：1 passed、0 failed。
+- `node --test crates/agent/tests/workbench_runtime.test.js crates/agent/tests/workbench_app_behavior.test.js`：
+  9 passed、0 failed。
+- `cargo test -p agent --test static_ui`：7 passed、0 failed。
+- `cargo test -p agent`：65 Agent unit tests + 7 static UI tests passed，0 failed。
+- 两个 `node --check` 命令：2 passed、0 failed。
+- `git diff --check`：passed。
+
+### Changes
+
+- 恢复 Base 共享 `.lv-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }`，
+  让通用工作台继续获得原布局。
+- 仅本 Task 新增的 mobile `.lv-actions` / `.lv-actions button` 覆盖保留
+  `#page-workbench` 前缀。
+- 静态测试仅在 `mobile_rules` 内禁止裸 action selector，并断言共享基础规则存在；
+  `.lv-toolbar > *` 仍要求全局 scoped。
+- Changed files 列表补入
+  `crates/agent/tests/workbench_app_behavior.test.js`。
+
+### Follow-up commit
+
+`HEAD` — `fix(agent): preserve shared action layout`

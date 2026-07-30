@@ -162,10 +162,20 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
                 .contains("#page-workbench .lv-actions button {\n    flex: 1 1 8rem;"),
         "responsive VI actions must remain scoped to the VI workbench"
     );
-    for selector in [".lv-toolbar > *", ".lv-actions", ".lv-actions button"] {
+    assert!(
+        STYLE.contains(
+            "\n.lv-actions {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 0.5rem;\n}"
+        ),
+        "the shared action layout used by the general workbench must remain available"
+    );
+    assert!(
+        !has_exact_selector(STYLE, ".lv-toolbar > *"),
+        "the VI toolbar shrink rule must not leak into other workbenches"
+    );
+    for selector in [".lv-actions", ".lv-actions button"] {
         assert!(
-            !has_exact_selector(STYLE, selector),
-            "{selector} must not leak into the general workbench"
+            !has_exact_selector(mobile_rules, selector),
+            "mobile {selector} overrides must not leak into the general workbench"
         );
     }
 }
