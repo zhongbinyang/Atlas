@@ -9,8 +9,15 @@ async function fetchStatus() {
   document.getElementById('metric-cpu').textContent = data.cpu_percent.toFixed(1) + '%';
   document.getElementById('metric-memory').textContent = data.memory_percent.toFixed(1) + '%';
   const busyEl = document.getElementById('metric-busy');
-  busyEl.textContent = data.busy ? '● 执行中' : '● 空闲';
-  busyEl.className = data.busy ? 'is-busy' : 'is-idle';
+  const busyText = data.busy ? '● 执行中' : '● 空闲';
+  const busyClass = data.busy ? 'is-busy' : 'is-idle';
+  busyEl.textContent = busyText;
+  busyEl.className = busyClass;
+  const summaryBusy = document.getElementById('machine-info-busy');
+  if (summaryBusy) {
+    summaryBusy.textContent = busyText;
+    summaryBusy.className = 'machine-info-busy ' + busyClass;
+  }
   document.getElementById('uptime').textContent = formatUptime(data.uptime_secs);
 }
 
@@ -124,24 +131,36 @@ async function registerNow() {
   const msg = document.getElementById('register-msg');
   msg.hidden = false;
   msg.textContent = '注册中…';
-  msg.className = 'msg status-rail-msg';
+  msg.className = 'msg topbar-msg';
   try {
     const resp = await fetch('/api/register-now', { method: 'POST' });
     const data = await resp.json();
     if (resp.ok) {
       msg.textContent = '注册成功';
-      msg.className = 'msg status-rail-msg ok';
+      msg.className = 'msg topbar-msg ok';
     } else {
       msg.textContent = '注册失败: ' + (data.error || resp.status);
-      msg.className = 'msg status-rail-msg err';
+      msg.className = 'msg topbar-msg err';
     }
   } catch (e) {
     msg.textContent = '注册失败: ' + e.message;
-    msg.className = 'msg status-rail-msg err';
+    msg.className = 'msg topbar-msg err';
   }
 }
 
 document.getElementById('register-btn').addEventListener('click', registerNow);
+
+const machineInfo = document.getElementById('machine-info');
+if (machineInfo) {
+  document.addEventListener('click', function (event) {
+    if (!machineInfo.open) return;
+    if (machineInfo.contains(event.target)) return;
+    machineInfo.open = false;
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && machineInfo.open) machineInfo.open = false;
+  });
+}
 
 async function loadLabviewConfig() {
   const resp = await fetch('/api/labview/config');
@@ -1083,16 +1102,36 @@ function filteredSeqRegistered() {
   });
 }
 
+function updateSeqRegisteredCount() {
+  const el = document.getElementById('seq-registered-count');
+  if (!el) return;
+  const total = seqRegistered.length;
+  if (!total) {
+    el.textContent = '(0)';
+    return;
+  }
+  const shown = filteredSeqRegistered().length;
+  el.textContent = shown === total ? '(' + total + ')' : '(' + shown + '/' + total + ')';
+}
+
+function updateSeqTemplatesCount() {
+  const el = document.getElementById('seq-templates-count');
+  if (!el) return;
+  el.textContent = '(' + seqTemplates.length + ')';
+}
+
 function renderSeqRegistered() {
   const tbody = document.getElementById('seq-registered-body');
   tbody.innerHTML = '';
   if (!seqRegistered.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无中心已注册功能</td></tr>';
+    updateSeqRegisteredCount();
     return;
   }
   const list = filteredSeqRegistered();
   if (!list.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">无匹配功能，请调整搜索或筛选</td></tr>';
+    updateSeqRegisteredCount();
     return;
   }
   for (let i = 0; i < list.length; i++) {
@@ -1121,6 +1160,7 @@ function renderSeqRegistered() {
     row.appendChild(actions);
     tbody.appendChild(row);
   }
+  updateSeqRegisteredCount();
 }
 
 async function loadQueue() {
@@ -1179,6 +1219,7 @@ function renderSequenceTemplates() {
   tbody.innerHTML = '';
   if (!seqTemplates.length) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无中心序列模板</td></tr>';
+    updateSeqTemplatesCount();
     return;
   }
   for (let i = 0; i < seqTemplates.length; i++) {
@@ -1200,6 +1241,7 @@ function renderSequenceTemplates() {
     row.appendChild(actions);
     tbody.appendChild(row);
   }
+  updateSeqTemplatesCount();
 }
 
 function resultBadgeHtml(stepResult) {
@@ -1225,7 +1267,7 @@ function renderSeqSelected() {
   }
   seqExpandedIndexes = keep;
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空，从左侧添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
     setSeqControlsDisabled(false);
     return;
   }

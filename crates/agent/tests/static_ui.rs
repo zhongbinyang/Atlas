@@ -28,12 +28,16 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         .expect("a mobile breakpoint for the sequence page");
 
     assert!(
-        style.contains(".seq-col {\n  min-width: 0;\n}"),
-        "sequence columns must be allowed to shrink so only their tables scroll"
+        style.contains("#page-sequence {\n  padding-bottom: 5.5rem;\n  min-width: 0;\n}"),
+        "the sequence page must shrink without page-level overflow"
     );
     assert!(
-        mobile_rules.contains(".seq-columns {\n    grid-template-columns: 1fr;\n  }"),
-        "sequence columns must remain a single column on small screens"
+        style.contains(".seq-queue-section {\n  margin-bottom: 0.75rem;\n  min-width: 0;\n}"),
+        "the execution queue must be allowed to shrink so only its table scrolls"
+    );
+    assert!(
+        style.contains(".seq-drawer {\n  margin-bottom: 0.75rem;"),
+        "registered functions and templates must use collapsible drawers"
     );
     assert!(
         mobile_rules.contains("#page-sequence {\n    padding-bottom: 0;\n  }"),
@@ -50,6 +54,60 @@ fn sequence_page_has_mobile_safe_layout_rules() {
     assert!(
         mobile_rules.contains("#seq-overall {\n    margin-left: 0;\n    flex: 1 1 100%;"),
         "the overall status must wrap below controls on small screens"
+    );
+}
+
+#[test]
+fn sequence_page_uses_collapsed_drawers_around_queue() {
+    assert!(
+        INDEX.contains("<details class=\"seq-drawer\" id=\"seq-registered-drawer\">")
+            && INDEX.contains("<details class=\"seq-drawer\" id=\"seq-templates-drawer\">"),
+        "registered functions and templates must be collapsible drawers"
+    );
+    assert!(
+        !INDEX.contains("id=\"seq-registered-drawer\" open")
+            && !INDEX.contains("id=\"seq-templates-drawer\" open"),
+        "sequence drawers must stay collapsed by default"
+    );
+    assert!(
+        INDEX.contains("<section class=\"seq-queue-section\">"),
+        "the execution queue must remain the primary middle section"
+    );
+    assert!(
+        APP.contains("展开上方「中心全部功能」后添加"),
+        "empty-queue guidance must point to the top drawer"
+    );
+}
+
+#[test]
+fn machine_info_is_collapsed_in_topbar_before_register() {
+    let register_pos = INDEX
+        .find("id=\"register-btn\"")
+        .expect("register button");
+    let machine_pos = INDEX
+        .find("<details class=\"machine-info\" id=\"machine-info\">")
+        .expect("machine info details");
+    assert!(
+        machine_pos < register_pos,
+        "machine info must sit before the re-register button"
+    );
+    assert!(
+        !INDEX.contains("id=\"machine-info\" open"),
+        "machine info must stay collapsed by default"
+    );
+    assert!(
+        INDEX.contains("id=\"machine-info-busy\"")
+            && APP.contains("machine-info-busy"),
+        "summary should mirror busy/idle without opening the panel"
+    );
+    assert!(
+        INDEX.contains("id=\"hostname\"")
+            && INDEX.contains("id=\"ip\"")
+            && INDEX.contains("id=\"uptime\"")
+            && INDEX.contains("id=\"metric-cpu\"")
+            && INDEX.contains("id=\"metric-memory\"")
+            && INDEX.contains("id=\"metric-busy\""),
+        "status field ids must remain for fetchStatus"
     );
 }
 

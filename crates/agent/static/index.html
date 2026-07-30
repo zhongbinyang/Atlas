@@ -21,38 +21,45 @@
         <button type="button" class="tab" data-page="sequence">序列</button>
       </nav>
     </div>
-    <button id="register-btn" type="button" class="btn-primary">重新注册</button>
+    <div class="topbar-right">
+      <details class="machine-info" id="machine-info">
+        <summary>
+          机台信息
+          <span id="machine-info-busy" class="machine-info-busy is-idle">● 空闲</span>
+        </summary>
+        <div id="status-section" class="machine-info-panel status-rail" role="region" aria-label="机台信息">
+          <div>
+            <span class="label">主机名</span>
+            <div id="hostname" class="mono">—</div>
+          </div>
+          <div>
+            <span class="label">IP</span>
+            <div id="ip" class="mono">—</div>
+          </div>
+          <div>
+            <span class="label">运行时间</span>
+            <div id="uptime">—</div>
+          </div>
+          <div>
+            <span class="label">CPU</span>
+            <div id="metric-cpu" class="mono">—</div>
+          </div>
+          <div>
+            <span class="label">内存</span>
+            <div id="metric-memory" class="mono">—</div>
+          </div>
+          <div>
+            <span class="label">忙碌</span>
+            <div id="metric-busy">—</div>
+          </div>
+        </div>
+      </details>
+      <button id="register-btn" type="button" class="btn-primary">重新注册</button>
+      <p id="register-msg" class="msg topbar-msg" hidden></p>
+    </div>
   </header>
 
   <main class="page">
-    <section id="status-section" class="status-rail">
-      <div>
-        <span class="label">主机名</span>
-        <div id="hostname" class="mono">—</div>
-      </div>
-      <div>
-        <span class="label">IP</span>
-        <div id="ip" class="mono">—</div>
-      </div>
-      <div>
-        <span class="label">运行时间</span>
-        <div id="uptime">—</div>
-      </div>
-      <div>
-        <span class="label">CPU</span>
-        <div id="metric-cpu" class="mono">—</div>
-      </div>
-      <div>
-        <span class="label">内存</span>
-        <div id="metric-memory" class="mono">—</div>
-      </div>
-      <div>
-        <span class="label">忙碌</span>
-        <div id="metric-busy">—</div>
-      </div>
-      <p id="register-msg" class="msg status-rail-msg" hidden></p>
-    </section>
-
     <div id="page-workbench">
     <section id="labview-section">
       <div class="lv-heading">
@@ -249,9 +256,13 @@
     <div id="page-sequence" hidden>
       <section class="seq-panel">
         <h2>执行序列</h2>
-        <div class="seq-columns">
-          <div class="seq-col">
-            <h3>中心全部功能</h3>
+
+        <details class="seq-drawer" id="seq-registered-drawer">
+          <summary>
+            中心全部功能
+            <span id="seq-registered-count" class="seq-drawer-count"></span>
+          </summary>
+          <div class="seq-drawer-body">
             <div class="seq-toolbar">
               <input id="seq-registered-search" type="search" aria-label="搜索中心功能" placeholder="搜索名称 / ID / 机台" />
               <select id="seq-registered-filter" aria-label="按类型筛选">
@@ -260,7 +271,7 @@
                 <option value="general">通用</option>
               </select>
             </div>
-            <div class="table-scroll">
+            <div class="table-scroll seq-drawer-scroll">
               <table>
                 <thead>
                   <tr>
@@ -278,50 +289,58 @@
               </table>
             </div>
           </div>
-          <div class="seq-col">
-            <h3>执行顺序</h3>
-            <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略，并查看实测与原始返回</p>
-            <div class="table-scroll">
-              <table class="seq-selected-table">
+        </details>
+
+        <section class="seq-queue-section">
+          <h3>执行顺序</h3>
+          <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略，并查看实测与原始返回</p>
+          <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
+          <div class="table-scroll seq-queue-scroll">
+            <table class="seq-selected-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>启用</th>
+                  <th>断点</th>
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>结果</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="seq-selected-body">
+                <tr><td colspan="7" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p id="seq-msg" class="msg" hidden></p>
+        </section>
+
+        <details class="seq-drawer" id="seq-templates-drawer">
+          <summary>
+            中心序列模板
+            <span id="seq-templates-count" class="seq-drawer-count"></span>
+          </summary>
+          <div class="seq-drawer-body">
+            <div class="table-scroll seq-drawer-scroll">
+              <table>
                 <thead>
                   <tr>
-                    <th>#</th>
-                    <th>启用</th>
-                    <th>断点</th>
+                    <th>ID</th>
                     <th>名称</th>
-                    <th>类型</th>
-                    <th>结果</th>
+                    <th>步骤数</th>
+                    <th>来源机台</th>
                     <th>操作</th>
                   </tr>
                 </thead>
-                <tbody id="seq-selected-body">
-                  <tr><td colspan="7" class="empty">队列为空，从左侧添加</td></tr>
+                <tbody id="seq-templates-body">
+                  <tr><td colspan="5" class="empty">加载中…</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
-        </div>
-        <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
-        <p id="seq-msg" class="msg" hidden></p>
-        <section class="seq-template-section">
-          <h3>中心序列模板</h3>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>名称</th>
-                  <th>步骤数</th>
-                  <th>来源机台</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="seq-templates-body">
-                <tr><td colspan="5" class="empty">加载中…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+        </details>
+
         <div id="seq-results" class="seq-results-hint" hidden></div>
       </section>
       <div class="seq-run-bar seq-run-bar-fixed">
