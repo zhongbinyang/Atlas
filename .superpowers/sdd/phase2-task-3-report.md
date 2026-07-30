@@ -212,3 +212,60 @@
 ### Follow-up commit
 
 `HEAD` — `fix(agent): resolve VI integration accessibility`
+
+## Chrome DevTools summary focusability second verification
+
+### Root-cause correction
+
+- 第一轮只移除了 enabled 状态的 `tabindex="0"`，但 empty / disabled 状态仍通过
+  `summary.tabIndex = -1` 写入显式 tabindex。
+- Chrome 对原生 `<summary>` 上的任何显式 tabindex 都报告
+  `Interactive element inside summary`；因此问题不是只限于值 `0`，而是 summary
+  根本不应接收 tabindex 属性。
+- 禁用语义改由父级 `#lv-advanced` `<details>` 的 `inert` 和
+  `aria-disabled="true"` 承担。启用时移除两者，使 summary 保留浏览器原生的键盘
+  焦点与 Enter 展开行为。
+
+### RED
+
+- `node --test --test-name-pattern "advanced details uses inert" crates/agent/tests/workbench_app_behavior.test.js`
+  - 0 passed、1 failed；失败为
+    `missing syncAdvancedDetailsDisabledState in app.js`。
+- `cargo test -p agent --test static_ui vi_workbench_exposes_staged_and_accessible_controls`
+  - 0 passed、1 failed；失败消息为
+    `advanced settings must use inert and aria-disabled without changing summary focusability`。
+
+### GREEN
+
+- 两个 targeted 测试分别为 1 passed、0 failed。
+- `node --test crates/agent/tests/*.test.js`
+  - 12 passed、0 failed。
+- `cargo test -p agent --test static_ui`
+  - 7 passed、0 failed。
+- `cargo test -p agent`
+  - 65 Agent unit tests + 7 static UI tests passed，0 failed。
+- `node --check crates/agent/static/workbench-runtime.js` 和
+  `node --check crates/agent/static/app.js`
+  - 2 passed、0 failed。
+- 更新后的 `.tmp/phase2-task3-ui-check.py` 使用系统 Chrome 验证：
+  disabled details 具有 inert / aria-disabled、enabled details 移除两者、两种状态
+  summary 均无 tabindex；启用后 summary 可聚焦并通过 Enter 展开。390 / 768 /
+  1440 布局与既有 VI 工作流同时通过。
+- `git diff --check`
+  - passed。
+
+### Changes
+
+- `syncNativeSummaryDisabledState()` 替换为
+  `syncAdvancedDetailsDisabledState()`。
+- 同步函数始终清除可能遗留在 summary 上的 tabindex；disabled 时设置
+  `details.inert = true`、`inert` 属性和 `aria-disabled="true"`，enabled 时设置
+  `inert = false` 并移除两个属性。
+- 保留既有 summary click 防护作为兼容兜底；inert 是实际禁用机制，启用态继续使用
+  原生 summary 键盘行为。
+- 行为测试覆盖 disabled / enabled 的真实同步函数结果，静态测试禁止 app.js
+  给 summary 写显式 tabindex。
+
+### Follow-up commit
+
+`HEAD` — `fix(agent): disable advanced details without summary tabindex`

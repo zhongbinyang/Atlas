@@ -101,13 +101,18 @@ fn vi_workbench_exposes_staged_and_accessible_controls() {
     );
     assert!(
         APP.contains(
-            "syncNativeSummaryDisabledState(advancedSummary, controls.advancedDisabled);"
-        ) && APP.contains("summary.removeAttribute('tabindex');"),
-        "enabled native summaries must rely on their built-in focusability"
+            "syncAdvancedDetailsDisabledState(advanced, controls.advancedDisabled);"
+        ) && APP.contains("details.setAttribute('inert', '');")
+            && APP.contains("details.setAttribute('aria-disabled', 'true');")
+            && APP.contains("details.removeAttribute('inert');")
+            && APP.contains("details.removeAttribute('aria-disabled');")
+            && APP.contains("summary.removeAttribute('tabindex');"),
+        "advanced settings must use inert and aria-disabled without changing summary focusability"
     );
     assert!(
-        !APP.contains("advancedSummary.tabIndex = controls.advancedDisabled ? -1 : 0;"),
-        "native summaries must not receive a redundant tabindex=0"
+        !APP.contains("summary.tabIndex =")
+            && !APP.contains("summary.setAttribute('tabindex'"),
+        "native summaries must never receive an explicit tabindex"
     );
 }
 

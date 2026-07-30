@@ -272,12 +272,18 @@ function setActionState(button, action) {
   button.title = action.enabled ? '' : action.reason;
 }
 
-function syncNativeSummaryDisabledState(summary, disabled) {
+function syncAdvancedDetailsDisabledState(details, disabled) {
+  const summary = details.querySelector('summary');
+  summary.removeAttribute('tabindex');
   if (disabled) {
-    summary.tabIndex = -1;
+    details.inert = true;
+    details.setAttribute('inert', '');
+    details.setAttribute('aria-disabled', 'true');
     return;
   }
-  summary.removeAttribute('tabindex');
+  details.inert = false;
+  details.removeAttribute('inert');
+  details.removeAttribute('aria-disabled');
 }
 
 function syncLvWorkbench() {
@@ -286,7 +292,6 @@ function syncLvWorkbench() {
   const pathEl = document.getElementById('lv-vi-path');
   const nameEl = document.getElementById('lv-name');
   const advanced = document.getElementById('lv-advanced');
-  const advancedSummary = advanced.querySelector('summary');
 
   pathEl.disabled = controls.pathDisabled;
   nameEl.disabled = controls.nameDisabled;
@@ -295,8 +300,7 @@ function syncLvWorkbench() {
   });
   document.getElementById('lv-show-fp').disabled = controls.advancedDisabled;
   document.getElementById('lv-timeout').disabled = controls.advancedDisabled;
-  advanced.setAttribute('aria-disabled', controls.advancedDisabled ? 'true' : 'false');
-  syncNativeSummaryDisabledState(advancedSummary, controls.advancedDisabled);
+  syncAdvancedDetailsDisabledState(advanced, controls.advancedDisabled);
 
   setActionState(document.getElementById('lv-inspect-btn'), controls.inspect);
   setActionState(document.getElementById('lv-run-btn'), controls.run);

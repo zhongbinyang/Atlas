@@ -70,23 +70,46 @@ test('path invalidation clears stale success feedback from the DOM', () => {
   assert.equal(clearedRunResult, true);
 });
 
-test('native summary only receives tabindex while disabled', () => {
+test('advanced details uses inert while native summary keeps built-in focusability', () => {
   const summary = {
-    tabIndex: 0,
+    attributes: new Map([['tabindex', '-1']]),
     removedAttributes: [],
     removeAttribute(name) {
       this.removedAttributes.push(name);
+      this.attributes.delete(name);
+    },
+  };
+  const details = {
+    inert: false,
+    attributes: new Map(),
+    querySelector(selector) {
+      assert.equal(selector, 'summary');
+      return summary;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
     },
   };
   const context = {};
   vm.createContext(context);
-  vm.runInContext(functionSource('syncNativeSummaryDisabledState'), context);
+  vm.runInContext(functionSource('syncAdvancedDetailsDisabledState'), context);
 
-  context.syncNativeSummaryDisabledState(summary, true);
-  assert.equal(summary.tabIndex, -1);
+  context.syncAdvancedDetailsDisabledState(details, true);
+  assert.equal(details.inert, true);
+  assert.equal(details.attributes.get('inert'), '');
+  assert.equal(details.attributes.get('aria-disabled'), 'true');
+  assert.equal(summary.attributes.has('tabindex'), false);
 
-  context.syncNativeSummaryDisabledState(summary, false);
-  assert.deepEqual(summary.removedAttributes, ['tabindex']);
+  summary.attributes.set('tabindex', '-1');
+  context.syncAdvancedDetailsDisabledState(details, false);
+  assert.equal(details.inert, false);
+  assert.equal(details.attributes.has('inert'), false);
+  assert.equal(details.attributes.has('aria-disabled'), false);
+  assert.equal(summary.attributes.has('tabindex'), false);
+  assert.deepEqual(summary.removedAttributes, ['tabindex', 'tabindex']);
 });
 
 test('rendered scalar and structured parameters have standard names', () => {
