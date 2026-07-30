@@ -416,3 +416,65 @@ follow-up wave; the controller will run it.
 - No known functional concerns or unresolved re-review findings.
 - Pre-existing Rust unused/dead-code warnings and Git LF→CRLF notices remain
   informational only.
+
+---
+
+# Registered re-run failure follow-up
+
+Date: 2026-07-30
+Starting HEAD: `ecc754c`
+Implementation commit: `7fad8c3` (`fix(agent): preserve registered state after failed rerun`)
+
+## Finding
+
+A failed re-run with an existing `runResult` always derived
+`ready_to_run`/`ready_to_register` from the current Name. When the re-run began
+from `registered`, that hid the registered follow-up actions even though the
+`registration` object remained stored.
+
+## RED
+
+- Added `failed re-run from registered preserves registration and registered followups`
+  to `crates/agent/tests/workbench_runtime.test.js`.
+- Command:
+  `node --test --test-name-pattern='failed re-run from registered' crates/agent/tests/workbench_runtime.test.js`
+- Result: exit 1, 0 passed / 1 failed.
+- Expected failure: after successful Run, successful Register, and a failed
+  re-run during which Name was cleared, the actual state was `ready_to_run`
+  instead of `registered`.
+
+## GREEN
+
+- The same targeted command returned exit 0, 1 passed / 0 failed.
+- `actionFailed('run')` now derives readiness from current Name only when
+  `returnState` is `ready_to_run` or `ready_to_register`.
+- A failed re-run whose `returnState` is `registered` restores `registered`.
+- The regression verifies the `registration` and prior `runResult` remain
+  intact, and verifies `continueEditingCopy()` remains available and produces
+  the expected editable state.
+- Direct Register and all other failure transitions are unchanged.
+
+## Files
+
+- `crates/agent/static/workbench-runtime.js`
+- `crates/agent/tests/workbench_runtime.test.js`
+
+## Fresh verification
+
+- `node --test crates/agent/tests/workbench_runtime.test.js`
+  - 15 passed / 0 failed.
+- `node --test crates/agent/tests/workbench_app_behavior.test.js`
+  - 7 passed / 0 failed.
+- `cargo test -p agent --test static_ui`
+  - 7 passed / 0 failed.
+- `node --check crates/agent/static/workbench-runtime.js`
+  - Exit 0, no output.
+- `node --check crates/agent/static/app.js`
+  - Exit 0, no output.
+- `git diff --check`
+  - Exit 0; only the repository's configured LF→CRLF notices were printed.
+
+## Concerns
+
+No known functional concerns. Pre-existing Rust warnings and LF→CRLF notices
+remain informational only.
