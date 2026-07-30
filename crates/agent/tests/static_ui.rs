@@ -109,6 +109,14 @@ fn machine_info_is_collapsed_in_topbar_before_register() {
             && INDEX.contains("id=\"metric-busy\""),
         "status field ids must remain for fetchStatus"
     );
+    assert!(
+        INDEX.contains("id=\"machine-busy-actions\"")
+            && INDEX.contains("id=\"force-release-btn\"")
+            && APP.contains("forceReleaseSlot")
+            && APP.contains("syncSequenceBusyFromStatus")
+            && APP.contains("formatBusyConflictMessage"),
+        "busy recovery UI must restore pause state and allow force-idle"
+    );
 }
 
 #[test]

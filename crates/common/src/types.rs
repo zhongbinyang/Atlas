@@ -40,6 +40,24 @@ pub struct AgentStatusResponse {
     pub memory_percent: f32,
     pub busy: bool,
     pub uptime_secs: u64,
+    /// idle | sequence | sequence_paused | delay | rest | shell_task | unknown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_continue: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_abort: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_force_release: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_before_position: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_step_name: Option<String>,
+    /// Resolved Agent log directory (file logging root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

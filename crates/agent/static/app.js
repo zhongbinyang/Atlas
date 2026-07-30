@@ -1,15 +1,19 @@
 const POLL_MS = 2000;
+let lastAgentStatus = null;
 
 async function fetchStatus() {
   const resp = await fetch('/api/status');
   if (!resp.ok) return;
   const data = await resp.json();
+  lastAgentStatus = data;
   document.getElementById('hostname').textContent = data.hostname;
   document.getElementById('ip').textContent = data.ip;
   document.getElementById('metric-cpu').textContent = data.cpu_percent.toFixed(1) + '%';
   document.getElementById('metric-memory').textContent = data.memory_percent.toFixed(1) + '%';
   const busyEl = document.getElementById('metric-busy');
-  const busyText = data.busy ? '● 执行中' : '● 空闲';
+  const busyText = data.busy
+    ? ('● 执行中' + (data.busy_reason === 'sequence_paused' ? '（断点）' : ''))
+    : '● 空闲';
   const busyClass = data.busy ? 'is-busy' : 'is-idle';
   busyEl.textContent = busyText;
   busyEl.className = busyClass;
@@ -19,6 +23,82 @@ async function fetchStatus() {
     summaryBusy.className = 'machine-info-busy ' + busyClass;
   }
   document.getElementById('uptime').textContent = formatUptime(data.uptime_secs);
+  updateMachineBusyActions(data);
+  syncSequenceBusyFromStatus(data);
+}
+
+function updateMachineBusyActions(data) {
+  const box = document.getElementById('machine-busy-actions');
+  const detail = document.getElementById('machine-busy-detail');
+  const btn = document.getElementById('force-release-btn');
+  if (!box || !detail || !btn) return;
+  if (!data.busy && !data.can_force_release) {
+    box.hidden = true;
+    detail.textContent = '';
+    return;
+  }
+  if (!data.busy) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  detail.textContent = data.busy_message || '机台忙碌';
+  btn.hidden = !data.can_force_release;
+}
+
+function syncSequenceBusyFromStatus(data) {
+  const sequencePage = document.getElementById('page-sequence');
+  const onSeqPage = sequencePage && !sequencePage.hidden;
+  if (data.can_continue) {
+    if (!seqPaused) {
+      seqPaused = true;
+      seqRunning = false;
+      setSeqControlsDisabled(false);
+      if (onSeqPage) {
+        showSeqMsg(data.busy_message || '序列在断点处暂停，可继续或中止', true);
+      }
+    }
+    return;
+  }
+  if (!data.busy && seqPaused) {
+    seqPaused = false;
+    seqRunning = false;
+    setSeqControlsDisabled(false);
+    return;
+  }
+  if (data.busy && data.busy_reason === 'sequence' && !seqPaused && !seqRunning && onSeqPage) {
+    seqRunning = true;
+    setSeqControlsDisabled(true);
+    showSeqMsg(data.busy_message || '序列正在执行中…', true);
+  }
+}
+
+async function forceReleaseSlot() {
+  if (!window.confirm('确认强制释放机台占用？若仍有 LabVIEW/请求在跑，可能留下未结束的进程。')) {
+    return;
+  }
+  try {
+    const resp = await fetch('/api/slot/force-release', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('强制释放失败: ' + err, false);
+      return;
+    }
+    seqPaused = false;
+    seqRunning = false;
+    setSeqControlsDisabled(false);
+    showSeqMsg(data.message || '已强制释放占用', true);
+    await fetchStatus();
+  } catch (e) {
+    showSeqMsg('强制释放失败: ' + e.message, false);
+  }
+}
+
+function formatBusyConflictMessage(data) {
+  if (data && data.busy_message) return data.busy_message;
+  if (data && data.error) return String(data.error.message || data.error);
+  return 'agent is busy';
 }
 
 function formatUptime(secs) {
@@ -1671,7 +1751,10 @@ function renderSeqResults(data) {
     return;
   }
   container.hidden = false;
-  container.textContent = '本次共 ' + data.steps.length + ' 步结果，已写入步骤行；点「详情」查看实测与原始返回。详细日志见 Agent sequence_run。';
+  container.textContent = '本次共 ' + data.steps.length + ' 步结果，已写入步骤行；点「详情」查看实测与原始返回。'
+    + ((lastAgentStatus && lastAgentStatus.log_dir)
+      ? ('详细日志: ' + lastAgentStatus.log_dir + '\\sequence_runs')
+      : '详细日志已写入 Agent 日志目录 sequence_runs');
 }
 
 function handleSequenceResponse(data) {
@@ -1790,6 +1873,18 @@ async function runSequence() {
     });
     const data = await resp.json();
     if (!resp.ok) {
+      if (resp.status === 409) {
+        const tip = formatBusyConflictMessage(data);
+        if (data.can_continue) {
+          seqPaused = true;
+          setSeqControlsDisabled(false);
+          showSeqMsg(tip + ' — 请点「继续」或「中止」', true);
+          return;
+        }
+        const hint = data.can_force_release ? ' — 可在「机台信息」中强制空闲' : '';
+        showSeqMsg(tip + hint, false);
+        return;
+      }
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('执行失败: ' + err, false);
       return;
@@ -2544,6 +2639,8 @@ async function fetchGeneralTemplates() {
 }
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+const forceReleaseBtn = document.getElementById('force-release-btn');
+if (forceReleaseBtn) forceReleaseBtn.addEventListener('click', forceReleaseSlot);
 const seqSaveTemplateBtn = document.getElementById('seq-save-template-btn');
 if (seqSaveTemplateBtn) seqSaveTemplateBtn.addEventListener('click', saveCurrentQueueAsSequenceTemplate);
 const seqContinueBtn = document.getElementById('seq-continue-btn');

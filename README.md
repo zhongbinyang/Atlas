@@ -35,7 +35,7 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 | `SCHEDULER_POLL_STATUS_INTERVAL_SECS` | `5` | Agent 状态巡检间隔（秒） |
 | `SCHEDULER_POLL_TASK_INTERVAL_SECS` | `1` | 任务下发 / 结果轮询间隔（秒） |
 
-可选：设置 `RUST_LOG=info`（或 `debug`）开启日志。
+可选：设置 `RUST_LOG=info`（或 `debug`）过滤调度中心控制台日志级别。
 
 ### Agent
 
@@ -47,8 +47,20 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 | `AGENT_ADVERTISE_IP` | 自动探测（优先：连向中心的出口网卡 IP；排除 Mihomo `198.18/15` 等虚拟地址） | 向调度中心注册的 IP；探测不准时可手动指定 |
 | `AGENT_HOSTNAME` | 系统计算机名 | 向调度中心注册的电脑名称 |
 | `AGENT_FILES_ROOT` | *（可选）* | 只读文件浏览根目录（绝对路径推荐）；未配置或无效时文件 API 返回 503 |
+| `AGENT_LOG_DIR` | `%LOCALAPPDATA%\atlas-agent\logs` | Agent 日志根目录（**不写控制台**）；见下方布局 |
 | `AGENT_LABVIEW_CLI` | `C:\labview-runner-cli\labview-runner-cli.exe` | LabVIEW 试跑 CLI 可执行文件路径 |
 | `AGENT_LABVIEW_GETINFO_VI` | `C:\labview-runner-cli\getinfo.vi` | LabVIEW inspect 用的 getinfo VI 路径 |
+
+Agent 日志布局（`AGENT_LOG_DIR`）：
+
+```
+{AGENT_LOG_DIR}/
+  agent-YYYY-MM-DD.log              # 通用 tracing（默认 info+；RUST_LOG 可过滤）
+  sequence_runs/YYYY-MM-DD/*.json    # 每次序列结束一份 JSON 结果
+```
+
+`finished_at` 字段为本地时间秒级（如 `2026-07-30 19:20:45`）。文件名仍用紧凑 UTC 时间戳。
+可选：调度中心侧设置 `RUST_LOG=info`（或 `debug`）开启**中心**控制台日志。Agent 业务日志不写控制台。
 
 ## LabVIEW VI 模板
 
@@ -81,7 +93,7 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 5. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order", "sequence_template_id" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
 6. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI **吸底运行栏** 提供 SN/工单、保存为模板、开始/继续/中止与总体结果。
 7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
-8. **运行结果**：不落库「最近一次结果」；完成后结果展示在步骤行/详情中，并写入 Agent 日志（`sequence_run` / `sequence run finished`）。可用 `RUST_LOG=info`（或更细）查看。
+8. **运行结果**：不落库「最近一次结果」；完成后结果展示在步骤行/详情中，并写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。可用 `RUST_LOG` 过滤写入文件的级别。
 9. **阶段 1 限制**：暂停期间可 **中止**；**无法** 取消正在执行的 continue / LabVIEW 步骤。断点会话仅存于 Agent 内存，**Agent 重启后会丢失**。
 
 ### WebUI 入口

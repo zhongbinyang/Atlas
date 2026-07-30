@@ -12,6 +12,7 @@ pub struct TaskSlot {
 
 struct Inner {
     busy: bool,
+    owner: Option<String>,
     tasks: HashMap<String, AgentTaskView>,
 }
 
@@ -20,6 +21,7 @@ impl TaskSlot {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 busy: false,
+                owner: None,
                 tasks: HashMap::new(),
             }),
         })
@@ -29,18 +31,25 @@ impl TaskSlot {
         self.inner.lock().await.busy
     }
 
+    pub async fn owner(&self) -> Option<String> {
+        self.inner.lock().await.owner.clone()
+    }
+
     /// Returns Err("busy") if slot occupied.
-    pub async fn try_acquire(&self) -> Result<(), &'static str> {
+    pub async fn try_acquire(&self, owner: &str) -> Result<(), &'static str> {
         let mut g = self.inner.lock().await;
         if g.busy {
             return Err("busy");
         }
         g.busy = true;
+        g.owner = Some(owner.to_string());
         Ok(())
     }
 
     pub async fn release(&self) {
-        self.inner.lock().await.busy = false;
+        let mut g = self.inner.lock().await;
+        g.busy = false;
+        g.owner = None;
     }
 
     pub async fn list(&self) -> Vec<AgentTaskView> {
@@ -63,6 +72,7 @@ impl TaskSlot {
                 return Err("busy");
             }
             g.busy = true;
+            g.owner = Some("shell_task".into());
             let view = AgentTaskView {
                 id: id.clone(),
                 command: req.command.clone(),
@@ -91,6 +101,7 @@ impl TaskSlot {
                 t.stderr = result.stderr;
             }
             g.busy = false;
+            g.owner = None;
         });
         Ok(self.get(&id).await.unwrap())
     }
@@ -105,10 +116,12 @@ mod tests {
     #[tokio::test]
     async fn try_acquire_rejects_second() {
         let slot = TaskSlot::new();
-        assert!(slot.try_acquire().await.is_ok());
-        assert_eq!(slot.try_acquire().await.unwrap_err(), "busy");
+        assert!(slot.try_acquire("sequence").await.is_ok());
+        assert_eq!(slot.owner().await.as_deref(), Some("sequence"));
+        assert_eq!(slot.try_acquire("delay").await.unwrap_err(), "busy");
         slot.release().await;
-        assert!(slot.try_acquire().await.is_ok());
+        assert!(slot.owner().await.is_none());
+        assert!(slot.try_acquire("delay").await.is_ok());
         slot.release().await;
     }
 

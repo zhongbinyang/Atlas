@@ -6,6 +6,7 @@ pub struct AgentConfig {
     pub advertise_ip: Option<String>,
     pub hostname: Option<String>,
     pub files_root: Option<std::path::PathBuf>,
+    pub log_dir: std::path::PathBuf,
     pub labview_cli: std::path::PathBuf,
     pub labview_getinfo: std::path::PathBuf,
 }
@@ -25,6 +26,7 @@ impl AgentConfig {
         let files_root = std::env::var("AGENT_FILES_ROOT")
             .ok()
             .map(std::path::PathBuf::from);
+        let log_dir = crate::logging::resolve_log_dir(std::env::var("AGENT_LOG_DIR").ok().as_deref());
         let labview_cli = std::env::var("AGENT_LABVIEW_CLI")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
@@ -40,6 +42,7 @@ impl AgentConfig {
             advertise_ip,
             hostname,
             files_root,
+            log_dir,
             labview_cli,
             labview_getinfo,
         })

@@ -116,6 +116,21 @@ body {
   color: var(--busy);
 }
 
+.machine-busy-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+}
+
+.machine-busy-detail {
+  margin: 0;
+  flex: 1 1 12rem;
+}
+
 .machine-info-panel {
   position: absolute;
   right: 0;

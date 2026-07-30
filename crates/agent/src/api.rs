@@ -40,6 +40,7 @@ pub struct AppState {
     pub center_url: String,
     pub http_client: reqwest::Client,
     pub files_root: Option<PathBuf>,
+    pub log_dir: PathBuf,
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
     pub sequence_session: Arc<SequenceSessionSlot>,
@@ -159,6 +160,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/status", get(status))
+        .route("/api/slot/force-release", post(slot_force_release))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/screenshot", get(screenshot))
@@ -335,16 +337,124 @@ async fn labview_run(
     }
 }
 
+async fn build_busy_snapshot(s: &AppState) -> BusySnapshot {
+    let busy = s.slot.is_busy().await;
+    let owner = s.slot.owner().await;
+    let session = s.sequence_session.get().await;
+
+    if let Some(session) = session {
+        let step = session.items.get(session.next_index);
+        let step_name = step.map(|i| i.name.clone());
+        let before_position = step.map(|i| i.position).unwrap_or(session.next_index);
+        let message = match step_name.as_deref() {
+            Some(name) if !name.is_empty() => {
+                format!("序列在断点处暂停（步骤 #{before_position}: {name}）")
+            }
+            _ => format!("序列在断点处暂停（步骤 #{before_position}）"),
+        };
+        return BusySnapshot {
+            busy: true,
+            busy_reason: Some("sequence_paused".into()),
+            busy_message: Some(message),
+            can_continue: true,
+            can_abort: true,
+            can_force_release: true,
+            pause_before_position: Some(before_position),
+            pause_step_name: step_name,
+        };
+    }
+
+    if !busy {
+        return BusySnapshot {
+            busy: false,
+            busy_reason: None,
+            busy_message: None,
+            can_continue: false,
+            can_abort: false,
+            can_force_release: false,
+            pause_before_position: None,
+            pause_step_name: None,
+        };
+    }
+
+    let reason = owner.unwrap_or_else(|| "unknown".into());
+    let message = match reason.as_str() {
+        "sequence" => "序列正在执行中".to_string(),
+        "delay" => "Delay 试跑进行中".to_string(),
+        "rest" => "REST 试跑进行中".to_string(),
+        "shell_task" => "Shell 任务执行中".to_string(),
+        other => format!("机台忙碌（{other}）"),
+    };
+    BusySnapshot {
+        busy: true,
+        busy_reason: Some(reason),
+        busy_message: Some(message),
+        can_continue: false,
+        can_abort: false,
+        can_force_release: true,
+        pause_before_position: None,
+        pause_step_name: None,
+    }
+}
+
+#[derive(Clone)]
+struct BusySnapshot {
+    busy: bool,
+    busy_reason: Option<String>,
+    busy_message: Option<String>,
+    can_continue: bool,
+    can_abort: bool,
+    can_force_release: bool,
+    pause_before_position: Option<usize>,
+    pause_step_name: Option<String>,
+}
+
+fn busy_conflict_json(snap: &BusySnapshot) -> Value {
+    serde_json::json!({
+        "error": "agent is busy",
+        "busy_reason": snap.busy_reason,
+        "busy_message": snap.busy_message,
+        "can_continue": snap.can_continue,
+        "can_abort": snap.can_abort,
+        "can_force_release": snap.can_force_release,
+        "pause_before_position": snap.pause_before_position,
+        "pause_step_name": snap.pause_step_name,
+    })
+}
+
 async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
     let metrics = *s.metrics.read().await;
+    let snap = build_busy_snapshot(&s).await;
     Json(AgentStatusResponse {
         hostname: s.hostname.clone(),
         ip: s.ip.clone(),
         cpu_percent: metrics.cpu_percent,
         memory_percent: metrics.memory_percent,
-        busy: s.slot.is_busy().await,
+        busy: snap.busy,
         uptime_secs: s.started.elapsed().as_secs(),
+        busy_reason: snap.busy_reason,
+        busy_message: snap.busy_message,
+        can_continue: Some(snap.can_continue),
+        can_abort: Some(snap.can_abort),
+        can_force_release: Some(snap.can_force_release),
+        pause_before_position: snap.pause_before_position,
+        pause_step_name: snap.pause_step_name,
+        log_dir: Some(s.log_dir.display().to_string()),
     })
+}
+
+async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
+    let was_busy = s.slot.is_busy().await || s.sequence_session.get().await.is_some();
+    s.sequence_session.clear().await;
+    s.slot.release().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "released": was_busy,
+            "message": if was_busy { "已强制释放占用" } else { "当前已空闲" },
+        })),
+    )
 }
 
 async fn create_task(
@@ -371,13 +481,10 @@ async fn create_task(
     }
     match s.slot.submit(req).await {
         Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
-        Err("busy") => (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                error: "agent is busy".into(),
-            }),
-        )
-            .into_response(),
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorBody {
@@ -859,12 +966,9 @@ async fn general_delay_run(
     State(s): State<AppState>,
     Json(req): Json<DelayRunRequest>,
 ) -> impl IntoResponse {
-    if let Err("busy") = s.slot.try_acquire().await {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "agent is busy" })),
-        )
-            .into_response();
+    if let Err("busy") = s.slot.try_acquire("delay").await {
+        let snap = build_busy_snapshot(&s).await;
+        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
     }
     let result = crate::general::run_delay_ms(req.delay_ms).await;
     s.slot.release().await;
@@ -1049,12 +1153,9 @@ async fn general_rest_run(
         }
     };
 
-    if let Err("busy") = s.slot.try_acquire().await {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "agent is busy" })),
-        )
-            .into_response();
+    if let Err("busy") = s.slot.try_acquire("rest").await {
+        let snap = build_busy_snapshot(&s).await;
+        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
     }
     let result = crate::rest::run_request_from_inputs(&inputs).await;
     s.slot.release().await;
@@ -1188,10 +1289,12 @@ fn pause_index(
 }
 
 async fn log_sequence_run(
+    s: &AppState,
     sequence_template_id: Option<i64>,
     items: &[crate::labview_sequence::QueueItemForRun],
     resp: &SequenceResponse,
 ) {
+    let finished_at = chrono::Utc::now();
     let steps: Vec<Value> = resp
         .steps
         .iter()
@@ -1213,7 +1316,7 @@ async fn log_sequence_run(
             })
         })
         .collect();
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "sequence_template_id": sequence_template_id,
         "overall": resp.overall,
         "stopped": resp.stopped,
@@ -1221,17 +1324,42 @@ async fn log_sequence_run(
         "sn": resp.sn,
         "work_order": resp.work_order,
         "steps": steps,
+        "finished_at": crate::logging::format_finished_at_local(finished_at),
+        "hostname": s.hostname,
     });
-    tracing::info!(
-        target: "sequence_run",
-        overall = %resp.overall,
-        sequence_template_id = ?sequence_template_id,
-        sn = ?resp.sn,
-        work_order = ?resp.work_order,
-        step_count = steps.len(),
-        result = %payload,
-        "sequence run finished"
-    );
+    if let Some(pause) = &resp.pause {
+        payload["pause"] = serde_json::json!({
+            "before_position": pause.before_position,
+            "message": pause.message,
+        });
+    }
+    match crate::logging::write_sequence_run_log(
+        &s.log_dir,
+        &payload,
+        finished_at,
+        &resp.overall,
+        resp.sn.as_deref(),
+    ) {
+        Ok(path) => {
+            let rel = path
+                .strip_prefix(&s.log_dir)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string());
+            tracing::info!(
+                target: "sequence_run",
+                overall = %resp.overall,
+                path = %rel,
+                "sequence run finished"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "sequence_run",
+                error = %e,
+                "failed to write sequence run log"
+            );
+        }
+    }
 }
 
 async fn labview_run_sequence(
@@ -1248,14 +1376,9 @@ async fn labview_run_sequence(
         })
         .unwrap_or_default();
 
-    if let Err("busy") = s.slot.try_acquire().await {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                error: "agent is busy".into(),
-            }),
-        )
-            .into_response();
+    if let Err("busy") = s.slot.try_acquire("sequence").await {
+        let snap = build_busy_snapshot(&s).await;
+        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
     }
 
     let agent_id = match resolve_agent_id_for_proxy(&s).await {
@@ -1354,7 +1477,7 @@ async fn labview_run_sequence(
 
     s.sequence_session.clear().await;
     s.slot.release().await;
-    log_sequence_run(sequence_template_id, &items, &resp).await;
+    log_sequence_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -1415,7 +1538,7 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
 
     s.sequence_session.clear().await;
     s.slot.release().await;
-    log_sequence_run(session.sequence_template_id, &session.items, &resp).await;
+    log_sequence_run(&s, session.sequence_template_id, &session.items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -1445,7 +1568,7 @@ async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoRespo
         work_order: session.work_order,
         pause: None,
     };
-    log_sequence_run(session.sequence_template_id, &session.items, &resp).await;
+    log_sequence_run(&s, session.sequence_template_id, &session.items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -1483,6 +1606,7 @@ mod tests {
             center_url: "http://localhost:3000".into(),
             http_client: crate::register::http_client(),
             files_root: None,
+            log_dir: std::env::temp_dir().join("atlas-agent-test-logs"),
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
             sequence_session: SequenceSessionSlot::new(),
@@ -1631,6 +1755,106 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent is busy");
+        let rich: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(rich["busy_reason"], "shell_task");
+        assert_eq!(rich["can_force_release"], true);
+        assert_eq!(rich["can_continue"], false);
+    }
+
+    #[tokio::test]
+    async fn status_reports_busy_metadata_and_force_release() {
+        let state = test_state();
+        state.slot.try_acquire("delay").await.unwrap();
+        let app = router(state.clone());
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: AgentStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(body.busy);
+        assert_eq!(body.busy_reason.as_deref(), Some("delay"));
+        assert!(body.busy_message.as_deref().unwrap_or("").contains("Delay"));
+        assert_eq!(body.can_force_release, Some(true));
+        assert_eq!(body.can_continue, Some(false));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/slot/force-release")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["released"], true);
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: AgentStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!body.busy);
+        assert!(body.busy_reason.is_none());
+        assert_eq!(body.can_force_release, Some(false));
+    }
+
+    #[tokio::test]
+    async fn status_reports_sequence_paused_session() {
+        let state = test_state();
+        state
+            .sequence_session
+            .set(SequenceSession {
+                items: vec![crate::labview_sequence::QueueItemForRun {
+                    position: 2,
+                    queue_item_id: "q1".into(),
+                    template_id: "t1".into(),
+                    name: "BP Step".into(),
+                    kind: "vi".into(),
+                    vi_path: r"C:\x.vi".into(),
+                    inputs: serde_json::json!({}),
+                    show_front_panel: false,
+                    timeout_secs: None,
+                    enabled: true,
+                    breakpoint: true,
+                    fail_policy: "stop".into(),
+                    limits: vec![],
+                }],
+                next_index: 0,
+                steps_so_far: vec![],
+                sn: None,
+                work_order: None,
+                sequence_template_id: None,
+                abort: false,
+            })
+            .await;
+        let app = router(state);
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: AgentStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(body.busy);
+        assert_eq!(body.busy_reason.as_deref(), Some("sequence_paused"));
+        assert_eq!(body.can_continue, Some(true));
+        assert_eq!(body.can_abort, Some(true));
+        assert_eq!(body.pause_before_position, Some(2));
+        assert_eq!(body.pause_step_name.as_deref(), Some("BP Step"));
+        assert!(body
+            .busy_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("BP Step"));
     }
 
     #[tokio::test]
@@ -2256,6 +2480,9 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent is busy");
+        let rich: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(rich["busy_reason"], "shell_task");
+        assert_eq!(rich["can_force_release"], true);
     }
 
     #[tokio::test]

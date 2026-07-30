@@ -7,6 +7,7 @@ mod general;
 mod labview;
 mod labview_sequence;
 mod limits;
+mod logging;
 mod executor;
 mod metrics;
 mod register;
@@ -24,15 +25,18 @@ use std::sync::Arc;
 use std::time::Instant;
 use task_slot::TaskSlot;
 use tokio::sync::RwLock;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
-        .init();
-
     let cfg = AgentConfig::load_from_env().expect("config");
+    if let Err(e) = logging::init_file_tracing(&cfg.log_dir) {
+        // Last-resort startup diagnostic only; operational logs stay on disk.
+        eprintln!(
+            "failed to init file logging at {}: {e}",
+            cfg.log_dir.display()
+        );
+    }
+
     let hostname = cfg
         .hostname
         .clone()
@@ -53,6 +57,7 @@ async fn main() {
         center_url: cfg.center_url.clone(),
         http_client: http_client.clone(),
         files_root: cfg.files_root.clone(),
+        log_dir: cfg.log_dir.clone(),
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
         sequence_session: SequenceSessionSlot::new(),
@@ -69,7 +74,7 @@ async fn main() {
 
     let app = api::router(state).merge(web::static_router());
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse().unwrap();
-    tracing::info!("agent listening on {addr}");
+    tracing::info!(log_dir = %cfg.log_dir.display(), "agent listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
