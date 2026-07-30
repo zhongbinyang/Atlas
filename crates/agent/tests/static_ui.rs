@@ -15,15 +15,20 @@ fn has_exact_selector(rules: &str, selector: &str) -> bool {
     rules.lines().any(|line| line.trim() == expected)
 }
 
+fn normalized_style() -> String {
+    STYLE.replace("\r\n", "\n")
+}
+
 #[test]
 fn sequence_page_has_mobile_safe_layout_rules() {
-    let mobile_rules = STYLE
+    let style = normalized_style();
+    let mobile_rules = style
         .split("@media (max-width: 640px) {")
         .nth(1)
         .expect("a mobile breakpoint for the sequence page");
 
     assert!(
-        STYLE.contains(".seq-col {\n  min-width: 0;\n}"),
+        style.contains(".seq-col {\n  min-width: 0;\n}"),
         "sequence columns must be allowed to shrink so only their tables scroll"
     );
     assert!(
@@ -155,6 +160,7 @@ fn vi_registration_followups_and_center_search_are_present() {
 
 #[test]
 fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
+    let style = normalized_style();
     let runtime_pos = INDEX
         .find("<script src=\"/workbench-runtime.js\"></script>")
         .expect("workbench runtime script");
@@ -163,7 +169,7 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         .expect("application script");
     assert!(runtime_pos < app_pos, "runtime must load before app.js");
 
-    let mobile_rules = STYLE
+    let mobile_rules = style
         .split("@media (max-width: 640px) {")
         .last()
         .expect("mobile rules");
@@ -171,12 +177,12 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         mobile_rules.contains(".lv-stage-rail {\n    grid-template-columns: repeat(2, minmax(0, 1fr));")
     );
     assert!(
-        STYLE.contains("#page-workbench {\n  min-width: 0;\n}")
-            && STYLE.contains("#page-workbench .lv-toolbar > * {\n  min-width: 0;\n}"),
+        style.contains("#page-workbench {\n  min-width: 0;\n}")
+            && style.contains("#page-workbench .lv-toolbar > * {\n  min-width: 0;\n}"),
         "the workbench must shrink without page-level overflow"
     );
     assert!(
-        STYLE.contains(
+        style.contains(
             ".lv-stage-rail {\n  display: grid;\n  grid-template-columns: repeat(5, minmax(0, 1fr));"
         ),
         "the desktop stage rail must expose five stages"
@@ -216,13 +222,13 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         "responsive VI actions must remain scoped to the VI workbench"
     );
     assert!(
-        STYLE.contains(
+        style.contains(
             "\n.lv-actions {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 0.5rem;\n}"
         ),
         "the shared action layout used by the general workbench must remain available"
     );
     assert!(
-        !has_exact_selector(STYLE, ".lv-toolbar > *"),
+        !has_exact_selector(&style, ".lv-toolbar > *"),
         "the VI toolbar shrink rule must not leak into other workbenches"
     );
     for selector in [".lv-actions", ".lv-actions button"] {
