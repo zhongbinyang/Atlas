@@ -19,6 +19,7 @@
     'ready_to_register',
     'registered',
   ]);
+  const STAGE_KEYS = ['path', 'inspect', 'run', 'naming', 'register'];
 
   function normalizeFsPath(raw) {
     let value = String(raw == null ? '' : raw).trim();
@@ -88,6 +89,44 @@
       };
     }
 
+    function stageProgress() {
+      const stages = STAGE_KEYS.map(function (key) {
+        return { key: key, status: 'waiting' };
+      });
+      function completeThrough(index) {
+        for (let stageIndex = 0; stageIndex <= index; stageIndex += 1) {
+          stages[stageIndex].status = 'complete';
+        }
+      }
+      function markCurrent(index) {
+        stages[index].status = 'current';
+      }
+
+      if (model.state === 'registered') {
+        completeThrough(4);
+      } else if (model.state === 'registering' || model.state === 'ready_to_register') {
+        completeThrough(3);
+        markCurrent(4);
+      } else if (model.state === 'ready_to_run') {
+        completeThrough(2);
+        if (hasValidName()) {
+          completeThrough(3);
+          markCurrent(4);
+        } else {
+          markCurrent(3);
+        }
+      } else if (model.state === 'running') {
+        completeThrough(1);
+        markCurrent(2);
+      } else if (model.state === 'inspecting' || model.state === 'ready_to_inspect') {
+        completeThrough(0);
+        markCurrent(1);
+      } else {
+        markCurrent(0);
+      }
+      return stages;
+    }
+
     function snapshot() {
       return {
         state: model.state,
@@ -101,6 +140,7 @@
         registration: model.registration,
         pendingAction: model.pendingAction,
         controls: controls(),
+        stages: stageProgress(),
       };
     }
 

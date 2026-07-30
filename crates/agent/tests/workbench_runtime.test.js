@@ -85,6 +85,46 @@ test('inspection unlocks run and name changes only recalculate registration', ()
   assert.equal(snapshot.controls.register.enabled, true);
 });
 
+test('naming stage advances from current to complete without a new business state', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: '',
+    inputs: [],
+    outputs: [],
+  });
+
+  let snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.deepEqual(snapshot.stages, [
+    { key: 'path', status: 'complete' },
+    { key: 'inspect', status: 'complete' },
+    { key: 'run', status: 'complete' },
+    { key: 'naming', status: 'current' },
+    { key: 'register', status: 'waiting' },
+  ]);
+
+  runtime.inputName('Measure');
+  snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.deepEqual(snapshot.stages.slice(3), [
+    { key: 'naming', status: 'complete' },
+    { key: 'register', status: 'current' },
+  ]);
+
+  runtime.beginRun();
+  runtime.runSucceeded({ status: 'ok' });
+  assert.equal(runtime.snapshot().state, 'ready_to_register');
+  assert.deepEqual(runtime.snapshot().stages.slice(3), [
+    { key: 'naming', status: 'complete' },
+    { key: 'register', status: 'current' },
+  ]);
+
+  runtime.beginRegister();
+  runtime.registerSucceeded({ id: 'vi-1' });
+  assert.ok(runtime.snapshot().stages.every((stage) => stage.status === 'complete'));
+});
+
 test('successful run and registration follow the staged workflow', () => {
   const runtime = createWorkbenchRuntime();
   runtime.loadTemplate({

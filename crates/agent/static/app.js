@@ -189,6 +189,8 @@ function renderInputsTable(inputs, emptyText) {
       valueCell =
         '<textarea class="lv-value lv-value-json mono" data-name="' +
         escapeHtml(inp.name) +
+        '" name="' +
+        escapeHtml(inp.name) +
         '" data-class="' +
         className +
         '" rows="2">' +
@@ -197,6 +199,8 @@ function renderInputsTable(inputs, emptyText) {
     } else {
       valueCell =
         '<input class="lv-value mono" data-name="' +
+        escapeHtml(inp.name) +
+        '" name="' +
         escapeHtml(inp.name) +
         '" data-class="' +
         className +
@@ -253,19 +257,27 @@ function readRunOptions() {
 }
 
 const LV_STAGE_META = {
-  empty: { current: 0, text: '填写 VI 路径以开始' },
-  ready_to_inspect: { current: 0, text: '路径已就绪，可以查询参数' },
-  inspecting: { current: 1, text: '正在查询参数…' },
-  ready_to_run: { current: 2, text: '参数已就绪，可以试跑或注册' },
-  running: { current: 2, text: '正在试跑…' },
-  ready_to_register: { current: 3, text: '试跑完成，可以注册' },
-  registering: { current: 3, text: '正在注册到中心…' },
-  registered: { current: 4, text: '注册完成' },
+  empty: { text: '填写 VI 路径以开始' },
+  ready_to_inspect: { text: '路径已就绪，可以查询参数' },
+  inspecting: { text: '正在查询参数…' },
+  ready_to_run: { text: '参数已就绪，可以试跑或注册' },
+  running: { text: '正在试跑…' },
+  ready_to_register: { text: '试跑完成，可以注册' },
+  registering: { text: '正在注册到中心…' },
+  registered: { text: '注册完成' },
 };
 
 function setActionState(button, action) {
   button.disabled = !action.enabled;
   button.title = action.enabled ? '' : action.reason;
+}
+
+function syncNativeSummaryDisabledState(summary, disabled) {
+  if (disabled) {
+    summary.tabIndex = -1;
+    return;
+  }
+  summary.removeAttribute('tabindex');
 }
 
 function syncLvWorkbench() {
@@ -284,7 +296,7 @@ function syncLvWorkbench() {
   document.getElementById('lv-show-fp').disabled = controls.advancedDisabled;
   document.getElementById('lv-timeout').disabled = controls.advancedDisabled;
   advanced.setAttribute('aria-disabled', controls.advancedDisabled ? 'true' : 'false');
-  advancedSummary.tabIndex = controls.advancedDisabled ? -1 : 0;
+  syncNativeSummaryDisabledState(advancedSummary, controls.advancedDisabled);
 
   setActionState(document.getElementById('lv-inspect-btn'), controls.inspect);
   setActionState(document.getElementById('lv-run-btn'), controls.run);
@@ -305,15 +317,12 @@ function syncLvWorkbench() {
     actionHint.textContent = '';
   }
   actionHint.hidden = actionHint.textContent === '';
-  document.querySelectorAll('[data-lv-stage]').forEach(function (stage, index) {
-    const isRegistered = snapshot.state === 'registered';
-    const status = isRegistered || index < meta.current
-      ? 'complete'
-      : index === meta.current
-        ? 'current'
-        : 'waiting';
-    stage.dataset.status = status;
-    if (status === 'current') stage.setAttribute('aria-current', 'step');
+  const stageElements = document.querySelectorAll('[data-lv-stage]');
+  snapshot.stages.forEach(function (stageState, index) {
+    const stage = stageElements[index];
+    if (!stage) return;
+    stage.dataset.status = stageState.status;
+    if (stageState.status === 'current') stage.setAttribute('aria-current', 'step');
     else stage.removeAttribute('aria-current');
   });
 

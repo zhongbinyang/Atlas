@@ -69,3 +69,61 @@ test('path invalidation clears stale success feedback from the DOM', () => {
   assert.equal(renderedInputs, null);
   assert.equal(clearedRunResult, true);
 });
+
+test('native summary only receives tabindex while disabled', () => {
+  const summary = {
+    tabIndex: 0,
+    removedAttributes: [],
+    removeAttribute(name) {
+      this.removedAttributes.push(name);
+    },
+  };
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('syncNativeSummaryDisabledState'), context);
+
+  context.syncNativeSummaryDisabledState(summary, true);
+  assert.equal(summary.tabIndex, -1);
+
+  context.syncNativeSummaryDisabledState(summary, false);
+  assert.deepEqual(summary.removedAttributes, ['tabindex']);
+});
+
+test('rendered scalar and structured parameters have standard names', () => {
+  const tbody = {
+    innerHTML: '',
+    children: [],
+    appendChild(row) {
+      this.children.push(row);
+    },
+  };
+  const context = {
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'lv-inputs-body');
+        return tbody;
+      },
+      createElement(tagName) {
+        assert.equal(tagName, 'tr');
+        return { innerHTML: '' };
+      },
+    },
+    escapeHtml(value) {
+      return String(value == null ? '' : value);
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('isJsonScalar'), context);
+  vm.runInContext(functionSource('renderInputsTable'), context);
+
+  context.renderInputsTable([
+    { name: 'speed', className: 'Double', value: 1.5 },
+    { name: 'config', className: 'Cluster', value: { mode: 'fast' } },
+  ]);
+
+  assert.equal(tbody.children.length, 2);
+  assert.match(tbody.children[0].innerHTML, /<input[^>]+data-name="speed"/);
+  assert.match(tbody.children[0].innerHTML, /<input[^>]+\sname="speed"/);
+  assert.match(tbody.children[1].innerHTML, /<textarea[^>]+data-name="config"/);
+  assert.match(tbody.children[1].innerHTML, /<textarea[^>]+\sname="config"/);
+});

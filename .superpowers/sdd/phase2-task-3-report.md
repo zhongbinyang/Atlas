@@ -150,3 +150,65 @@
 ### Follow-up commit
 
 `HEAD` — `fix(agent): preserve shared action layout`
+
+## Chrome DevTools integration fixes
+
+### Root causes
+
+- `<summary>` 本身是原生交互元素。`syncLvWorkbench()` 在 enabled 时额外写入
+  `tabIndex = 0`，形成冗余的显式交互语义并触发 Chrome
+  `Interactive element inside summary` issue。
+- `renderInputsTable()` 的动态 `<input>` / `<textarea>` 只有内部采集使用的
+  `data-name`；Chrome 表单审计不把 data attribute 当成标准字段标识，因此报告
+  `form field should have id or name`。
+- 总计划要求阶段轨为“路径、参数、试跑、命名、注册”，原实现只从四阶段 brief
+  落地了四个节点，runtime 也没有独立的命名进度派生。
+
+### RED
+
+- `node --test crates/agent/tests/workbench_app_behavior.test.js`
+  - 修正 `name` 属性断言的空白边界后，1 passed、2 failed。
+  - summary 测试失败为
+    `missing syncNativeSummaryDisabledState in app.js`。
+  - 字段测试显示实际 scalar HTML 只有
+    `data-name="speed"`，缺少标准 `name="speed"`；structured textarea 同理。
+- `node --test --test-name-pattern "naming stage advances" crates/agent/tests/workbench_runtime.test.js`
+  - 0 passed、1 failed；`snapshot.stages` 的 actual 为 `undefined`。
+- `cargo test -p agent --test static_ui vi_workbench_exposes_staged_and_accessible_controls`
+  - 0 passed、1 failed；失败消息为 `missing stage 命名`。
+- `cargo test -p agent --test static_ui vi_runtime_loads_before_the_application_and_has_mobile_layout_rules`
+  - 0 passed、1 failed；失败消息为
+    `the desktop stage rail must expose five stages`。
+
+### GREEN
+
+- `node --test crates/agent/tests/*.test.js`
+  - 12 passed、0 failed（9 个 runtime + 3 个真实 app DOM 行为测试）。
+- `cargo test -p agent --test static_ui`
+  - 7 passed、0 failed。
+- `cargo test -p agent`
+  - 65 Agent unit tests + 7 static UI tests passed，0 failed。
+- `node --check crates/agent/static/workbench-runtime.js` 和
+  `node --check crates/agent/static/app.js`
+  - 2 passed、0 failed。
+- `.tmp/phase2-task3-ui-check.py`
+  - 390 / 768 / 1440 无页面级横向溢出；查询、试跑、注册、搜索、路径失效和模板
+    加载流程通过。
+- `git diff --check`
+  - passed。
+
+### Changes
+
+- 新增 `syncNativeSummaryDisabledState()`：disabled 时设置 `tabIndex = -1`，
+  enabled 时 `removeAttribute('tabindex')`，依赖 `<summary>` 原生可聚焦行为。
+- 动态 scalar input 与 structured textarea 均增加经过 HTML 转义的标准
+  `name`，并保留 `data-name` 供 payload 采集；API payload 未变化。
+- 阶段轨新增 `04 命名`，注册顺延为 `05`；桌面轨改为 5 列，移动端仍为 2 列。
+- runtime `snapshot()` 新增纯派生 `stages`，没有增加业务状态：
+  `ready_to_run` 名称无效时 naming current，名称有效时 naming completed /
+  register current；`ready_to_register` 与 `registering` 的 register current，
+  `registered` 全部 completed。
+
+### Follow-up commit
+
+`HEAD` — `fix(agent): resolve VI integration accessibility`

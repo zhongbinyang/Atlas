@@ -78,7 +78,7 @@ fn vi_workbench_exposes_staged_and_accessible_controls() {
         INDEX.contains("class=\"lv-stage-rail\" aria-label=\"VI 工作阶段\""),
         "the VI workflow needs a labelled stage rail"
     );
-    for stage in ["路径", "参数", "试跑", "注册"] {
+    for stage in ["路径", "参数", "试跑", "命名", "注册"] {
         assert!(
             INDEX.contains(&format!("<span class=\"lv-stage-label\">{stage}</span>")),
             "missing stage {stage}"
@@ -98,6 +98,16 @@ fn vi_workbench_exposes_staged_and_accessible_controls() {
             "<p id=\"lv-action-hint\" class=\"lv-action-hint\" role=\"status\" aria-live=\"polite\">"
         ),
         "disabled VI actions need a visible reason"
+    );
+    assert!(
+        APP.contains(
+            "syncNativeSummaryDisabledState(advancedSummary, controls.advancedDisabled);"
+        ) && APP.contains("summary.removeAttribute('tabindex');"),
+        "enabled native summaries must rely on their built-in focusability"
+    );
+    assert!(
+        !APP.contains("advancedSummary.tabIndex = controls.advancedDisabled ? -1 : 0;"),
+        "native summaries must not receive a redundant tabindex=0"
     );
 }
 
@@ -155,6 +165,16 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         STYLE.contains("#page-workbench {\n  min-width: 0;\n}")
             && STYLE.contains("#page-workbench .lv-toolbar > * {\n  min-width: 0;\n}"),
         "the workbench must shrink without page-level overflow"
+    );
+    assert!(
+        STYLE.contains(
+            ".lv-stage-rail {\n  display: grid;\n  grid-template-columns: repeat(5, minmax(0, 1fr));"
+        ),
+        "the desktop stage rail must expose five stages"
+    );
+    assert!(
+        APP.contains("snapshot.stages.forEach(function (stageState, index) {"),
+        "the stage rail must render runtime-derived naming progress"
     );
     assert!(
         mobile_rules.contains("#page-workbench .lv-actions {\n    width: 100%;")
