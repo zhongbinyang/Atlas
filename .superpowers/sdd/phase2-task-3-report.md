@@ -70,3 +70,45 @@
   Chrome，并通过路由 fixture 提供静态资源和 API 响应。
 - 请求的内部只读 reviewer 超时且在提交前停止；controller 已知会并将执行正式
   独立评审。
+
+## Formal review fixes
+
+### RED
+
+- `node --test crates/agent/tests/workbench_app_behavior.test.js`
+  - 1 test failed, 0 passed。
+  - 失败为 `lv-msg.hidden` 的 `actual false / expected true`，证明路径失效清除了
+    schema 和试跑结果，但旧“参数已加载/已注册”成功消息仍可见。
+- `cargo test -p agent --test static_ui vi_runtime_loads_before_the_application_and_has_mobile_layout_rules`
+  - 1 test failed, 0 passed。
+  - 失败原因为 VI shrink/action 规则没有 `#page-workbench` 作用域；测试同时禁止
+    `.lv-toolbar > *`、`.lv-actions`、`.lv-actions button` 三个裸选择器。
+
+### GREEN
+
+- `node --test crates/agent/tests/workbench_runtime.test.js crates/agent/tests/workbench_app_behavior.test.js`
+  - 9 passed, 0 failed（8 个 runtime 状态测试 + 1 个真实 `app.js` 函数体 DOM
+    行为测试）。
+- `cargo test -p agent --test static_ui`
+  - 7 passed, 0 failed。
+- `cargo test -p agent`
+  - 65 Agent unit tests + 7 static UI tests passed，0 failed。
+- `node --check crates/agent/static/workbench-runtime.js` 和
+  `node --check crates/agent/static/app.js`
+  - 2 passed，0 failed。
+- `git diff --check`
+  - passed。
+
+### Changes
+
+- 路径真正失效时，`clearLvSchemasAndResults()` 现在调用既有 `hideLvMsg()`，
+  清除旧成功消息；规范化结果仍等于已查询路径时不会进入失效清理。
+- `.lv-toolbar > *`、`.lv-actions` 与移动端 `.lv-actions button` 全部收紧为
+  `#page-workbench ...`，不再影响通用工作台。
+- 新增 `crates/agent/tests/workbench_app_behavior.test.js`，执行从产品
+  `app.js` 提取的实际清理函数并断言 DOM 结果。
+- `static_ui.rs` 改为要求作用域选择器并显式拒绝三类裸规则，保护通用页面。
+
+### Follow-up commit
+
+`HEAD` — `fix(agent): address VI workbench review`

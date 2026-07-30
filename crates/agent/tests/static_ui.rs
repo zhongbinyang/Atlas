@@ -10,6 +10,11 @@ fn rule_body<'a>(rules: &'a str, selector: &str) -> &'a str {
         .unwrap_or_else(|| panic!("missing {selector} rule"))
 }
 
+fn has_exact_selector(rules: &str, selector: &str) -> bool {
+    let expected = format!("{selector} {{");
+    rules.lines().any(|line| line.trim() == expected)
+}
+
 #[test]
 fn sequence_page_has_mobile_safe_layout_rules() {
     let mobile_rules = STYLE
@@ -148,7 +153,19 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
     );
     assert!(
         STYLE.contains("#page-workbench {\n  min-width: 0;\n}")
-            && STYLE.contains(".lv-toolbar > * {\n  min-width: 0;\n}"),
+            && STYLE.contains("#page-workbench .lv-toolbar > * {\n  min-width: 0;\n}"),
         "the workbench must shrink without page-level overflow"
     );
+    assert!(
+        mobile_rules.contains("#page-workbench .lv-actions {\n    width: 100%;")
+            && mobile_rules
+                .contains("#page-workbench .lv-actions button {\n    flex: 1 1 8rem;"),
+        "responsive VI actions must remain scoped to the VI workbench"
+    );
+    for selector in [".lv-toolbar > *", ".lv-actions", ".lv-actions button"] {
+        assert!(
+            !has_exact_selector(STYLE, selector),
+            "{selector} must not leak into the general workbench"
+        );
+    }
 }

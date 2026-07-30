@@ -321,6 +321,7 @@ function syncLvWorkbench() {
 }
 
 function clearLvSchemasAndResults() {
+  hideLvMsg();
   renderInputsTable(null, '先查询参数');
   document.getElementById('lv-json-raw').textContent = '—';
   const summary = document.getElementById('lv-schema-summary');
