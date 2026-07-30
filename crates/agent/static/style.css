@@ -639,6 +639,10 @@ th {
   color: var(--ok);
 }
 
+.lv-stage-rail li[data-status="optional"] {
+  border-top-color: var(--accent);
+}
+
 .lv-stage-index {
   display: block;
   font-family: var(--font-mono);
@@ -653,6 +657,12 @@ th {
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lv-stage-state {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
 }
 
 .lv-config {

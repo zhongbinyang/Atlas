@@ -179,15 +179,19 @@ function renderInputsTable(inputs, emptyText) {
     tbody.innerHTML = '<tr><td colspan="3" class="empty">无输入参数</td></tr>';
     return;
   }
-  for (const inp of inputs) {
+  for (let inputIndex = 0; inputIndex < inputs.length; inputIndex += 1) {
+    const inp = inputs[inputIndex];
     const row = document.createElement('tr');
     const name = escapeHtml(inp.name || '');
     const className = escapeHtml(inp.className || '');
+    const inputId = 'lv-input-' + inputIndex;
     const val = inp.value;
     let valueCell;
     if (isJsonScalar(val)) {
       valueCell =
-        '<textarea class="lv-value lv-value-json mono" data-name="' +
+        '<textarea class="lv-value lv-value-json mono" id="' +
+        inputId +
+        '" data-name="' +
         escapeHtml(inp.name) +
         '" name="' +
         escapeHtml(inp.name) +
@@ -198,7 +202,9 @@ function renderInputsTable(inputs, emptyText) {
         '</textarea>';
     } else {
       valueCell =
-        '<input class="lv-value mono" data-name="' +
+        '<input class="lv-value mono" id="' +
+        inputId +
+        '" data-name="' +
         escapeHtml(inp.name) +
         '" name="' +
         escapeHtml(inp.name) +
@@ -209,7 +215,7 @@ function renderInputsTable(inputs, emptyText) {
         '">';
     }
     row.innerHTML =
-      '<td>' + name + '</td>' +
+      '<td><label for="' + inputId + '">' + name + '</label></td>' +
       '<td class="mono">' + className + '</td>' +
       '<td>' + valueCell + '</td>';
     tbody.appendChild(row);
@@ -256,16 +262,37 @@ function readRunOptions() {
   return opts;
 }
 
-const LV_STAGE_META = {
-  empty: { text: '填写 VI 路径以开始' },
-  ready_to_inspect: { text: '路径已就绪，可以查询参数' },
-  inspecting: { text: '正在查询参数…' },
-  ready_to_run: { text: '参数已就绪，可以试跑或注册' },
-  running: { text: '正在试跑…' },
-  ready_to_register: { text: '试跑完成，可以注册' },
-  registering: { text: '正在注册到中心…' },
-  registered: { text: '注册完成' },
-};
+function lvStageMessage(snapshot) {
+  if (snapshot.state === 'ready_to_run') {
+    if (snapshot.runResult !== null) return '试跑完成，等待填写名称';
+    if (String(snapshot.name || '').trim()) {
+      return '参数已查询，尚未试跑；可直接注册，试跑可选';
+    }
+    return '参数已查询，尚未试跑；可以试跑';
+  }
+  if (snapshot.state === 'ready_to_register') {
+    return '试跑完成，已命名，可以注册';
+  }
+  const messages = {
+    empty: '填写 VI 路径以开始',
+    ready_to_inspect: '路径已就绪，可以查询参数',
+    inspecting: '正在查询参数…',
+    running: '正在试跑…',
+    registering: '正在注册到中心…',
+    registered: '注册完成',
+  };
+  return messages[snapshot.state] || messages.empty;
+}
+
+function lvStageStatusText(status) {
+  const labels = {
+    current: '当前',
+    optional: '可选',
+    complete: '完成',
+    waiting: '待处理',
+  };
+  return labels[status] || labels.waiting;
+}
 
 function setActionState(button, action) {
   button.disabled = !action.enabled;
@@ -286,6 +313,13 @@ function syncAdvancedDetailsDisabledState(details, disabled) {
   details.removeAttribute('aria-disabled');
 }
 
+function syncLvTemplateLoadButtons(disabled) {
+  document.querySelectorAll('#lv-center-body .lv-load-template').forEach(function (button) {
+    button.disabled = disabled;
+    button.title = disabled ? '操作进行中' : '';
+  });
+}
+
 function syncLvWorkbench() {
   const snapshot = viWorkbench.snapshot();
   const controls = snapshot.controls;
@@ -298,6 +332,7 @@ function syncLvWorkbench() {
   document.querySelectorAll('#lv-inputs-body .lv-value').forEach(function (el) {
     el.disabled = controls.inputsDisabled;
   });
+  syncLvTemplateLoadButtons(controls.inputsDisabled);
   document.getElementById('lv-show-fp').disabled = controls.advancedDisabled;
   document.getElementById('lv-timeout').disabled = controls.advancedDisabled;
   syncAdvancedDetailsDisabledState(advanced, controls.advancedDisabled);
@@ -306,17 +341,19 @@ function syncLvWorkbench() {
   setActionState(document.getElementById('lv-run-btn'), controls.run);
   setActionState(document.getElementById('lv-register-btn'), controls.register);
 
-  const meta = LV_STAGE_META[snapshot.state] || LV_STAGE_META.empty;
-  document.getElementById('lv-stage-status').textContent = meta.text;
+  const stageMessage = lvStageMessage(snapshot);
+  document.getElementById('lv-stage-status').textContent = stageMessage;
   const actionHint = document.getElementById('lv-action-hint');
   if (snapshot.state === 'empty') {
     actionHint.textContent = '填写 VI 路径后可查询参数';
   } else if (snapshot.state === 'ready_to_inspect') {
     actionHint.textContent = '请先查询参数；成功后可试跑和注册';
-  } else if (controls.run.enabled && !controls.register.enabled) {
-    actionHint.textContent = '试跑已可用；填写名称后可注册';
+  } else if (snapshot.state === 'ready_to_run') {
+    actionHint.textContent = stageMessage;
+  } else if (snapshot.state === 'ready_to_register') {
+    actionHint.textContent = '可以注册；也可再次试跑';
   } else if (snapshot.pendingAction) {
-    actionHint.textContent = meta.text + '，请稍候';
+    actionHint.textContent = stageMessage + '，请稍候';
   } else {
     actionHint.textContent = '';
   }
@@ -326,6 +363,8 @@ function syncLvWorkbench() {
     const stage = stageElements[index];
     if (!stage) return;
     stage.dataset.status = stageState.status;
+    stage.querySelector('.lv-stage-state').textContent =
+      lvStageStatusText(stageState.status);
     if (stageState.status === 'current') stage.setAttribute('aria-current', 'step');
     else stage.removeAttribute('aria-current');
   });
@@ -518,7 +557,7 @@ async function registerViTemplate() {
 }
 
 function loadTemplateToEditor(t) {
-  if (!viWorkbench.loadTemplate(t)) return;
+  if (!viWorkbench.loadTemplate(t)) return false;
   const snapshot = viWorkbench.snapshot();
   document.getElementById('lv-vi-path').value = snapshot.path;
   document.getElementById('lv-name').value = snapshot.name;
@@ -535,6 +574,7 @@ function loadTemplateToEditor(t) {
   clearLvRunResult();
   showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
   syncLvWorkbench();
+  return true;
 }
 
 function showLvCenterMsg(text, ok) {
@@ -583,9 +623,15 @@ function renderLabviewCenterTemplates() {
     const actions = document.createElement('td');
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
+    loadBtn.className = 'lv-load-template';
     loadBtn.textContent = '加载到编辑区';
+    loadBtn.disabled = viWorkbench.snapshot().controls.inputsDisabled;
+    loadBtn.title = loadBtn.disabled ? '操作进行中' : '';
     loadBtn.addEventListener('click', function () {
-      loadTemplateToEditor(t);
+      if (!loadTemplateToEditor(t)) {
+        showLvCenterMsg('操作进行中，无法加载到编辑区', false);
+        return;
+      }
       showLvCenterMsg('已加载: ' + (t.name || t.id), true);
     });
     actions.appendChild(loadBtn);

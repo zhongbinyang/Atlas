@@ -81,7 +81,7 @@
       return {
         pathDisabled: busy,
         nameDisabled: model.state === 'inspecting' || model.state === 'registering',
-        inputsDisabled: model.state === 'running' || model.state === 'registering',
+        inputsDisabled: busy,
         advancedDisabled: busy || model.state === 'empty',
         inspect: { enabled: canInspect, reason: inspectReason },
         run: { enabled: canRun, reason: runReason },
@@ -104,20 +104,30 @@
 
       if (model.state === 'registered') {
         completeThrough(4);
-      } else if (model.state === 'registering' || model.state === 'ready_to_register') {
+        if (model.runResult === null) stages[2].status = 'optional';
+      } else if (model.state === 'registering') {
+        completeThrough(3);
+        if (model.runResult === null) stages[2].status = 'optional';
+        markCurrent(4);
+      } else if (model.state === 'ready_to_register') {
         completeThrough(3);
         markCurrent(4);
       } else if (model.state === 'ready_to_run') {
-        completeThrough(2);
-        if (hasValidName()) {
-          completeThrough(3);
+        completeThrough(1);
+        if (model.runResult !== null) {
+          stages[2].status = 'complete';
+          markCurrent(3);
+        } else if (hasValidName()) {
+          stages[2].status = 'optional';
+          stages[3].status = 'complete';
           markCurrent(4);
         } else {
-          markCurrent(3);
+          markCurrent(2);
         }
       } else if (model.state === 'running') {
         completeThrough(1);
         markCurrent(2);
+        if (hasValidName()) stages[3].status = 'complete';
       } else if (model.state === 'inspecting' || model.state === 'ready_to_inspect') {
         completeThrough(0);
         markCurrent(1);
@@ -183,6 +193,13 @@
     function inputName(raw) {
       if (controls().nameDisabled) return false;
       model.name = String(raw == null ? '' : raw);
+      if (model.runResult !== null) {
+        if (model.state === 'ready_to_run' && hasValidName()) {
+          model.state = 'ready_to_register';
+        } else if (model.state === 'ready_to_register' && !hasValidName()) {
+          model.state = 'ready_to_run';
+        }
+      }
       return true;
     }
 

@@ -97,6 +97,7 @@ function createFocusable(document) {
   return {
     hidden: false,
     disabled: false,
+    isConnected: true,
     focusCount: 0,
     focus() {
       this.focusCount += 1;
@@ -114,12 +115,25 @@ function createFocusable(document) {
 }
 
 function createDialog(document, controls) {
-  return {
+  const dialog = {
     hidden: true,
+    isConnected: true,
     querySelectorAll() {
       return controls;
     },
+    querySelector(selector) {
+      if (selector === '[data-dialog-confirm]') return controls[0] || null;
+      if (selector === '[data-dialog-cancel]') return controls[1] || null;
+      return null;
+    },
+    contains(element) {
+      return controls.includes(element);
+    },
   };
+  for (const control of controls) {
+    if (!control.parentElement) control.parentElement = dialog;
+  }
+  return dialog;
 }
 
 function createToastElement() {
@@ -289,6 +303,79 @@ test('dialog controller replaces an open dialog without restoring focus to its h
   assert.equal(document.activeElement, secondFirstControl);
 });
 
+test('dialog controller restores a nested child trigger before the original parent trigger', () => {
+  const document = createKeyboardDocument();
+  const externalTrigger = createFocusable(document);
+  const childTrigger = createFocusable(document);
+  const parentFirstControl = createFocusable(document);
+  const childFirstControl = createFocusable(document);
+  const parentDialog = createDialog(document, [parentFirstControl, childTrigger]);
+  const childDialog = createDialog(document, [childFirstControl]);
+  const closeReasons = [];
+  const controller = createDialogController({ document });
+
+  controller.open(parentDialog, {
+    trigger: externalTrigger,
+    onClose: (reason) => closeReasons.push(reason),
+  });
+  controller.open(childDialog, { parent: parentDialog, trigger: childTrigger });
+
+  assert.equal(parentDialog.hidden, true);
+  assert.equal(childDialog.hidden, false);
+  controller.close(childDialog);
+  assert.equal(parentDialog.hidden, false);
+  assert.equal(childDialog.hidden, true);
+  assert.equal(document.activeElement, childTrigger);
+  assert.deepEqual(closeReasons, []);
+
+  controller.close(parentDialog);
+  assert.equal(parentDialog.hidden, true);
+  assert.equal(document.activeElement, externalTrigger);
+  assert.deepEqual(closeReasons, ['closed']);
+});
+
+test('dialog controller reopening the same dialog retains its original restore target', () => {
+  const document = createKeyboardDocument();
+  const externalTrigger = createFocusable(document);
+  const pagerButton = createFocusable(document);
+  const firstControl = createFocusable(document);
+  const dialog = createDialog(document, [firstControl, pagerButton]);
+  const controller = createDialogController({ document });
+
+  controller.open(dialog, { trigger: externalTrigger });
+  controller.open(dialog, { trigger: pagerButton });
+  controller.close(dialog);
+
+  assert.equal(document.activeElement, externalTrigger);
+  assert.equal(pagerButton.focusCount, 0);
+});
+
+test('dialog controller uses its fallback for disconnected disabled or hidden restore targets', () => {
+  for (const invalidate of [
+    (target) => { target.isConnected = false; },
+    (target) => { target.disabled = true; },
+    (target) => {
+      target.parentElement = {
+        hidden: true,
+        getAttribute() { return null; },
+      };
+    },
+  ]) {
+    const document = createKeyboardDocument();
+    const trigger = createFocusable(document);
+    const fallback = createFocusable(document);
+    const dialog = createDialog(document, [createFocusable(document)]);
+    const controller = createDialogController({ document, fallback });
+
+    controller.open(dialog, { trigger });
+    invalidate(trigger);
+    controller.close(dialog);
+
+    assert.equal(document.activeElement, fallback);
+    assert.equal(trigger.focusCount, 0);
+  }
+});
+
 test('dialog controller does not retain a cancelled confirmation action for the next confirmation', async () => {
   const document = createKeyboardDocument();
   const trigger = createFocusable(document);
@@ -328,6 +415,24 @@ test('toast controller shows one message for 4000 ms and pauses while hovered or
   element.dispatch('focusout');
   timers.fire(timers.nextActive());
   assert.equal(element.hidden, true);
+});
+
+test('toast mouseleave does not resume auto-close while focus remains inside', () => {
+  const timers = createTimers();
+  const element = createToastElement();
+  const toast = createToastController(element, {
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
+
+  toast.show('截图已获取', 'success');
+  element.dispatch('focusin');
+  element.dispatch('mouseenter');
+  element.dispatch('mouseleave');
+  assert.equal(timers.nextActive(), undefined);
+
+  element.dispatch('focusout');
+  assert.equal(timers.nextActive().delay, 4000);
 });
 
 test('request deduper reuses an in-flight request and allows a new request after settlement', async () => {

@@ -181,6 +181,21 @@ fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
         APP.contains("snapshot.stages.forEach(function (stageState, index) {"),
         "the stage rail must render runtime-derived naming progress"
     );
+    assert_eq!(
+        INDEX.matches("class=\"lv-stage-state\">待处理</span>").count(),
+        4,
+        "waiting VI stages must expose visible initial status text"
+    );
+    assert_eq!(
+        INDEX.matches("class=\"lv-stage-state\">当前</span>").count(),
+        1,
+        "the initial current VI stage must expose visible status text"
+    );
+    assert!(
+        APP.contains("stage.querySelector('.lv-stage-state').textContent =")
+            && APP.contains("lvStageStatusText(stageState.status)"),
+        "runtime stage status changes must update visible text"
+    );
     assert!(
         mobile_rules.contains("#page-workbench .lv-actions {\n    width: 100%;")
             && mobile_rules

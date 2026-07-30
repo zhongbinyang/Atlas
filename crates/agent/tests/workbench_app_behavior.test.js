@@ -10,6 +10,10 @@ const APP_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'static', 'app.js'),
   'utf8'
 );
+const INDEX_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'static', 'index.html'),
+  'utf8'
+);
 
 function functionSource(name) {
   const marker = 'function ' + name + '(';
@@ -112,7 +116,87 @@ test('advanced details uses inert while native summary keeps built-in focusabili
   assert.deepEqual(summary.removedAttributes, ['tabindex', 'tabindex']);
 });
 
-test('rendered scalar and structured parameters have standard names', () => {
+test('VI status copy distinguishes not run, run awaiting Name, and ready to register', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('lvStageMessage'), context);
+
+  assert.equal(
+    context.lvStageMessage({ state: 'ready_to_run', name: '', runResult: null }),
+    '参数已查询，尚未试跑；可以试跑'
+  );
+  assert.equal(
+    context.lvStageMessage({
+      state: 'ready_to_run',
+      name: 'Measure',
+      runResult: null,
+    }),
+    '参数已查询，尚未试跑；可直接注册，试跑可选'
+  );
+  assert.equal(
+    context.lvStageMessage({
+      state: 'ready_to_run',
+      name: '',
+      runResult: { status: 'ok' },
+    }),
+    '试跑完成，等待填写名称'
+  );
+  assert.equal(
+    context.lvStageMessage({
+      state: 'ready_to_register',
+      name: 'Measure',
+      runResult: { status: 'ok' },
+    }),
+    '试跑完成，已命名，可以注册'
+  );
+});
+
+test('every VI stage exposes visible status text instead of color alone', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('lvStageStatusText'), context);
+
+  assert.deepEqual(
+    ['current', 'optional', 'complete', 'waiting'].map(context.lvStageStatusText),
+    ['当前', '可选', '完成', '待处理']
+  );
+  assert.equal(
+    (INDEX_SOURCE.match(/class="lv-stage-state">待处理<\/span>/g) || []).length,
+    4
+  );
+  assert.equal(
+    (INDEX_SOURCE.match(/class="lv-stage-state">当前<\/span>/g) || []).length,
+    1
+  );
+});
+
+test('Center VI load buttons lock and expose a busy reason with the editor', () => {
+  const buttons = [{ disabled: false, title: '' }, { disabled: false, title: '' }];
+  const context = {
+    document: {
+      querySelectorAll(selector) {
+        assert.equal(selector, '#lv-center-body .lv-load-template');
+        return buttons;
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('syncLvTemplateLoadButtons'), context);
+
+  context.syncLvTemplateLoadButtons(true);
+  assert.deepEqual(buttons, [
+    { disabled: true, title: '操作进行中' },
+    { disabled: true, title: '操作进行中' },
+  ]);
+
+  context.syncLvTemplateLoadButtons(false);
+  assert.deepEqual(buttons, [
+    { disabled: false, title: '' },
+    { disabled: false, title: '' },
+  ]);
+});
+
+test('rendered scalar and structured parameters have standard and accessible names', () => {
   const tbody = {
     innerHTML: '',
     children: [],
@@ -147,6 +231,10 @@ test('rendered scalar and structured parameters have standard names', () => {
   assert.equal(tbody.children.length, 2);
   assert.match(tbody.children[0].innerHTML, /<input[^>]+data-name="speed"/);
   assert.match(tbody.children[0].innerHTML, /<input[^>]+\sname="speed"/);
+  assert.match(tbody.children[0].innerHTML, /<label for="lv-input-0">speed<\/label>/);
+  assert.match(tbody.children[0].innerHTML, /<input[^>]+\sid="lv-input-0"/);
   assert.match(tbody.children[1].innerHTML, /<textarea[^>]+data-name="config"/);
   assert.match(tbody.children[1].innerHTML, /<textarea[^>]+\sname="config"/);
+  assert.match(tbody.children[1].innerHTML, /<label for="lv-input-1">config<\/label>/);
+  assert.match(tbody.children[1].innerHTML, /<textarea[^>]+\sid="lv-input-1"/);
 });

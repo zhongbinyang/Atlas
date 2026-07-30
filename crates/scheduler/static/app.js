@@ -13,7 +13,10 @@ let filesPath = '';
 let inputsPopoverEl = null;
 let inputsPopoverHideTimer = null;
 const toastMessages = dashboardRuntime.createToastController(document.getElementById('toast'));
-const dialogController = dashboardRuntime.createDialogController({ document });
+const dialogController = dashboardRuntime.createDialogController({
+  document,
+  fallback: () => document.querySelector('.view-tabs [aria-current="page"]'),
+});
 
 const requestAgents = dashboardRuntime.createRequestDeduper(async () => {
   const resp = await fetch('/api/agents');
@@ -222,9 +225,9 @@ function formatByteSize(bytes) {
 
 function openShotModal(returnToHistory) {
   dialogController.open(document.getElementById('shot-modal'), {
-    onClose: (reason) => {
+    parent: returnToHistory ? document.getElementById('shot-history-modal') : null,
+    onClose: () => {
       document.getElementById('shot-img').removeAttribute('src');
-      if (reason !== 'replaced' && returnToHistory) openShotHistoryModal();
     },
   });
 }
@@ -263,12 +266,12 @@ function closeFilesModal() {
 
 function openFilePreviewModal() {
   dialogController.open(document.getElementById('file-preview-modal'), {
-    onClose: (reason) => {
+    parent: document.getElementById('files-modal'),
+    onClose: () => {
       document.getElementById('file-preview-pre').hidden = true;
       document.getElementById('file-preview-pre').textContent = '';
       document.getElementById('file-preview-img').hidden = true;
       document.getElementById('file-preview-img').removeAttribute('src');
-      if (reason !== 'replaced') openFilesModal();
     },
   });
 }

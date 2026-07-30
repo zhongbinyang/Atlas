@@ -64,6 +64,7 @@ test('inspection unlocks run and name changes only recalculate registration', ()
   assert.equal(runtime.beginInspect(), true);
   assert.equal(runtime.snapshot().state, 'inspecting');
   assert.equal(runtime.snapshot().controls.pathDisabled, true);
+  assert.equal(runtime.snapshot().controls.inputsDisabled, true);
   assert.equal(runtime.snapshot().controls.advancedDisabled, true);
 
   runtime.inspectSucceeded({
@@ -83,9 +84,19 @@ test('inspection unlocks run and name changes only recalculate registration', ()
   assert.equal(snapshot.inputs.length, 1);
   assert.equal(snapshot.outputs.length, 2);
   assert.equal(snapshot.controls.register.enabled, true);
+
+  assert.equal(runtime.beginRegister(), true);
+  runtime.registerSucceeded({ id: 'direct-register' });
+  assert.deepEqual(runtime.snapshot().stages, [
+    { key: 'path', status: 'complete' },
+    { key: 'inspect', status: 'complete' },
+    { key: 'run', status: 'optional' },
+    { key: 'naming', status: 'complete' },
+    { key: 'register', status: 'complete' },
+  ]);
 });
 
-test('naming stage advances from current to complete without a new business state', () => {
+test('an inspected VI presents Run as current or optional without marking it complete', () => {
   const runtime = createWorkbenchRuntime();
   runtime.loadTemplate({
     vi_path: String.raw`C:\VI\Measure.vi`,
@@ -99,15 +110,17 @@ test('naming stage advances from current to complete without a new business stat
   assert.deepEqual(snapshot.stages, [
     { key: 'path', status: 'complete' },
     { key: 'inspect', status: 'complete' },
-    { key: 'run', status: 'complete' },
-    { key: 'naming', status: 'current' },
+    { key: 'run', status: 'current' },
+    { key: 'naming', status: 'waiting' },
     { key: 'register', status: 'waiting' },
   ]);
 
   runtime.inputName('Measure');
   snapshot = runtime.snapshot();
   assert.equal(snapshot.state, 'ready_to_run');
-  assert.deepEqual(snapshot.stages.slice(3), [
+  assert.equal(snapshot.runResult, null);
+  assert.deepEqual(snapshot.stages.slice(2), [
+    { key: 'run', status: 'optional' },
     { key: 'naming', status: 'complete' },
     { key: 'register', status: 'current' },
   ]);
@@ -176,6 +189,38 @@ test('successful run without a valid name returns to ready to run', () => {
   assert.equal(snapshot.controls.register.reason, '请输入名称');
 });
 
+test('a successful Run and valid Name move bidirectionally between run and register readiness', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: '',
+    inputs: [],
+    outputs: [],
+  });
+  runtime.beginRun();
+  const runResult = { status: 'ok', outputs: { reading: 1.2 } };
+  runtime.runSucceeded(runResult);
+
+  let snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.deepEqual(snapshot.runResult, runResult);
+  assert.deepEqual(snapshot.stages.slice(2), [
+    { key: 'run', status: 'complete' },
+    { key: 'naming', status: 'current' },
+    { key: 'register', status: 'waiting' },
+  ]);
+
+  runtime.inputName('Measure');
+  snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_register');
+  assert.deepEqual(snapshot.runResult, runResult);
+
+  runtime.inputName('  ');
+  snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.deepEqual(snapshot.runResult, runResult);
+});
+
 test('in-flight actions reject duplicate submissions and recover after failure', () => {
   const runtime = createWorkbenchRuntime();
   runtime.inputPath(String.raw`C:\VI\Measure.vi`);
@@ -199,6 +244,46 @@ test('in-flight actions reject duplicate submissions and recover after failure',
   assert.equal(runtime.beginRegister(), false);
   runtime.actionFailed('register');
   assert.equal(runtime.snapshot().state, 'ready_to_run');
+});
+
+test('re-inspection retains old parameter rows but disables their values while pending', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: 'Measure',
+    inputs: [{ name: 'channel', value: 1 }],
+    outputs: [{ name: 'reading' }],
+  });
+
+  assert.equal(runtime.beginInspect(), true);
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'inspecting');
+  assert.deepEqual(snapshot.inputs, [{ name: 'channel', value: 1 }]);
+  assert.equal(snapshot.controls.inputsDisabled, true);
+});
+
+test('template loads are rejected without editor changes during every pending action', () => {
+  for (const beginAction of ['beginInspect', 'beginRun', 'beginRegister']) {
+    const runtime = createWorkbenchRuntime();
+    runtime.loadTemplate({
+      vi_path: String.raw`C:\VI\Original.vi`,
+      name: 'Original',
+      inputs: [{ name: 'original' }],
+      outputs: [],
+    });
+
+    assert.equal(runtime[beginAction](), true);
+    assert.equal(runtime.snapshot().controls.inputsDisabled, true);
+    assert.equal(runtime.loadTemplate({
+      vi_path: String.raw`C:\VI\Replacement.vi`,
+      name: 'Replacement',
+      inputs: [{ name: 'replacement' }],
+      outputs: [],
+    }), false);
+    assert.equal(runtime.snapshot().path, String.raw`C:\VI\Original.vi`);
+    assert.equal(runtime.snapshot().name, 'Original');
+    assert.deepEqual(runtime.snapshot().inputs, [{ name: 'original' }]);
+  }
 });
 
 test('editing a path whose normalized value matches the inspected path keeps results valid', () => {

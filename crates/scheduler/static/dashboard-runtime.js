@@ -37,7 +37,8 @@
     const setTimer = options?.setTimeout || setTimeout;
     const clearTimerRef = options?.clearTimeout || clearTimeout;
     let timer = null;
-    let paused = false;
+    let hovered = false;
+    let focused = false;
 
     function clearTimer() {
       if (timer === null) return;
@@ -54,24 +55,24 @@
 
     function scheduleClose() {
       clearTimer();
-      if (paused || element.hidden) return;
+      if (hovered || focused || element.hidden) return;
       timer = setTimer(close, delayMs);
     }
 
     element.addEventListener('mouseenter', () => {
-      paused = true;
+      hovered = true;
       clearTimer();
     });
     element.addEventListener('mouseleave', () => {
-      paused = false;
+      hovered = false;
       scheduleClose();
     });
     element.addEventListener('focusin', () => {
-      paused = true;
+      focused = true;
       clearTimer();
     });
     element.addEventListener('focusout', () => {
-      paused = false;
+      focused = false;
       scheduleClose();
     });
 
@@ -91,17 +92,34 @@
     const focusableSelector =
       'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     let current = null;
+    const parents = [];
 
     function isHidden(element) {
       for (let node = element; node; node = node.parentElement) {
         if (node.hidden || node.getAttribute?.('aria-hidden') === 'true') return true;
+        const style = documentRef.defaultView?.getComputedStyle?.(node);
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse')) {
+          return true;
+        }
       }
       return false;
     }
 
+    function isValidFocusTarget(element) {
+      return Boolean(
+        element &&
+        element.isConnected !== false &&
+        !element.disabled &&
+        element.getAttribute?.('disabled') == null &&
+        element.getAttribute?.('aria-disabled') !== 'true' &&
+        !isHidden(element) &&
+        typeof element.focus === 'function',
+      );
+    }
+
     function focusable(dialog) {
       return Array.from(dialog.querySelectorAll(focusableSelector)).filter((element) =>
-        !isHidden(element) && !element.disabled,
+        isValidFocusTarget(element),
       );
     }
 
@@ -110,25 +128,71 @@
       (controls[0] || dialog).focus?.();
     }
 
+    function fallbackTarget(entry) {
+      const configured = entry?.fallback ?? options.fallback;
+      const candidate = typeof configured === 'function'
+        ? configured(current?.dialog || null)
+        : configured;
+      if (isValidFocusTarget(candidate)) return candidate;
+      if (current?.dialog) {
+        const controls = focusable(current.dialog);
+        if (controls.length) return controls[0];
+        if (isValidFocusTarget(current.dialog)) return current.dialog;
+      }
+      return null;
+    }
+
+    function restoreFocus(target, entry) {
+      const destination = isValidFocusTarget(target) ? target : fallbackTarget(entry);
+      destination?.focus();
+    }
+
+    function replaceAll() {
+      const openEntries = current ? parents.concat(current).reverse() : [];
+      current = null;
+      parents.length = 0;
+      for (const entry of openEntries) {
+        entry.dialog.hidden = true;
+        entry.onClose?.('replaced');
+      }
+    }
+
     function close(dialog, closeOptions) {
       if (!current || (dialog && current.dialog !== dialog)) return false;
       const active = current;
-      current = null;
       active.dialog.hidden = true;
       active.onClose?.(closeOptions?.reason || 'closed');
-      if (closeOptions?.restoreFocus !== false) active.trigger?.focus?.();
+      current = parents.pop() || null;
+      if (current) current.dialog.hidden = false;
+      if (closeOptions?.restoreFocus !== false) restoreFocus(active.trigger, current || active);
       return true;
     }
 
     function open(dialog, openOptions) {
-      if (current && current.dialog !== dialog) {
-        close(undefined, { reason: 'replaced', restoreFocus: false });
+      if (current?.dialog === dialog) {
+        if (openOptions?.onClose) current.onClose = openOptions.onClose;
+        dialog.hidden = false;
+        focusFirst(dialog);
+        return;
       }
+
       const trigger = openOptions?.trigger || documentRef.activeElement;
+      const opensFromCurrent = current && (
+        openOptions?.parent === current.dialog ||
+        current.dialog.contains?.(trigger)
+      );
+      if (current && opensFromCurrent) {
+        current.dialog.hidden = true;
+        parents.push(current);
+      } else if (current) {
+        replaceAll();
+      }
+
       current = {
         dialog,
         trigger,
         onClose: openOptions?.onClose,
+        fallback: openOptions?.fallback,
       };
       dialog.hidden = false;
       focusFirst(dialog);
@@ -139,10 +203,9 @@
         const finish = (result) => {
           if (!current || current.dialog !== dialog) return;
           const active = current;
-          current = null;
           dialog._atlasConfirmFinish = null;
-          dialog.hidden = true;
-          active.trigger?.focus?.();
+          active.onClose = null;
+          close(dialog);
           resolve(result);
         };
         const controls = focusable(dialog);

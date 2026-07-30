@@ -191,12 +191,14 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
         );
     }
     assert!(
-        app.contains("if (reason !== 'replaced') openFilesModal()"),
-        "closing a file preview must restore the visible Files dialog"
+        app.contains("parent: document.getElementById('files-modal')"),
+        "file preview must use the dialog controller's parent flow"
     );
     assert!(
-        app.contains("if (reason !== 'replaced' && returnToHistory) openShotHistoryModal()"),
-        "closing a historical screenshot must restore the visible History dialog"
+        app.contains(
+            "parent: returnToHistory ? document.getElementById('shot-history-modal') : null"
+        ),
+        "historical screenshots must use the dialog controller's parent flow"
     );
     assert!(
         app.contains("showScreenshotImage(item.id, true)"),
