@@ -2,6 +2,7 @@ const POLL_MS = 2000;
 const dashboardRuntime = window.AtlasDashboardRuntime;
 
 let agents = [];
+let lastAgentsRefreshAt = null;
 let viTemplates = [];
 let sequenceTemplates = [];
 let historyAgentId = null;
@@ -16,8 +17,12 @@ const dialogController = dashboardRuntime.createDialogController({ document });
 
 const requestAgents = dashboardRuntime.createRequestDeduper(async () => {
   const resp = await fetch('/api/agents');
-  if (!resp.ok) return;
-  agents = await resp.json();
+  if (!resp.ok) return false;
+  const nextAgents = await resp.json();
+  if (!Array.isArray(nextAgents)) return false;
+  agents = nextAgents;
+  lastAgentsRefreshAt = new Date();
+  return true;
 });
 
 function escapeHtml(str) {
@@ -572,13 +577,41 @@ function renderAgents() {
   const grid = document.getElementById('agents-grid');
   const empty = document.getElementById('agents-empty');
   if (!grid) return;
-  empty.hidden = agents.length !== 0;
-  dashboardRuntime.reconcileKeyedChildren(grid, agents, {
+  const telemetry = dashboardRuntime.getAgentTelemetry(agents, getAgentTelemetryFilters());
+  renderMachineTelemetry(telemetry.summary);
+  empty.hidden = telemetry.visibleAgents.length !== 0;
+  empty.textContent = agents.length === 0 ? '暂无机台' : '没有匹配机台';
+  dashboardRuntime.reconcileKeyedChildren(grid, telemetry.visibleAgents, {
     getKey: (agent) => agent.id,
     getNodeKey: (card) => card.dataset.agentId,
     createNode: createAgentCard,
     updateNode: updateAgentCard,
   });
+}
+
+function getAgentTelemetryFilters() {
+  return {
+    query: document.getElementById('agent-search').value,
+    status: document.getElementById('agent-status-filter').value,
+    sort: document.getElementById('agent-sort').value,
+    abnormalOnly: document.getElementById('agent-abnormal-only').checked,
+  };
+}
+
+function renderMachineTelemetry(summary) {
+  document.getElementById('agents-total').textContent = summary.total;
+  document.getElementById('agents-online').textContent = summary.online;
+  document.getElementById('agents-busy').textContent = summary.busy;
+  document.getElementById('agents-offline').textContent = summary.offline;
+  document.getElementById('agents-last-refresh').textContent = lastAgentsRefreshAt
+    ? '最近刷新 · ' + lastAgentsRefreshAt.toLocaleTimeString('zh-CN')
+    : '尚未刷新';
+  renderAutoRefreshStatus();
+}
+
+function renderAutoRefreshStatus() {
+  const status = document.getElementById('agents-auto-refresh');
+  if (status) status.textContent = document.hidden ? '自动刷新已暂停' : '自动刷新 · 2 秒';
 }
 
 function createDetailField(label, mono) {
@@ -604,7 +637,7 @@ function ensureAgentDetailFields() {
   const cpu = createDetailField('CPU', true);
   const memory = createDetailField('内存', true);
   const busy = createDetailField('忙碌', false);
-  const lastSeen = createDetailField('最近见面', true);
+  const lastSeen = createDetailField('最后心跳', true);
   bar.append(
     status.field,
     address.field,
@@ -663,7 +696,7 @@ function renderAgentDetail(agentId) {
   fields.cpu.textContent = a.cpu_percent.toFixed(1) + '%';
   fields.memory.textContent = a.memory_percent.toFixed(1) + '%';
   fields.busy.textContent = a.busy ? '是' : '否';
-  fields.lastSeen.textContent = a.last_seen_at || '—';
+  fields.lastSeen.textContent = dashboardRuntime.formatAgentHeartbeat(a.last_seen_at);
 
   const buttons = ensureAgentDetailActions();
   const offline = a.status === 'offline';
@@ -676,6 +709,16 @@ function renderAgentDetail(agentId) {
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
+
+function renderAgentsFromTelemetryControl() {
+  if (parseRoute().name === 'machines') renderAgents();
+}
+
+document.getElementById('agent-search').addEventListener('input', renderAgentsFromTelemetryControl);
+document.getElementById('agent-status-filter').addEventListener('change', renderAgentsFromTelemetryControl);
+document.getElementById('agent-sort').addEventListener('change', renderAgentsFromTelemetryControl);
+document.getElementById('agent-abnormal-only').addEventListener('change', renderAgentsFromTelemetryControl);
+document.addEventListener('visibilitychange', renderAutoRefreshStatus);
 
 document.getElementById('shot-close').addEventListener('click', closeShotModal);
 document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);

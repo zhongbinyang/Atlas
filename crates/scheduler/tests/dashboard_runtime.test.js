@@ -10,6 +10,8 @@ const {
   createRefreshController,
   createSafeEventHandler,
   createToastController,
+  formatAgentHeartbeat,
+  getAgentTelemetry,
   reconcileKeyedChildren,
   startDashboard,
 } = require('../static/dashboard-runtime.js');
@@ -139,6 +141,60 @@ async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+const telemetryAgents = [
+  { id: 'offline', name: '离线机台', ip: '10.0.0.3', port: 26631, status: 'offline', busy: false, cpu_percent: 2, memory_percent: 3 },
+  { id: 'busy', name: 'Busy rig', ip: '10.0.0.2', port: 26632, status: 'online', busy: true, cpu_percent: 80, memory_percent: 40 },
+  { id: 'idle', name: 'Alpha 机台', ip: '10.0.0.1', port: 26631, status: 'online', busy: false, cpu_percent: 20, memory_percent: 90 },
+];
+
+test('agent telemetry summarizes the full successful agent array', () => {
+  const telemetry = getAgentTelemetry(telemetryAgents, { query: '10.0.0.1' });
+
+  assert.deepEqual(telemetry.summary, { total: 3, online: 2, busy: 1, offline: 1 });
+  assert.deepEqual(telemetry.visibleAgents.map((agent) => agent.id), ['idle']);
+});
+
+test('agent telemetry combines case-insensitive name address port search and status filters', () => {
+  const telemetry = getAgentTelemetry(telemetryAgents, {
+    query: 'BUSY RIG',
+    status: 'online',
+    sort: 'name',
+  });
+  assert.deepEqual(telemetry.visibleAgents.map((agent) => agent.id), ['busy']);
+
+  const addressTelemetry = getAgentTelemetry(telemetryAgents, {
+    query: '10.0.0.2:26632',
+    status: 'busy',
+  });
+  assert.deepEqual(addressTelemetry.visibleAgents.map((agent) => agent.id), ['busy']);
+});
+
+test('agent telemetry intersects abnormal-only with the selected status', () => {
+  const offline = getAgentTelemetry(telemetryAgents, { abnormalOnly: true, status: 'all' });
+  assert.deepEqual(offline.visibleAgents.map((agent) => agent.id), ['offline']);
+
+  const noMatch = getAgentTelemetry(telemetryAgents, { abnormalOnly: true, status: 'online' });
+  assert.deepEqual(noMatch.visibleAgents, []);
+});
+
+test('agent telemetry supports name, status, cpu and memory sorting without mutating agents', () => {
+  const originalOrder = telemetryAgents.map((agent) => agent.id);
+
+  assert.deepEqual(getAgentTelemetry(telemetryAgents, { sort: 'name' }).visibleAgents.map((agent) => agent.id), ['offline', 'idle', 'busy']);
+  assert.deepEqual(getAgentTelemetry(telemetryAgents, { sort: 'status' }).visibleAgents.map((agent) => agent.id), ['offline', 'busy', 'idle']);
+  assert.deepEqual(getAgentTelemetry(telemetryAgents, { sort: 'cpu_desc' }).visibleAgents.map((agent) => agent.id), ['busy', 'idle', 'offline']);
+  assert.deepEqual(getAgentTelemetry(telemetryAgents, { sort: 'memory_desc' }).visibleAgents.map((agent) => agent.id), ['idle', 'busy', 'offline']);
+  assert.deepEqual(telemetryAgents.map((agent) => agent.id), originalOrder);
+});
+
+test('agent heartbeat formats relative and local time while invalid values render an em dash', () => {
+  assert.equal(formatAgentHeartbeat('not-a-date', new Date('2026-07-30T12:00:00Z')), '—');
+  assert.match(
+    formatAgentHeartbeat('2026-07-30T11:59:30Z', new Date('2026-07-30T12:00:00Z')),
+    /^30 秒前 · /,
+  );
+});
 
 test('dialog controller focuses the first control, traps Tab, closes on Escape, and restores its trigger', () => {
   const document = createKeyboardDocument();
@@ -717,4 +773,30 @@ test('keyed reconciliation preserves matching nodes and removes stale nodes in l
   assert.equal(parent.children[1], alpha, 'the node for an existing key keeps its identity');
   assert.equal(alpha.label, 'A updated');
   assert.equal(stale.parentNode, null, 'a node missing from the latest data is removed');
+});
+
+test('telemetry filters survive a refresh and keyed reconciliation reuses matching card nodes', () => {
+  const filters = { query: 'busy rig', status: 'online', sort: 'name', abnormalOnly: false };
+  const first = getAgentTelemetry(telemetryAgents, filters).visibleAgents;
+  const refreshed = telemetryAgents.map((agent) => ({ ...agent, cpu_percent: agent.cpu_percent + 1 }));
+  const next = getAgentTelemetry(refreshed, filters).visibleAgents;
+  const parent = new FakeParent();
+
+  reconcileKeyedChildren(parent, first, {
+    getKey: (agent) => agent.id,
+    getNodeKey: (node) => node.key,
+    createNode: (agent) => ({ key: agent.id }),
+    updateNode: (node, agent) => { node.cpu = agent.cpu_percent; },
+  });
+  const busyCard = parent.children[0];
+  reconcileKeyedChildren(parent, next, {
+    getKey: (agent) => agent.id,
+    getNodeKey: (node) => node.key,
+    createNode: (agent) => ({ key: agent.id }),
+    updateNode: (node, agent) => { node.cpu = agent.cpu_percent; },
+  });
+
+  assert.deepEqual(filters, { query: 'busy rig', status: 'online', sort: 'name', abnormalOnly: false });
+  assert.equal(parent.children[0], busyCard);
+  assert.equal(busyCard.cpu, 81);
 });

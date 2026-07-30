@@ -212,3 +212,26 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
         "file breadcrumb controls must not be href-less links"
     );
 }
+
+#[test]
+fn scheduler_machine_telemetry_strip_is_accessible_and_mobile_safe() {
+    let index = fs::read_to_string(manifest_dir().join("static/index.html")).unwrap();
+    let app = fs::read_to_string(manifest_dir().join("static/app.js")).unwrap();
+    let css = fs::read_to_string(manifest_dir().join("static/style.css")).unwrap();
+
+    assert!(index.contains("id=\"machine-telemetry\""));
+    assert!(index.contains("for=\"agent-search\""));
+    assert!(index.contains("id=\"agent-search\""));
+    assert!(index.contains("for=\"agent-status-filter\""));
+    assert!(index.contains("for=\"agent-sort\""));
+    assert!(index.contains("for=\"agent-abnormal-only\""));
+    assert!(index.contains("id=\"agents-empty\" class=\"empty\" hidden"));
+    assert!(app.contains("没有匹配机台"));
+    assert!(app.contains("dashboardRuntime.getAgentTelemetry"));
+    assert!(app.contains("dashboardRuntime.formatAgentHeartbeat"));
+    assert!(app.contains("lastAgentsRefreshAt = new Date()"));
+    assert!(css.contains(".machine-control-strip"));
+    assert!(css.contains(".machine-controls"));
+    assert!(css.contains("@media (max-width: 640px)"));
+    assert!(css.contains(".machine-control-strip { grid-template-columns: 1fr; }"));
+}

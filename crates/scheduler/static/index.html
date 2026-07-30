@@ -30,6 +30,40 @@
     <div id="view-machines" class="view view-active">
       <section id="agents-section">
         <h2 class="view-title">机台</h2>
+        <section id="machine-telemetry" class="machine-control-strip" aria-label="机台遥测控制">
+          <div class="machine-summary" aria-label="机台摘要">
+            <span>总数 <strong id="agents-total">0</strong></span>
+            <span>在线 <strong id="agents-online">0</strong></span>
+            <span>忙碌 <strong id="agents-busy">0</strong></span>
+            <span>离线 <strong id="agents-offline">0</strong></span>
+          </div>
+          <div class="machine-refresh-status" aria-live="polite">
+            <span id="agents-last-refresh">尚未刷新</span>
+            <span id="agents-auto-refresh">自动刷新 · 2 秒</span>
+          </div>
+          <div class="machine-controls">
+            <label for="agent-search">搜索</label>
+            <input id="agent-search" type="search" placeholder="名称、IP 或端口" autocomplete="off">
+            <label for="agent-status-filter">状态</label>
+            <select id="agent-status-filter">
+              <option value="all">全部</option>
+              <option value="online">在线</option>
+              <option value="busy">忙碌</option>
+              <option value="offline">离线</option>
+            </select>
+            <label for="agent-sort">排序</label>
+            <select id="agent-sort">
+              <option value="name">名称</option>
+              <option value="status">状态</option>
+              <option value="cpu_desc">CPU</option>
+              <option value="memory_desc">内存</option>
+            </select>
+            <label class="machine-checkbox" for="agent-abnormal-only">
+              <input id="agent-abnormal-only" type="checkbox">
+              仅异常
+            </label>
+          </div>
+        </section>
         <div id="agents-grid" class="agent-grid" aria-live="polite"></div>
         <p id="agents-empty" class="empty" hidden>暂无机台</p>
       </section>
