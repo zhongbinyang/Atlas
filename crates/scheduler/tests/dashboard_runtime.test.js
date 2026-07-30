@@ -3,11 +3,13 @@ const assert = require('node:assert/strict');
 
 const {
   createLatestTaskRunner,
+  createDialogController,
   createLatestResourceLoader,
   createMessageChannel,
   createRequestDeduper,
   createRefreshController,
   createSafeEventHandler,
+  createToastController,
   reconcileKeyedChildren,
   startDashboard,
 } = require('../static/dashboard-runtime.js');
@@ -75,10 +77,183 @@ function createVisibilityDocument() {
   };
 }
 
+function createKeyboardDocument() {
+  const listeners = new Map();
+  return {
+    activeElement: null,
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    dispatch(type, event) {
+      listeners.get(type)?.(event);
+    },
+  };
+}
+
+function createFocusable(document) {
+  const listeners = new Map();
+  return {
+    hidden: false,
+    disabled: false,
+    focusCount: 0,
+    focus() {
+      this.focusCount += 1;
+      document.activeElement = this;
+    },
+    addEventListener(type, listener) {
+      const callbacks = listeners.get(type) || [];
+      callbacks.push(listener);
+      listeners.set(type, callbacks);
+    },
+    dispatch(type) {
+      for (const listener of listeners.get(type) || []) listener();
+    },
+  };
+}
+
+function createDialog(document, controls) {
+  return {
+    hidden: true,
+    querySelectorAll() {
+      return controls;
+    },
+  };
+}
+
+function createToastElement() {
+  const listeners = new Map();
+  return {
+    hidden: true,
+    textContent: '',
+    className: 'toast',
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    dispatch(type) {
+      listeners.get(type)?.();
+    },
+  };
+}
+
 async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+test('dialog controller focuses the first control, traps Tab, closes on Escape, and restores its trigger', () => {
+  const document = createKeyboardDocument();
+  const trigger = createFocusable(document);
+  const first = createFocusable(document);
+  const last = createFocusable(document);
+  const dialog = createDialog(document, [first, last]);
+  const controller = createDialogController({ document });
+
+  controller.open(dialog, { trigger });
+  assert.equal(dialog.hidden, false);
+  assert.equal(document.activeElement, first);
+
+  document.activeElement = last;
+  let prevented = false;
+  document.dispatch('keydown', {
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { prevented = true; },
+  });
+  assert.equal(prevented, true);
+  assert.equal(document.activeElement, first);
+
+  document.activeElement = first;
+  document.dispatch('keydown', {
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() {},
+  });
+  assert.equal(document.activeElement, last);
+
+  document.dispatch('keydown', { key: 'Escape', preventDefault() {} });
+  assert.equal(dialog.hidden, true);
+  assert.equal(document.activeElement, trigger);
+});
+
+test('dialog controller allows only one open dialog and resolves custom confirmation asynchronously', async () => {
+  const document = createKeyboardDocument();
+  const trigger = createFocusable(document);
+  const firstDialog = createDialog(document, [createFocusable(document)]);
+  const confirmButton = createFocusable(document);
+  const cancelButton = createFocusable(document);
+  const confirmDialog = createDialog(document, [confirmButton, cancelButton]);
+  const controller = createDialogController({ document });
+
+  controller.open(firstDialog, { trigger });
+  const confirmed = controller.confirm(confirmDialog, { trigger });
+  assert.equal(firstDialog.hidden, true);
+  assert.equal(confirmDialog.hidden, false);
+
+  confirmButton.dispatch('click');
+  assert.equal(await confirmed, true);
+  assert.equal(confirmDialog.hidden, true);
+  assert.equal(document.activeElement, trigger);
+});
+
+test('dialog controller replaces an open dialog without restoring focus to its hidden trigger', () => {
+  const document = createKeyboardDocument();
+  const firstTrigger = createFocusable(document);
+  const secondTrigger = createFocusable(document);
+  const firstDialog = createDialog(document, [createFocusable(document)]);
+  const secondFirstControl = createFocusable(document);
+  const secondDialog = createDialog(document, [secondFirstControl]);
+  const closeReasons = [];
+  const controller = createDialogController({ document });
+
+  controller.open(firstDialog, { trigger: firstTrigger, onClose: (reason) => closeReasons.push(reason) });
+  controller.open(secondDialog, { trigger: secondTrigger });
+
+  assert.equal(firstDialog.hidden, true);
+  assert.deepEqual(closeReasons, ['replaced']);
+  assert.equal(firstTrigger.focusCount, 0);
+  assert.equal(document.activeElement, secondFirstControl);
+});
+
+test('dialog controller does not retain a cancelled confirmation action for the next confirmation', async () => {
+  const document = createKeyboardDocument();
+  const trigger = createFocusable(document);
+  const confirmButton = createFocusable(document);
+  const cancelButton = createFocusable(document);
+  const confirmDialog = createDialog(document, [confirmButton, cancelButton]);
+  const controller = createDialogController({ document });
+
+  const cancelled = controller.confirm(confirmDialog, { trigger });
+  cancelButton.dispatch('click');
+  assert.equal(await cancelled, false);
+
+  const confirmed = controller.confirm(confirmDialog, { trigger });
+  confirmButton.dispatch('click');
+  assert.equal(await confirmed, true);
+});
+
+test('toast controller shows one message for 4000 ms and pauses while hovered or focused', () => {
+  const timers = createTimers();
+  const element = createToastElement();
+  const toast = createToastController(element, {
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
+
+  toast.show('截图已获取', 'success');
+  assert.equal(element.hidden, false);
+  assert.equal(element.textContent, '截图已获取');
+  assert.equal(timers.nextActive().delay, 4000);
+
+  element.dispatch('mouseenter');
+  assert.equal(timers.nextActive(), undefined);
+  element.dispatch('mouseleave');
+  assert.equal(timers.nextActive().delay, 4000);
+  element.dispatch('focusin');
+  assert.equal(timers.nextActive(), undefined);
+  element.dispatch('focusout');
+  timers.fire(timers.nextActive());
+  assert.equal(element.hidden, true);
+});
 
 test('request deduper reuses an in-flight request and allows a new request after settlement', async () => {
   const requests = [];

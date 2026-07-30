@@ -10,9 +10,9 @@
   --busy: #b86a00;
   --err: #b33a2b;
   --radius: 3px;
-  --font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-  --font-brand: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-brand: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
 * { box-sizing: border-box; }

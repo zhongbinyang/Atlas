@@ -10,9 +10,9 @@
   --busy: #b86a00;
   --err: #b33a2b;
   --radius: 3px;
-  --font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-  --font-brand: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-brand: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -443,6 +443,34 @@ tr.row-selected {
   color: var(--err);
 }
 
+.toast {
+  position: fixed;
+  z-index: 200;
+  right: 1rem;
+  bottom: 1rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.65rem 0.85rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.toast-success { border-left-color: var(--ok); }
+.toast-error { border-left-color: var(--err); }
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: 7rem 1fr;
@@ -525,6 +553,10 @@ pre {
   width: 36rem;
 }
 
+.modal-panel-confirm {
+  width: min(28rem, 94vw);
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -540,6 +572,13 @@ pre {
 .modal-body {
   padding: 1rem;
   overflow: auto;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
 }
 
 .modal-body img {

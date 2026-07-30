@@ -11,6 +11,8 @@ let filesAgentId = null;
 let filesPath = '';
 let inputsPopoverEl = null;
 let inputsPopoverHideTimer = null;
+const toastMessages = dashboardRuntime.createToastController(document.getElementById('toast'));
+const dialogController = dashboardRuntime.createDialogController({ document });
 
 const requestAgents = dashboardRuntime.createRequestDeduper(async () => {
   const resp = await fetch('/api/agents');
@@ -136,6 +138,10 @@ function setHash(path) {
   else location.hash = next;
 }
 
+function showToast(text, kind) {
+  toastMessages.show(text, kind);
+}
+
 function showView(id) {
   ['view-machines', 'view-agent-detail', 'view-functions', 'view-sequences'].forEach((vid) => {
     const el = document.getElementById(vid);
@@ -144,9 +150,17 @@ function showView(id) {
     el.hidden = !on;
     el.classList.toggle('view-active', on);
   });
-  document.getElementById('nav-machines')?.classList.toggle('active', id === 'view-machines' || id === 'view-agent-detail');
-  document.getElementById('nav-functions')?.classList.toggle('active', id === 'view-functions');
-  document.getElementById('nav-sequences')?.classList.toggle('active', id === 'view-sequences');
+  const currentNav = id === 'view-functions'
+    ? 'nav-functions'
+    : (id === 'view-sequences' ? 'nav-sequences' : 'nav-machines');
+  ['nav-machines', 'nav-functions', 'nav-sequences'].forEach((navId) => {
+    const tab = document.getElementById(navId);
+    if (!tab) return;
+    const current = navId === currentNav;
+    tab.classList.toggle('active', current);
+    if (current) tab.setAttribute('aria-current', 'page');
+    else tab.removeAttribute('aria-current');
+  });
 }
 
 async function applyRoute(route, isCurrent) {
@@ -201,45 +215,61 @@ function formatByteSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function openShotModal() {
-  document.getElementById('shot-modal').hidden = false;
+function openShotModal(returnToHistory) {
+  dialogController.open(document.getElementById('shot-modal'), {
+    onClose: (reason) => {
+      document.getElementById('shot-img').removeAttribute('src');
+      if (reason !== 'replaced' && returnToHistory) openShotHistoryModal();
+    },
+  });
 }
 
 function closeShotModal() {
-  document.getElementById('shot-modal').hidden = true;
-  document.getElementById('shot-img').removeAttribute('src');
+  dialogController.close(document.getElementById('shot-modal'));
 }
 
 function openShotHistoryModal() {
-  document.getElementById('shot-history-modal').hidden = false;
+  dialogController.open(document.getElementById('shot-history-modal'), {
+    onClose: (reason) => {
+      if (reason === 'replaced') return;
+      historyAgentId = null;
+      historyOffset = 0;
+    },
+  });
 }
 
 function closeShotHistoryModal() {
-  document.getElementById('shot-history-modal').hidden = true;
-  historyAgentId = null;
-  historyOffset = 0;
+  dialogController.close(document.getElementById('shot-history-modal'));
 }
 
 function openFilesModal() {
-  document.getElementById('files-modal').hidden = false;
+  dialogController.open(document.getElementById('files-modal'), {
+    onClose: (reason) => {
+      if (reason === 'replaced') return;
+      filesAgentId = null;
+      filesPath = '';
+    },
+  });
 }
 
 function closeFilesModal() {
-  document.getElementById('files-modal').hidden = true;
-  filesAgentId = null;
-  filesPath = '';
+  dialogController.close(document.getElementById('files-modal'));
 }
 
 function openFilePreviewModal() {
-  document.getElementById('file-preview-modal').hidden = false;
+  dialogController.open(document.getElementById('file-preview-modal'), {
+    onClose: (reason) => {
+      document.getElementById('file-preview-pre').hidden = true;
+      document.getElementById('file-preview-pre').textContent = '';
+      document.getElementById('file-preview-img').hidden = true;
+      document.getElementById('file-preview-img').removeAttribute('src');
+      if (reason !== 'replaced') openFilesModal();
+    },
+  });
 }
 
 function closeFilePreviewModal() {
-  document.getElementById('file-preview-modal').hidden = true;
-  document.getElementById('file-preview-pre').hidden = true;
-  document.getElementById('file-preview-pre').textContent = '';
-  document.getElementById('file-preview-img').hidden = true;
-  document.getElementById('file-preview-img').removeAttribute('src');
+  dialogController.close(document.getElementById('file-preview-modal'));
 }
 
 function joinFilesPath(base, name) {
@@ -259,21 +289,26 @@ async function openFiles(agentId) {
   const agent = agents.find(a => a.id === agentId);
   const title = document.getElementById('files-title');
   title.textContent = '文件' + (agent ? ' — ' + agent.name : '');
-  await loadFiles();
-  openFilesModal();
+  if (await loadFiles()) openFilesModal();
 }
 
 async function loadFiles() {
-  const q = filesPath ? ('?path=' + encodeURIComponent(filesPath)) : '';
-  const resp = await fetch('/api/agents/' + encodeURIComponent(filesAgentId) + '/files' + q);
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    alert(err.error || ('加载文件失败: ' + resp.status));
-    return;
+  try {
+    const q = filesPath ? ('?path=' + encodeURIComponent(filesPath)) : '';
+    const resp = await fetch('/api/agents/' + encodeURIComponent(filesAgentId) + '/files' + q);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      showToast('加载文件失败: ' + (err.error || resp.status), 'error');
+      return false;
+    }
+    const data = await resp.json();
+    renderFilesCrumb(data.path || filesPath);
+    renderFiles(data.entries || []);
+    return true;
+  } catch (error) {
+    showToast('加载文件失败: ' + (error.message || '网络异常'), 'error');
+    return false;
   }
-  const data = await resp.json();
-  renderFilesCrumb(data.path || filesPath);
-  renderFiles(data.entries || []);
 }
 
 function renderFilesCrumb(path) {
@@ -401,23 +436,28 @@ function downloadFile(relPath) {
   window.open(fileContentUrl(relPath, true), '_blank');
 }
 
-function showScreenshotImage(id) {
+function showScreenshotImage(id, returnToHistory) {
   document.getElementById('shot-img').src =
     '/api/screenshots/' + encodeURIComponent(id) + '/image?' + Date.now();
-  openShotModal();
+  openShotModal(returnToHistory);
 }
 
 async function takeScreenshot(agentId) {
-  const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/screenshots', {
-    method: 'POST',
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    alert(err.error || ('截图失败: ' + resp.status));
-    return;
+  try {
+    const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/screenshots', {
+      method: 'POST',
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      showToast('截图失败: ' + (err.error || resp.status), 'error');
+      return;
+    }
+    const meta = await resp.json();
+    showToast('截图已获取', 'success');
+    showScreenshotImage(meta.id);
+  } catch (error) {
+    showToast('截图失败: ' + (error.message || '网络异常'), 'error');
   }
-  const meta = await resp.json();
-  showScreenshotImage(meta.id);
 }
 
 async function openHistory(agentId, offset = 0) {
@@ -427,18 +467,22 @@ async function openHistory(agentId, offset = 0) {
   const title = document.getElementById('shot-history-title');
   title.textContent = '截图历史' + (agent ? ' — ' + agent.name : '');
 
-  const resp = await fetch(
-    '/api/agents/' + encodeURIComponent(agentId) +
-      '/screenshots?limit=' + HISTORY_LIMIT + '&offset=' + offset
-  );
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    alert(err.error || ('加载历史失败: ' + resp.status));
-    return;
+  try {
+    const resp = await fetch(
+      '/api/agents/' + encodeURIComponent(agentId) +
+        '/screenshots?limit=' + HISTORY_LIMIT + '&offset=' + offset
+    );
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      showToast('加载历史失败: ' + (err.error || resp.status), 'error');
+      return;
+    }
+    const data = await resp.json();
+    renderHistory(data.items, data.total, offset);
+    openShotHistoryModal();
+  } catch (error) {
+    showToast('加载历史失败: ' + (error.message || '网络异常'), 'error');
   }
-  const data = await resp.json();
-  renderHistory(data.items, data.total, offset);
-  openShotHistoryModal();
 }
 
 function renderHistory(items, total, offset) {
@@ -455,7 +499,7 @@ function renderHistory(items, total, offset) {
         '<td><button type="button" class="btn-sm btn-view-shot" data-id="' +
           escapeHtml(item.id) + '">查看</button></td>';
       row.querySelector('.btn-view-shot').addEventListener('click', () => {
-        showScreenshotImage(item.id);
+        showScreenshotImage(item.id, true);
       });
       tbody.appendChild(row);
     }
@@ -643,6 +687,7 @@ document.querySelectorAll('.modal-backdrop').forEach(el => {
     else if (id === 'shot-history-modal') closeShotHistoryModal();
     else if (id === 'files-modal') closeFilesModal();
     else if (id === 'file-preview-modal') closeFilePreviewModal();
+    else if (id === 'confirm-modal') dialogController.close(document.getElementById('confirm-modal'));
   });
 });
 
@@ -862,15 +907,25 @@ async function editViTemplate(t) {
       return;
     }
     showViTemplatesMsg('已修改: ' + (data.name || name), true);
+    showToast('功能名称已修改', 'success');
     await fetchViTemplates();
   } catch (e) {
     showViTemplatesMsg('修改失败: ' + e.message, false);
+    showToast('修改功能失败: ' + e.message, 'error');
   }
+}
+
+function requestDeleteConfirmation(label, detail) {
+  document.getElementById('confirm-title').textContent = '确认删除';
+  document.getElementById('confirm-message').textContent =
+    '确定删除「' + label + '」？' + detail;
+  document.getElementById('confirm-confirm').textContent = '删除';
+  return dialogController.confirm(document.getElementById('confirm-modal'));
 }
 
 async function deleteViTemplate(t) {
   const label = t.name || t.id || '此模板';
-  if (!confirm('确定删除「' + label + '」？相关序列队列中的引用也会清除。')) return;
+  if (!(await requestDeleteConfirmation(label, '相关序列队列中的引用也会清除。'))) return;
   showViTemplatesMsg('删除中…', true);
   try {
     const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
@@ -878,19 +933,22 @@ async function deleteViTemplate(t) {
     });
     if (resp.ok || resp.status === 204) {
       showViTemplatesMsg('已删除', true);
+      showToast('功能模板已删除', 'success');
       await fetchViTemplates();
       return;
     }
     const data = await resp.json().catch(() => ({}));
     showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+    showToast('删除功能模板失败: ' + (data.error || resp.status), 'error');
   } catch (e) {
     showViTemplatesMsg('删除失败: ' + e.message, false);
+    showToast('删除功能模板失败: ' + e.message, 'error');
   }
 }
 
 async function deleteGeneralTemplate(t) {
   const label = t.name || t.id || '此模板';
-  if (!confirm('确定删除「' + label + '」？相关序列队列中的引用也会清除。')) return;
+  if (!(await requestDeleteConfirmation(label, '相关序列队列中的引用也会清除。'))) return;
   showViTemplatesMsg('删除中…', true);
   try {
     const resp = await fetch('/api/general-templates/' + encodeURIComponent(t.id), {
@@ -898,13 +956,16 @@ async function deleteGeneralTemplate(t) {
     });
     if (resp.ok || resp.status === 204) {
       showViTemplatesMsg('已删除', true);
+      showToast('功能模板已删除', 'success');
       await fetchViTemplates();
       return;
     }
     const data = await resp.json().catch(() => ({}));
     showViTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+    showToast('删除功能模板失败: ' + (data.error || resp.status), 'error');
   } catch (e) {
     showViTemplatesMsg('删除失败: ' + e.message, false);
+    showToast('删除功能模板失败: ' + e.message, 'error');
   }
 }
 
@@ -968,7 +1029,7 @@ function renderSequenceTemplates() {
 
 async function deleteSequenceTemplate(t) {
   const label = t.name || t.id || '此模板';
-  if (!confirm('确定删除序列模板「' + label + '」？')) return;
+  if (!(await requestDeleteConfirmation('序列模板「' + label + '」', ''))) return;
   showSequenceTemplatesMsg('删除中…', true);
   try {
     const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(t.id), {
@@ -976,13 +1037,16 @@ async function deleteSequenceTemplate(t) {
     });
     if (resp.ok || resp.status === 204) {
       showSequenceTemplatesMsg('已删除', true);
+      showToast('序列模板已删除', 'success');
       await fetchSequenceTemplates();
       return;
     }
     const data = await resp.json().catch(() => ({}));
     showSequenceTemplatesMsg('删除失败: ' + (data.error || resp.status), false);
+    showToast('删除序列模板失败: ' + (data.error || resp.status), 'error');
   } catch (e) {
     showSequenceTemplatesMsg('删除失败: ' + e.message, false);
+    showToast('删除序列模板失败: ' + e.message, 'error');
   }
 }
 

@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ATLAS — 测试机台编排</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -18,13 +16,15 @@
         <p class="brand-sub">测试机台编排</p>
       </div>
       <nav class="view-tabs" aria-label="主分区">
-        <button type="button" id="nav-machines" class="tab active" data-route="machines">机台</button>
+        <button type="button" id="nav-machines" class="tab active" data-route="machines" aria-current="page">机台</button>
         <button type="button" id="nav-functions" class="tab" data-route="functions">已注册功能</button>
         <button type="button" id="nav-sequences" class="tab" data-route="sequences">序列模板</button>
       </nav>
     </div>
     <button id="refresh-btn" type="button" class="btn-primary">刷新</button>
   </header>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" tabindex="0" hidden></div>
 
   <main class="page">
     <div id="view-machines" class="view view-active">
@@ -138,11 +138,11 @@
     </div>
   </main>
 
-  <div id="shot-modal" class="modal" hidden>
+  <div id="shot-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shot-title" tabindex="-1" hidden>
     <div class="modal-backdrop" data-close="shot-modal"></div>
     <div class="modal-panel">
       <div class="modal-header">
-        <h2>截图</h2>
+        <h2 id="shot-title">截图</h2>
         <button id="shot-close" type="button" class="btn-sm">关闭</button>
       </div>
       <div class="modal-body">
@@ -151,7 +151,7 @@
     </div>
   </div>
 
-  <div id="shot-history-modal" class="modal" hidden>
+  <div id="shot-history-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shot-history-title" tabindex="-1" hidden>
     <div class="modal-backdrop" data-close="shot-history-modal"></div>
     <div class="modal-panel modal-panel-wide">
       <div class="modal-header">
@@ -182,7 +182,7 @@
     </div>
   </div>
 
-  <div id="files-modal" class="modal" hidden>
+  <div id="files-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="files-title" tabindex="-1" hidden>
     <div class="modal-backdrop" data-close="files-modal"></div>
     <div class="modal-panel modal-panel-wide">
       <div class="modal-header">
@@ -210,7 +210,7 @@
     </div>
   </div>
 
-  <div id="file-preview-modal" class="modal" hidden>
+  <div id="file-preview-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="file-preview-title" tabindex="-1" hidden>
     <div class="modal-backdrop" data-close="file-preview-modal"></div>
     <div class="modal-panel">
       <div class="modal-header">
@@ -220,6 +220,22 @@
       <div class="modal-body">
         <pre id="file-preview-pre" hidden></pre>
         <img id="file-preview-img" alt="预览" hidden>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" tabindex="-1" hidden>
+    <div class="modal-backdrop" data-close="confirm-modal"></div>
+    <div class="modal-panel modal-panel-confirm">
+      <div class="modal-header">
+        <h2 id="confirm-title">确认操作</h2>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-message"></p>
+        <div class="modal-actions">
+          <button id="confirm-cancel" type="button" class="btn-sm" data-dialog-cancel>取消</button>
+          <button id="confirm-confirm" type="button" class="btn-danger" data-dialog-confirm>删除</button>
+        </div>
       </div>
     </div>
   </div>

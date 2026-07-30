@@ -154,3 +154,52 @@ fn scheduler_dashboard_loads_self_scheduling_refresh_runtime() {
         "sequence loader clear/error paths must use the load channel"
     );
 }
+
+#[test]
+fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
+    let index = fs::read_to_string(manifest_dir().join("static/index.html")).unwrap();
+    let app = fs::read_to_string(manifest_dir().join("static/app.js")).unwrap();
+    let agent_index = fs::read_to_string(manifest_dir().join("../agent/static/index.html")).unwrap();
+
+    for page in [&index, &agent_index] {
+        assert!(
+            !page.contains("fonts.googleapis.com") && !page.contains("fonts.gstatic.com"),
+            "static pages must not depend on public font hosts"
+        );
+        assert!(page.contains("<link rel=\"icon\" href=\"/favicon.svg\""));
+    }
+    assert!(manifest_dir().join("static/favicon.svg").is_file());
+    assert!(manifest_dir().join("../agent/static/favicon.svg").is_file());
+
+    assert!(index.contains("id=\"toast\" class=\"toast\" role=\"status\""));
+    assert!(index.contains("id=\"shot-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
+    assert!(index.contains("id=\"shot-history-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
+    assert!(index.contains("id=\"files-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
+    assert!(index.contains("id=\"file-preview-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
+    assert!(index.contains("id=\"confirm-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
+    assert!(app.contains("dialogController.confirm"));
+    assert!(
+        !app.contains("window.confirm(") && !app.contains("if (!confirm("),
+        "native confirmation must be removed"
+    );
+    assert!(!app.contains("alert("), "native alerts must be removed");
+    assert!(app.contains("setAttribute('aria-current', 'page')"));
+    for toast_message in ["加载文件失败: ", "截图失败: ", "加载历史失败: "] {
+        assert!(
+            app.contains(&format!("showToast('{toast_message}")),
+            "recoverable UI failures must use a Chinese Toast prefix: {toast_message}"
+        );
+    }
+    assert!(
+        app.contains("if (reason !== 'replaced') openFilesModal()"),
+        "closing a file preview must restore the visible Files dialog"
+    );
+    assert!(
+        app.contains("if (reason !== 'replaced' && returnToHistory) openShotHistoryModal()"),
+        "closing a historical screenshot must restore the visible History dialog"
+    );
+    assert!(
+        app.contains("showScreenshotImage(item.id, true)"),
+        "history screenshot controls must opt into restoring their parent dialog"
+    );
+}

@@ -55,3 +55,13 @@ fn sequence_filter_controls_have_accessible_names() {
         "the registered-function type filter requires an accessible name"
     );
 }
+
+#[test]
+fn agent_static_ui_uses_local_font_stack_and_favicon() {
+    assert!(!INDEX.contains("fonts.googleapis.com"));
+    assert!(!INDEX.contains("fonts.gstatic.com"));
+    assert!(INDEX.contains("<link rel=\"icon\" href=\"/favicon.svg\""));
+    assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("static/favicon.svg")
+        .is_file());
+}
