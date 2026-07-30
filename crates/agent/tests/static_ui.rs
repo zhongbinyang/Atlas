@@ -1,5 +1,6 @@
 const STYLE: &str = include_str!("../static/style.css");
 const INDEX: &str = include_str!("../static/index.html");
+const APP: &str = include_str!("../static/app.js");
 
 fn rule_body<'a>(rules: &'a str, selector: &str) -> &'a str {
     rules
@@ -64,4 +65,90 @@ fn agent_static_ui_uses_local_font_stack_and_favicon() {
     assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("static/favicon.svg")
         .is_file());
+}
+
+#[test]
+fn vi_workbench_exposes_staged_and_accessible_controls() {
+    assert!(
+        INDEX.contains("class=\"lv-stage-rail\" aria-label=\"VI 工作阶段\""),
+        "the VI workflow needs a labelled stage rail"
+    );
+    for stage in ["路径", "参数", "试跑", "注册"] {
+        assert!(
+            INDEX.contains(&format!("<span class=\"lv-stage-label\">{stage}</span>")),
+            "missing stage {stage}"
+        );
+    }
+    assert!(
+        INDEX.contains("<details id=\"lv-advanced\" class=\"lv-advanced\">"),
+        "advanced settings must be collapsed by default"
+    );
+    assert!(
+        INDEX.contains("id=\"lv-schema-summary\"")
+            && INDEX.contains("role=\"status\" aria-live=\"polite\""),
+        "schema counts need a polite status region"
+    );
+    assert!(
+        INDEX.contains(
+            "<p id=\"lv-action-hint\" class=\"lv-action-hint\" role=\"status\" aria-live=\"polite\">"
+        ),
+        "disabled VI actions need a visible reason"
+    );
+}
+
+#[test]
+fn vi_run_result_has_summary_raw_json_and_copy_action() {
+    assert!(INDEX.contains("id=\"lv-run-result\""));
+    assert!(INDEX.contains("id=\"lv-run-summary\""));
+    assert!(INDEX.contains("<details class=\"lv-run-raw\">"));
+    assert!(INDEX.contains("id=\"lv-run-json\""));
+    assert!(
+        INDEX.contains(
+            "<button id=\"lv-copy-result-btn\" type=\"button\" aria-label=\"复制试跑原始 JSON\">"
+        ),
+        "copy action needs an accessible name"
+    );
+}
+
+#[test]
+fn vi_registration_followups_and_center_search_are_present() {
+    assert!(INDEX.contains("id=\"lv-registered-actions\""));
+    assert!(INDEX.contains("id=\"lv-view-registered-btn\""));
+    assert!(INDEX.contains("id=\"lv-edit-copy-btn\""));
+    assert!(
+        INDEX.contains(
+            "<input id=\"lv-center-search\" type=\"search\" aria-label=\"搜索中心 VI 功能\""
+        ),
+        "center VI search needs an accessible name"
+    );
+    assert!(
+        APP.contains("origin_agent_name")
+            && APP.contains("vi_path")
+            && APP.contains("lvCenterQuery"),
+        "client filtering must include source machine and VI path"
+    );
+}
+
+#[test]
+fn vi_runtime_loads_before_the_application_and_has_mobile_layout_rules() {
+    let runtime_pos = INDEX
+        .find("<script src=\"/workbench-runtime.js\"></script>")
+        .expect("workbench runtime script");
+    let app_pos = INDEX
+        .find("<script src=\"/app.js\"></script>")
+        .expect("application script");
+    assert!(runtime_pos < app_pos, "runtime must load before app.js");
+
+    let mobile_rules = STYLE
+        .split("@media (max-width: 640px) {")
+        .last()
+        .expect("mobile rules");
+    assert!(
+        mobile_rules.contains(".lv-stage-rail {\n    grid-template-columns: repeat(2, minmax(0, 1fr));")
+    );
+    assert!(
+        STYLE.contains("#page-workbench {\n  min-width: 0;\n}")
+            && STYLE.contains(".lv-toolbar > * {\n  min-width: 0;\n}"),
+        "the workbench must shrink without page-level overflow"
+    );
 }

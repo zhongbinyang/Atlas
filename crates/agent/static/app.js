@@ -118,31 +118,7 @@ function parseEditableInputValue(raw, className) {
   return text;
 }
 
-/** Strip spaces and a matching pair of surrounding quotes from pasted paths. */
-function normalizeFsPath(raw) {
-  let s = String(raw == null ? '' : raw).trim();
-  if (s.length >= 2) {
-    const a = s[0];
-    const b = s[s.length - 1];
-    if ((a === '"' && b === '"') || (a === "'" && b === "'")) {
-      s = s.slice(1, -1).trim();
-    }
-  }
-  return s;
-}
-
-function viStemFromPath(viPath) {
-  return String(viPath || '').replace(/^.*[\\/]/, '').replace(/\.vi$/i, '');
-}
-
-function defaultLvNameFromPath() {
-  const pathEl = document.getElementById('lv-vi-path');
-  const nameEl = document.getElementById('lv-name');
-  if (!pathEl || !nameEl) return;
-  if (nameEl.value.trim() !== '') return;
-  const stem = viStemFromPath(normalizeFsPath(pathEl.value));
-  if (stem) nameEl.value = stem;
-}
+const viWorkbench = window.AgentViWorkbenchRuntime.createWorkbenchRuntime();
 
 async function registerNow() {
   const msg = document.getElementById('register-msg');
@@ -182,16 +158,23 @@ function showLvMsg(text, ok) {
   msg.className = ok ? 'msg ok' : 'msg err';
 }
 
-/** Last inspected / loaded LabVIEW outputs schema (registered with template). */
-let lvOutputs = [];
+function hideLvMsg() {
+  const msg = document.getElementById('lv-msg');
+  msg.hidden = true;
+  msg.textContent = '';
+}
 
 function isJsonScalar(value) {
   return value !== null && typeof value === 'object';
 }
 
-function renderInputsTable(inputs) {
+function renderInputsTable(inputs, emptyText) {
   const tbody = document.getElementById('lv-inputs-body');
   tbody.innerHTML = '';
+  if (!Array.isArray(inputs)) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">' + escapeHtml(emptyText || '先查询参数') + '</td></tr>';
+    return;
+  }
   if (!inputs || inputs.length === 0) {
     tbody.innerHTML = '<tr><td colspan="3" class="empty">无输入参数</td></tr>';
     return;
@@ -269,17 +252,122 @@ function readRunOptions() {
   return opts;
 }
 
-async function inspectVi() {
+const LV_STAGE_META = {
+  empty: { current: 0, text: '填写 VI 路径以开始' },
+  ready_to_inspect: { current: 0, text: '路径已就绪，可以查询参数' },
+  inspecting: { current: 1, text: '正在查询参数…' },
+  ready_to_run: { current: 2, text: '参数已就绪，可以试跑或注册' },
+  running: { current: 2, text: '正在试跑…' },
+  ready_to_register: { current: 3, text: '试跑完成，可以注册' },
+  registering: { current: 3, text: '正在注册到中心…' },
+  registered: { current: 4, text: '注册完成' },
+};
+
+function setActionState(button, action) {
+  button.disabled = !action.enabled;
+  button.title = action.enabled ? '' : action.reason;
+}
+
+function syncLvWorkbench() {
+  const snapshot = viWorkbench.snapshot();
+  const controls = snapshot.controls;
   const pathEl = document.getElementById('lv-vi-path');
-  const viPath = normalizeFsPath(pathEl.value);
-  pathEl.value = viPath;
-  if (!viPath) {
-    showLvMsg('请输入 VI 路径', false);
+  const nameEl = document.getElementById('lv-name');
+  const advanced = document.getElementById('lv-advanced');
+  const advancedSummary = advanced.querySelector('summary');
+
+  pathEl.disabled = controls.pathDisabled;
+  nameEl.disabled = controls.nameDisabled;
+  document.querySelectorAll('#lv-inputs-body .lv-value').forEach(function (el) {
+    el.disabled = controls.inputsDisabled;
+  });
+  document.getElementById('lv-show-fp').disabled = controls.advancedDisabled;
+  document.getElementById('lv-timeout').disabled = controls.advancedDisabled;
+  advanced.setAttribute('aria-disabled', controls.advancedDisabled ? 'true' : 'false');
+  advancedSummary.tabIndex = controls.advancedDisabled ? -1 : 0;
+
+  setActionState(document.getElementById('lv-inspect-btn'), controls.inspect);
+  setActionState(document.getElementById('lv-run-btn'), controls.run);
+  setActionState(document.getElementById('lv-register-btn'), controls.register);
+
+  const meta = LV_STAGE_META[snapshot.state] || LV_STAGE_META.empty;
+  document.getElementById('lv-stage-status').textContent = meta.text;
+  const actionHint = document.getElementById('lv-action-hint');
+  if (snapshot.state === 'empty') {
+    actionHint.textContent = '填写 VI 路径后可查询参数';
+  } else if (snapshot.state === 'ready_to_inspect') {
+    actionHint.textContent = '请先查询参数；成功后可试跑和注册';
+  } else if (controls.run.enabled && !controls.register.enabled) {
+    actionHint.textContent = '试跑已可用；填写名称后可注册';
+  } else if (snapshot.pendingAction) {
+    actionHint.textContent = meta.text + '，请稍候';
+  } else {
+    actionHint.textContent = '';
+  }
+  actionHint.hidden = actionHint.textContent === '';
+  document.querySelectorAll('[data-lv-stage]').forEach(function (stage, index) {
+    const isRegistered = snapshot.state === 'registered';
+    const status = isRegistered || index < meta.current
+      ? 'complete'
+      : index === meta.current
+        ? 'current'
+        : 'waiting';
+    stage.dataset.status = status;
+    if (status === 'current') stage.setAttribute('aria-current', 'step');
+    else stage.removeAttribute('aria-current');
+  });
+
+  document.getElementById('lv-registered-actions').hidden = snapshot.state !== 'registered';
+}
+
+function clearLvSchemasAndResults() {
+  renderInputsTable(null, '先查询参数');
+  document.getElementById('lv-json-raw').textContent = '—';
+  const summary = document.getElementById('lv-schema-summary');
+  summary.hidden = true;
+  summary.textContent = '';
+  clearLvRunResult();
+}
+
+function showLvSchemaSummary(inputs, outputs) {
+  const summary = document.getElementById('lv-schema-summary');
+  summary.hidden = false;
+  summary.textContent = '参数已加载 · 入参 ' + inputs.length + ' · 出参 ' + outputs.length;
+}
+
+function clearLvRunResult() {
+  document.getElementById('lv-run-result').hidden = true;
+  document.getElementById('lv-run-summary').textContent = '';
+  document.getElementById('lv-run-json').textContent = '—';
+}
+
+function runResultSummary(result) {
+  if (!result || typeof result !== 'object') return '试跑完成';
+  const status = result.status || (result.ok === true ? '成功' : '');
+  const outputs = result.outputs && typeof result.outputs === 'object'
+    ? Object.keys(result.outputs).length
+    : 0;
+  const parts = ['试跑完成'];
+  if (status) parts.push('状态 ' + status);
+  if (outputs) parts.push('输出 ' + outputs + ' 项');
+  return parts.join(' · ');
+}
+
+function renderLvRunResult(result) {
+  if (result == null) {
+    clearLvRunResult();
     return;
   }
-  defaultLvNameFromPath();
+  document.getElementById('lv-run-result').hidden = false;
+  document.getElementById('lv-run-summary').textContent = runResultSummary(result);
+  document.getElementById('lv-run-json').textContent = JSON.stringify(result, null, 2);
+}
+
+async function inspectVi() {
+  if (!viWorkbench.beginInspect()) return;
+  const viPath = viWorkbench.snapshot().path;
   showLvMsg('查询中…', true);
-  document.getElementById('lv-run-out').hidden = true;
+  syncLvWorkbench();
   try {
     const resp = await fetch('/api/labview/inspect', {
       method: 'POST',
@@ -289,44 +377,50 @@ async function inspectVi() {
     const data = await resp.json();
     document.getElementById('lv-json-raw').textContent = JSON.stringify(data, null, 2);
     if (!resp.ok) {
+      viWorkbench.actionFailed('inspect');
       const err = data.error && (data.error.message || data.error) || resp.status;
       showLvMsg('查询失败: ' + err, false);
+      syncLvWorkbench();
       return;
     }
-    renderInputsTable(data.inputs || []);
-    lvOutputs = Array.isArray(data.outputs) ? data.outputs : [];
-    showLvMsg('参数已加载（入参 ' + (data.inputs || []).length + ' / 出参 ' + lvOutputs.length + '）', true);
+    viWorkbench.inspectSucceeded(data);
+    const snapshot = viWorkbench.snapshot();
+    renderInputsTable(snapshot.inputs);
+    showLvSchemaSummary(snapshot.inputs, snapshot.outputs);
+    clearLvRunResult();
+    showLvMsg('参数已加载', true);
+    syncLvWorkbench();
   } catch (e) {
+    viWorkbench.actionFailed('inspect');
     showLvMsg('查询失败: ' + e.message, false);
+    syncLvWorkbench();
   }
 }
 
 async function runVi() {
-  const pathEl = document.getElementById('lv-vi-path');
-  const viPath = normalizeFsPath(pathEl.value);
-  pathEl.value = viPath;
-  if (!viPath) {
-    showLvMsg('请输入 VI 路径', false);
-    return;
-  }
+  if (!viWorkbench.beginRun()) return;
+  const viPath = viWorkbench.snapshot().path;
+  syncLvWorkbench();
   let inputs;
   try {
     inputs = collectInputsFromTable();
   } catch (e) {
+    viWorkbench.actionFailed('run');
     showLvMsg(e.message, false);
+    syncLvWorkbench();
     return;
   }
   let opts;
   try {
     opts = readRunOptions();
   } catch (e) {
+    viWorkbench.actionFailed('run');
     showLvMsg(e.message, false);
+    syncLvWorkbench();
     return;
   }
   showLvMsg('试跑中…', true);
-  const outEl = document.getElementById('lv-run-out');
-  outEl.hidden = false;
-  outEl.textContent = '…';
+  clearLvRunResult();
   try {
     const resp = await fetch('/api/labview/run', {
       method: 'POST',
@@ -334,45 +428,48 @@ async function runVi() {
       body: JSON.stringify(Object.assign({ vi_path: viPath, inputs: inputs }, opts)),
     });
     const data = await resp.json();
-    outEl.textContent = JSON.stringify(data, null, 2);
     if (!resp.ok) {
+      viWorkbench.actionFailed('run');
       const err = data.error && (data.error.message || data.error) || resp.status;
       showLvMsg('试跑失败: ' + err, false);
+      renderLvRunResult(viWorkbench.snapshot().runResult);
+      syncLvWorkbench();
       return;
     }
+    viWorkbench.runSucceeded(data);
+    renderLvRunResult(data);
     showLvMsg('试跑完成', true);
+    syncLvWorkbench();
   } catch (e) {
-    outEl.textContent = e.message;
+    viWorkbench.actionFailed('run');
     showLvMsg('试跑失败: ' + e.message, false);
+    renderLvRunResult(viWorkbench.snapshot().runResult);
+    syncLvWorkbench();
   }
 }
 
 async function registerViTemplate() {
-  const pathEl = document.getElementById('lv-vi-path');
-  const viPath = normalizeFsPath(pathEl.value);
-  pathEl.value = viPath;
-  if (!viPath) {
-    showLvMsg('请输入 VI 路径', false);
-    return;
-  }
-  defaultLvNameFromPath();
-  const name = document.getElementById('lv-name').value.trim();
-  if (!name) {
-    showLvMsg('请输入名称', false);
-    return;
-  }
+  if (!viWorkbench.beginRegister()) return;
+  const snapshot = viWorkbench.snapshot();
+  const viPath = snapshot.path;
+  const name = snapshot.name.trim();
+  syncLvWorkbench();
   let inputs;
   try {
     inputs = collectInputsFromTable();
   } catch (e) {
+    viWorkbench.actionFailed('register');
     showLvMsg(e.message, false);
+    syncLvWorkbench();
     return;
   }
   let opts;
   try {
     opts = readRunOptions();
   } catch (e) {
+    viWorkbench.actionFailed('register');
     showLvMsg(e.message, false);
+    syncLvWorkbench();
     return;
   }
   showLvMsg('注册中…', true);
@@ -383,28 +480,36 @@ async function registerViTemplate() {
       body: JSON.stringify(Object.assign({
         vi_path: viPath,
         inputs: inputs,
-        outputs: lvOutputs,
+        outputs: snapshot.outputs,
         name: name,
       }, opts)),
     });
     const data = await resp.json();
     if (!resp.ok) {
+      viWorkbench.actionFailed('register');
       const err = data.error && (data.error.message || data.error) || resp.status;
       showLvMsg('注册失败: ' + err, false);
+      syncLvWorkbench();
       return;
     }
+    viWorkbench.registerSucceeded(data);
     showLvMsg('已注册: ' + (data.name || data.id), true);
-    await loadSeqRegistered();
+    syncLvWorkbench();
+    await Promise.all([fetchLabviewCenterTemplates(), loadSeqRegistered()]);
   } catch (e) {
+    viWorkbench.actionFailed('register');
     showLvMsg('注册失败: ' + e.message, false);
+    syncLvWorkbench();
   }
 }
 
 function loadTemplateToEditor(t) {
-  document.getElementById('lv-vi-path').value = t.vi_path || '';
-  document.getElementById('lv-name').value = t.name || '';
-  renderInputsTable(t.inputs || []);
-  lvOutputs = Array.isArray(t.outputs) ? t.outputs : [];
+  if (!viWorkbench.loadTemplate(t)) return;
+  const snapshot = viWorkbench.snapshot();
+  document.getElementById('lv-vi-path').value = snapshot.path;
+  document.getElementById('lv-name').value = snapshot.name;
+  renderInputsTable(snapshot.inputs);
+  showLvSchemaSummary(snapshot.inputs, snapshot.outputs);
   document.getElementById('lv-show-fp').checked = !!t.show_front_panel;
   const timeoutEl = document.getElementById('lv-timeout');
   if (t.timeout_secs != null && t.timeout_secs > 0) {
@@ -413,8 +518,9 @@ function loadTemplateToEditor(t) {
     timeoutEl.value = '';
   }
   document.getElementById('lv-json-raw').textContent = JSON.stringify(t, null, 2);
-  document.getElementById('lv-run-out').hidden = true;
+  clearLvRunResult();
   showLvMsg('已加载到编辑区: ' + (t.name || t.id), true);
+  syncLvWorkbench();
 }
 
 function showLvCenterMsg(text, ok) {
@@ -425,16 +531,35 @@ function showLvCenterMsg(text, ok) {
   msg.className = ok ? 'msg ok' : 'msg err';
 }
 
-function renderLabviewCenterTemplates(templates) {
+let lvCenterTemplates = [];
+let lvCenterQuery = '';
+
+function renderLabviewCenterTemplates() {
   const tbody = document.getElementById('lv-center-body');
   if (!tbody) return;
   tbody.innerHTML = '';
-  if (!templates || templates.length === 0) {
+  if (!lvCenterTemplates.length) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册 VI 功能</td></tr>';
     return;
   }
-  for (let i = 0; i < templates.length; i++) {
-    const t = templates[i];
+  const query = lvCenterQuery.trim().toLowerCase();
+  const matches = lvCenterTemplates.filter(function (template) {
+    if (!query) return true;
+    return [
+      template.name,
+      template.id,
+      template.origin_agent_name,
+      template.vi_path,
+    ].some(function (value) {
+      return String(value == null ? '' : value).toLowerCase().includes(query);
+    });
+  });
+  if (!matches.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">无匹配 VI 功能，请调整搜索</td></tr>';
+    return;
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const t = matches[i];
     const row = document.createElement('tr');
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
@@ -466,7 +591,8 @@ async function fetchLabviewCenterTemplates() {
       tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
       return;
     }
-    renderLabviewCenterTemplates(Array.isArray(data) ? data : []);
+    lvCenterTemplates = Array.isArray(data) ? data : [];
+    renderLabviewCenterTemplates();
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
@@ -491,7 +617,66 @@ async function refreshTemplateLists() {
 document.getElementById('lv-inspect-btn').addEventListener('click', inspectVi);
 document.getElementById('lv-run-btn').addEventListener('click', runVi);
 document.getElementById('lv-register-btn').addEventListener('click', registerViTemplate);
-document.getElementById('lv-vi-path').addEventListener('blur', defaultLvNameFromPath);
+document.getElementById('lv-vi-path').addEventListener('input', function (event) {
+  viWorkbench.inputPath(event.target.value);
+  const snapshot = viWorkbench.snapshot();
+  if (!snapshot.inspectedPath) clearLvSchemasAndResults();
+  syncLvWorkbench();
+});
+document.getElementById('lv-vi-path').addEventListener('blur', function (event) {
+  const normalized = viWorkbench.blurPath();
+  event.target.value = normalized.path;
+  document.getElementById('lv-name').value = normalized.name;
+  syncLvWorkbench();
+});
+document.getElementById('lv-name').addEventListener('input', function (event) {
+  viWorkbench.inputName(event.target.value);
+  syncLvWorkbench();
+});
+document.querySelector('#lv-advanced > summary').addEventListener('click', function (event) {
+  if (document.getElementById('lv-advanced').getAttribute('aria-disabled') === 'true') {
+    event.preventDefault();
+  }
+});
+document.getElementById('lv-center-search').addEventListener('input', function (event) {
+  lvCenterQuery = event.target.value || '';
+  renderLabviewCenterTemplates();
+});
+document.getElementById('lv-copy-result-btn').addEventListener('click', async function () {
+  const result = viWorkbench.snapshot().runResult;
+  if (result == null) return;
+  const text = JSON.stringify(result, null, 2);
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const copyArea = document.createElement('textarea');
+      copyArea.value = text;
+      copyArea.setAttribute('readonly', '');
+      copyArea.style.position = 'fixed';
+      copyArea.style.opacity = '0';
+      document.body.appendChild(copyArea);
+      copyArea.select();
+      document.execCommand('copy');
+      copyArea.remove();
+    }
+    showLvMsg('已复制试跑 JSON', true);
+  } catch (e) {
+    showLvMsg('复制失败: ' + e.message, false);
+  }
+});
+document.getElementById('lv-view-registered-btn').addEventListener('click', function () {
+  const section = document.getElementById('lv-center-section');
+  const search = document.getElementById('lv-center-search');
+  section.scrollIntoView({ block: 'start' });
+  search.focus();
+});
+document.getElementById('lv-edit-copy-btn').addEventListener('click', function () {
+  if (!viWorkbench.continueEditingCopy()) return;
+  hideLvMsg();
+  syncLvWorkbench();
+});
+syncLvWorkbench();
 
 // --- Sequence page ---
 

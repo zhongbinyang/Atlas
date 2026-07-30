@@ -55,7 +55,31 @@
 
     <div id="page-workbench">
     <section id="labview-section">
-      <h2>LabVIEW VI</h2>
+      <div class="lv-heading">
+        <div>
+          <p class="lv-eyebrow">VI 工作台</p>
+          <h2>LabVIEW VI</h2>
+        </div>
+        <p id="lv-stage-status" class="lv-stage-status" role="status" aria-live="polite">填写 VI 路径以开始</p>
+      </div>
+      <ol class="lv-stage-rail" aria-label="VI 工作阶段">
+        <li data-lv-stage="path" data-status="current">
+          <span class="lv-stage-index">01</span>
+          <span class="lv-stage-label">路径</span>
+        </li>
+        <li data-lv-stage="inspect" data-status="waiting">
+          <span class="lv-stage-index">02</span>
+          <span class="lv-stage-label">参数</span>
+        </li>
+        <li data-lv-stage="run" data-status="waiting">
+          <span class="lv-stage-index">03</span>
+          <span class="lv-stage-label">试跑</span>
+        </li>
+        <li data-lv-stage="register" data-status="waiting">
+          <span class="lv-stage-index">04</span>
+          <span class="lv-stage-label">注册</span>
+        </li>
+      </ol>
       <div class="lv-config">
         <div class="lv-field">
           <span class="label">CLI</span>
@@ -77,20 +101,25 @@
         </label>
         <div class="lv-actions">
           <button id="lv-inspect-btn" type="button">查询参数</button>
-          <button id="lv-run-btn" type="button">试跑</button>
-          <button id="lv-register-btn" type="button" class="btn-primary">注册到中心</button>
+          <button id="lv-run-btn" type="button" disabled title="请先查询参数">试跑</button>
+          <button id="lv-register-btn" type="button" class="btn-primary" disabled title="请先查询参数">注册到中心</button>
         </div>
       </div>
-      <div class="lv-options">
-        <label class="lv-check">
-          <input id="lv-show-fp" type="checkbox">
-          前面板
-        </label>
-        <label class="lv-timeout">
-          <span class="label">超时(秒)</span>
-          <input id="lv-timeout" type="number" min="1" placeholder="可选">
-        </label>
-      </div>
+      <p id="lv-action-hint" class="lv-action-hint" role="status" aria-live="polite">填写 VI 路径后可查询参数</p>
+      <details id="lv-advanced" class="lv-advanced">
+        <summary>高级设置</summary>
+        <div class="lv-options">
+          <label class="lv-check">
+            <input id="lv-show-fp" type="checkbox">
+            前面板
+          </label>
+          <label class="lv-timeout">
+            <span class="label">超时(秒)</span>
+            <input id="lv-timeout" type="number" min="1" placeholder="可选">
+          </label>
+        </div>
+      </details>
+      <p id="lv-schema-summary" class="lv-schema-summary" role="status" aria-live="polite" hidden></p>
       <div class="table-scroll">
         <table class="lv-inputs-table">
           <thead>
@@ -106,15 +135,34 @@
         </table>
       </div>
       <details class="lv-raw">
-        <summary>原始 JSON</summary>
+        <summary>参数原始 JSON</summary>
         <pre id="lv-json-raw" class="mono lv-pre">—</pre>
       </details>
-      <pre id="lv-run-out" class="mono lv-pre" hidden></pre>
-      <p id="lv-msg" class="msg" hidden></p>
+      <section id="lv-run-result" class="lv-result-panel" hidden>
+        <div class="lv-result-heading">
+          <div>
+            <span class="label">试跑结果</span>
+            <p id="lv-run-summary" class="lv-run-summary"></p>
+          </div>
+          <button id="lv-copy-result-btn" type="button" aria-label="复制试跑原始 JSON">复制 JSON</button>
+        </div>
+        <details class="lv-run-raw">
+          <summary>展开原始 JSON</summary>
+          <pre id="lv-run-json" class="mono lv-pre">—</pre>
+        </details>
+      </section>
+      <p id="lv-msg" class="msg" role="status" aria-live="polite" hidden></p>
+      <div id="lv-registered-actions" class="lv-registered-actions" hidden>
+        <button id="lv-view-registered-btn" type="button">查看已注册功能</button>
+        <button id="lv-edit-copy-btn" type="button">继续编辑副本</button>
+      </div>
     </section>
 
     <section id="lv-center-section" class="center-panel">
-      <h2>中心VI功能</h2>
+      <div class="lv-center-heading">
+        <h2>中心VI功能</h2>
+        <input id="lv-center-search" type="search" aria-label="搜索中心 VI 功能" placeholder="搜索名称 / ID / 机台 / 路径">
+      </div>
       <p id="lv-center-msg" class="msg" hidden></p>
       <div class="table-scroll">
         <table>
@@ -326,6 +374,7 @@
       </div>
     </div>
   </div>
+  <script src="/workbench-runtime.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
