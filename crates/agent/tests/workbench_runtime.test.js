@@ -265,6 +265,37 @@ test('failed re-run derives ready to register after Name is filled while running
   assert.deepEqual(snapshot.runResult, runResult);
 });
 
+test('failed re-run from registered preserves registration and registered followups', () => {
+  const runtime = createWorkbenchRuntime();
+  runtime.loadTemplate({
+    vi_path: String.raw`C:\VI\Measure.vi`,
+    name: 'Measure',
+    inputs: [],
+    outputs: [],
+  });
+  runtime.beginRun();
+  const runResult = { status: 'ok', outputs: { reading: 1.2 } };
+  runtime.runSucceeded(runResult);
+  runtime.beginRegister();
+  const registration = { id: 'vi-42', name: 'Measure' };
+  runtime.registerSucceeded(registration);
+  assert.equal(runtime.snapshot().state, 'registered');
+
+  runtime.beginRun();
+  runtime.inputName('');
+  runtime.actionFailed('run');
+
+  let snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'registered');
+  assert.deepEqual(snapshot.registration, registration);
+  assert.deepEqual(snapshot.runResult, runResult);
+  assert.equal(runtime.continueEditingCopy(), true);
+  snapshot = runtime.snapshot();
+  assert.equal(snapshot.state, 'ready_to_run');
+  assert.equal(snapshot.registration, null);
+  assert.deepEqual(snapshot.runResult, runResult);
+});
+
 test('in-flight actions reject duplicate submissions and recover after failure', () => {
   const runtime = createWorkbenchRuntime();
   runtime.inputPath(String.raw`C:\VI\Measure.vi`);
