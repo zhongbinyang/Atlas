@@ -175,6 +175,25 @@ test('dialog controller focuses the first control, traps Tab, closes on Escape, 
   assert.equal(document.activeElement, trigger);
 });
 
+test('dialog controller excludes controls hidden by a parent container from its focus order', () => {
+  const document = createKeyboardDocument();
+  const trigger = createFocusable(document);
+  const hiddenByAttribute = createFocusable(document);
+  hiddenByAttribute.parentElement = {
+    hidden: false,
+    getAttribute(name) { return name === 'aria-hidden' ? 'true' : null; },
+  };
+  const hiddenByProperty = createFocusable(document);
+  hiddenByProperty.parentElement = { hidden: true, getAttribute() { return null; } };
+  const visible = createFocusable(document);
+  const dialog = createDialog(document, [hiddenByAttribute, hiddenByProperty, visible]);
+  const controller = createDialogController({ document });
+
+  controller.open(dialog, { trigger });
+
+  assert.equal(document.activeElement, visible);
+});
+
 test('dialog controller allows only one open dialog and resolves custom confirmation asynchronously', async () => {
   const document = createKeyboardDocument();
   const trigger = createFocusable(document);

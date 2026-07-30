@@ -623,13 +623,17 @@ pre {
   font-family: var(--font-mono);
 }
 
-.files-crumb a {
+.files-crumb button {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--accent);
+  font: inherit;
   text-decoration: none;
   cursor: pointer;
 }
 
-.files-crumb a:hover {
+.files-crumb button:hover {
   text-decoration: underline;
 }
 

@@ -92,9 +92,16 @@
       'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     let current = null;
 
+    function isHidden(element) {
+      for (let node = element; node; node = node.parentElement) {
+        if (node.hidden || node.getAttribute?.('aria-hidden') === 'true') return true;
+      }
+      return false;
+    }
+
     function focusable(dialog) {
       return Array.from(dialog.querySelectorAll(focusableSelector)).filter((element) =>
-        !element.hidden && !element.disabled && element.getAttribute?.('aria-hidden') !== 'true',
+        !isHidden(element) && !element.disabled,
       );
     }
 

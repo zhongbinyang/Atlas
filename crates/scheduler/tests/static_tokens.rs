@@ -202,4 +202,13 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
         app.contains("showScreenshotImage(item.id, true)"),
         "history screenshot controls must opt into restoring their parent dialog"
     );
+    assert!(
+        app.contains("root.type = 'button'") && app.contains("link.type = 'button'"),
+        "file breadcrumb controls must use native keyboard-accessible buttons"
+    );
+    assert!(
+        !app.contains("const root = document.createElement('a')")
+            && !app.contains("const link = document.createElement('a')"),
+        "file breadcrumb controls must not be href-less links"
+    );
 }

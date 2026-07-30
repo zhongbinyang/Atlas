@@ -314,7 +314,8 @@ async function loadFiles() {
 function renderFilesCrumb(path) {
   const crumb = document.getElementById('files-crumb');
   crumb.innerHTML = '';
-  const root = document.createElement('a');
+  const root = document.createElement('button');
+  root.type = 'button';
   root.textContent = '根目录';
   root.addEventListener('click', () => {
     filesPath = '';
@@ -332,7 +333,8 @@ function renderFilesCrumb(path) {
     crumb.appendChild(sep);
 
     acc = joinFilesPath(acc, part);
-    const link = document.createElement('a');
+    const link = document.createElement('button');
+    link.type = 'button';
     link.textContent = part;
     const target = acc;
     link.addEventListener('click', () => {
