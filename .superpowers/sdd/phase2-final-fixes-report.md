@@ -263,3 +263,156 @@ imports/dead code and one non-snake-case test name). They are outside this
 frontend-fix scope and do not affect the 140/140 passing result. Git also prints
 the repository's configured LF→CRLF working-copy notices; `git diff --check`
 itself exits successfully.
+
+---
+
+# Phase 2 final re-review follow-up
+
+Date: 2026-07-30
+Starting HEAD: `37a601c`
+Implementation commit: `1b417ec` (`fix(frontend): address phase 2 final re-review`)
+
+The four findings from the final re-review were applied as a single follow-up
+wave with independent RED → GREEN evidence. Direct Register after Inspect
+remains compatible and no telemetry, HTTP, General, or Sequence behavior was
+changed.
+
+## Re-review finding 1 — Invalid child trigger stays in the parent
+
+### RED
+
+- `node --test --test-name-pattern='keeps fallback focus inside|preserves same-dialog pagination' crates/scheduler/tests/dashboard_runtime.test.js`
+  - Combined initial result: exit 1, 0 passed / 2 failed.
+  - The child-trigger test failed because the configured global fallback was
+    focused instead of the first valid control in the restored parent.
+  - The same-dialog test failed because reopening immediately focused the first
+    control instead of retaining the valid pager focus.
+  - The child test loops over disconnected, disabled, and ancestor-hidden
+    triggers and failed on the first disconnected case in the old code.
+
+### GREEN
+
+- The same targeted command returned exit 0, 2 passed / 0 failed.
+
+### Files and result
+
+- `crates/scheduler/static/dashboard-runtime.js`
+- `crates/scheduler/tests/dashboard_runtime.test.js`
+
+When a parent is restored, fallback resolution now checks the parent's first
+valid control, then the parent dialog itself, and does not consult a global
+fallback while any dialog remains open. The global fallback remains available
+only after the root dialog closes.
+
+## Re-review finding 2 — Same-dialog pagination focus
+
+This finding shares the combined RED/GREEN command above.
+
+The controller now retains `document.activeElement` when it is connected,
+visible, enabled, and still inside the same dialog. If refreshed content removes
+that element (`isConnected === false` in the regression), `focusFirst` runs and
+focuses the first valid dialog control. Reopening still preserves the dialog's
+original external close target.
+
+## Re-review finding 3 — Failed re-run derives current readiness
+
+### RED
+
+- `node --test --test-name-pattern='failed re-run derives' crates/agent/tests/workbench_runtime.test.js`
+  - Result: exit 1, 0 passed / 2 failed.
+  - Clearing Name during a re-run restored stale `ready_to_register` instead of
+    deriving `ready_to_run`.
+  - Filling Name during a re-run restored stale `ready_to_run` instead of
+    deriving `ready_to_register`.
+
+### GREEN
+
+- The same targeted command returned exit 0, 2 passed / 0 failed.
+
+### Files and result
+
+- `crates/agent/static/workbench-runtime.js`
+- `crates/agent/tests/workbench_runtime.test.js`
+
+For a failed Run with a retained prior `runResult`, `actionFailed('run')` now
+derives readiness from the current Name: valid → `ready_to_register`, invalid →
+`ready_to_run`. The old successful result is retained. Other failure actions
+and a first Run failure without an old result still use their recorded return
+state. Direct Register compatibility is unchanged.
+
+## Re-review finding 4 — One live region and change-only text assignment
+
+### RED
+
+- `node --test --test-name-pattern='text synchronization only assigns' crates/agent/tests/workbench_app_behavior.test.js`
+  - Result: exit 1, 0 passed / 1 failed.
+  - Expected failure: `setTextIfChanged` did not exist.
+- `cargo test -p agent --test static_ui vi_workbench_exposes_staged_and_accessible_controls -- --exact`
+  - Result: exit 1, 0 passed / 1 failed.
+  - Expected failure: both `lv-stage-status` and `lv-action-hint` were polite
+    status regions.
+
+### GREEN
+
+- The targeted Node command returned exit 0, 1 passed / 0 failed. Its
+  instrumented `textContent` setter recorded zero assignments for unchanged
+  text and one assignment for changed text.
+- The targeted Rust static command returned exit 0, 1 passed / 0 failed.
+
+### Files and result
+
+- `crates/agent/static/app.js`
+- `crates/agent/static/index.html`
+- `crates/agent/tests/workbench_app_behavior.test.js`
+- `crates/agent/tests/static_ui.rs`
+
+`lv-stage-status` remains the sole polite live region of the pair.
+`lv-action-hint` is now an ordinary visible hint. Stage status, action hint, and
+per-stage visible status labels use `setTextIfChanged`, so synchronization does
+not reassign unchanged visible text.
+
+## Re-review final verification
+
+After the final code/test change, all requested commands were rerun fresh:
+
+- `node --test crates/scheduler/tests/dashboard_runtime.test.js`
+  - 38 passed / 0 failed.
+- `cargo test -p scheduler --test static_tokens`
+  - 4 passed / 0 failed.
+- `node --test crates/agent/tests/workbench_runtime.test.js`
+  - 14 passed / 0 failed.
+- `node --test crates/agent/tests/workbench_app_behavior.test.js`
+  - 7 passed / 0 failed.
+- `cargo test -p agent --test static_ui`
+  - 7 passed / 0 failed.
+- `node --check crates/scheduler/static/dashboard-runtime.js`
+- `node --check crates/scheduler/static/app.js`
+- `node --check crates/agent/static/workbench-runtime.js`
+- `node --check crates/agent/static/app.js`
+  - All four syntax checks exited 0 with no output.
+- `git diff --check`
+  - Exit 0; only the repository's configured LF→CRLF notices were printed.
+
+An earlier final-verification checkpoint returned Agent static 6 passed /
+1 failed because one pre-existing static assertion still required direct
+`.textContent =` assignment. That assertion contradicted this re-review's
+change-only assignment requirement, so it was updated to assert
+`setTextIfChanged`; the complete requested verification was then rerun and
+produced the passing counts above.
+
+Per the re-review instruction, `cargo test --workspace` was not rerun in this
+follow-up wave; the controller will run it.
+
+## Re-review self-review and concerns
+
+- Scope is limited to the two Dialog focus rules, failed re-run state
+  derivation, and VI status announcement behavior.
+- Direct Register after Inspect remains covered and unchanged.
+- No authentication, routes, methods, payload fields, response fields, status
+  codes, telemetry classification, dependencies, General behavior, or Sequence
+  behavior changed.
+- Existing Escape, Tab/Shift+Tab, async confirm, dialog cleanup, Toast, runtime
+  locking, and accessibility tests all remain green.
+- No known functional concerns or unresolved re-review findings.
+- Pre-existing Rust unused/dead-code warnings and Git LF→CRLF notices remain
+  informational only.
