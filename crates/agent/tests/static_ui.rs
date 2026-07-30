@@ -112,6 +112,42 @@ fn machine_info_is_collapsed_in_topbar_before_register() {
 }
 
 #[test]
+fn api_page_exposes_rest_client_controls() {
+    assert!(
+        INDEX.contains("data-page=\"api\"") && INDEX.contains("id=\"page-api\""),
+        "API must be a top-level tab sibling of VI/general/sequence"
+    );
+    assert!(
+        INDEX.contains("id=\"api-method\"")
+            && INDEX.contains("id=\"api-url\"")
+            && INDEX.contains("id=\"api-headers\"")
+            && INDEX.contains("id=\"api-headers-kv-body\"")
+            && INDEX.contains("id=\"api-body\"")
+            && INDEX.contains("id=\"api-run-btn\"")
+            && INDEX.contains("id=\"api-register-btn\"")
+            && INDEX.contains("id=\"api-extract-fields-btn\"")
+            && INDEX.contains("id=\"api-body-format-btn\"")
+            && INDEX.contains("id=\"api-body-minify-btn\"")
+            && INDEX.contains("data-api-headers-mode=\"json\""),
+        "REST editor needs method/url bar, headers kv+json panes, body JSON tools, and trial/register"
+    );
+    assert!(
+        APP.contains("/api/general/rest/run")
+            && APP.contains("/api/general/rest/register-template")
+            && APP.contains("case 'rest': return 'REST'")
+            && APP.contains("setApiHeadersMode")
+            && APP.contains("refreshBodyJsonStatus"),
+        "client must call REST endpoints and support JSON header/body editors"
+    );
+    assert!(
+        INDEX.contains("class=\"api-workbench\"")
+            && INDEX.contains("class=\"api-editor-grid\"")
+            && INDEX.contains("id=\"api-templates-drawer\""),
+        "API page should use workbench + editor grid + templates drawer layout"
+    );
+}
+
+#[test]
 fn sequence_filter_controls_have_accessible_names() {
     assert!(
         INDEX.contains(

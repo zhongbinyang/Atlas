@@ -333,7 +333,11 @@ where
                 }
 
                 let judge = judge_limits(&item.limits, &result);
-                let status = judge_to_status(&judge);
+                let mut status = judge_to_status(&judge);
+                // Builtin steps (e.g. REST expect_status) may return ok:false without limits.
+                if status_ok(&status) && result.get("ok") == Some(&Value::Bool(false)) {
+                    status = "fail".into();
+                }
                 let ok = status_ok(&status);
 
                 steps.push(SequenceStepResult {
@@ -345,8 +349,17 @@ where
                     status: status.clone(),
                     measured: measured_from_limits(&item.limits, &result),
                     limits: limits_value(&item.limits),
-                    result: Some(result),
-                    error: judge_message(&judge),
+                    result: Some(result.clone()),
+                    error: judge_message(&judge).or_else(|| {
+                        if status == "fail" {
+                            result
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    }),
                 });
 
                 if should_stop_on_status(&status, &item.fail_policy) {
@@ -443,6 +456,9 @@ async fn run_one_step(
     if crate::general::is_delay_template(Some(item.kind.as_str()), &item.vi_path) {
         let delay_ms = crate::general::delay_ms_from_inputs(&item.inputs)?;
         return Ok(crate::general::run_delay_ms(delay_ms).await);
+    }
+    if crate::rest::is_rest_template(Some(item.kind.as_str()), &item.vi_path) {
+        return crate::rest::run_request_from_inputs(&item.inputs).await;
     }
 
     let vi = std::path::PathBuf::from(normalize_fs_path(&item.vi_path));
@@ -617,6 +633,35 @@ mod tests {
         assert_eq!(resp.steps[0].status, "ok");
         assert!(resp.steps[0].ok);
         assert_eq!(resp.overall, "pass");
+    }
+
+    #[tokio::test]
+    async fn result_ok_false_fails_without_limits() {
+        let items = vec![sample_item(0, "rest-step"), sample_item(1, "next")];
+        let resp = run_sequence_with(&items, |item| {
+            let name = item.name.clone();
+            async move {
+                if name == "rest-step" {
+                    Ok(serde_json::json!({
+                        "ok": false,
+                        "status": 404,
+                        "error": "expected status 200, got 404"
+                    }))
+                } else {
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(resp.steps[0].status, "fail");
+        assert!(!resp.steps[0].ok);
+        assert_eq!(
+            resp.steps[0].error.as_deref(),
+            Some("expected status 200, got 404")
+        );
+        assert!(resp.stopped);
+        assert_eq!(resp.steps.len(), 1);
     }
 
     #[tokio::test]

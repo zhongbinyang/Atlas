@@ -18,6 +18,7 @@
       <nav class="page-tabs">
         <button type="button" class="tab active" data-page="workbench">VI</button>
         <button type="button" class="tab" data-page="general">通用</button>
+        <button type="button" class="tab" data-page="api">API</button>
         <button type="button" class="tab" data-page="sequence">序列</button>
       </nav>
     </div>
@@ -251,6 +252,130 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <div id="page-api" hidden>
+      <section class="api-workbench" id="api-section">
+        <header class="api-workbench-head">
+          <div>
+            <p class="lv-eyebrow">API 工作台</p>
+            <h2>REST Client</h2>
+          </div>
+          <p class="muted-hint api-workbench-hint">编辑请求、试跑，注册后可加入序列执行顺序</p>
+        </header>
+
+        <div class="api-request-bar">
+          <label class="api-name-field">
+            <span class="label">名称</span>
+            <input id="api-name" type="text" placeholder="显示名称（必填）" required>
+          </label>
+          <div class="api-url-row">
+            <select id="api-method" aria-label="HTTP Method">
+              <option value="GET">GET</option>
+              <option value="POST" selected>POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+            <input id="api-url" type="url" class="mono" placeholder="https://example.com/api/v1/resource" aria-label="URL" required>
+            <div class="api-url-actions">
+              <button id="api-run-btn" type="button">试跑</button>
+              <button id="api-register-btn" type="button" class="btn-primary">注册到中心</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="api-editor-grid">
+          <div class="api-pane" id="api-headers-field">
+            <div class="api-pane-head">
+              <h3>Headers</h3>
+              <div class="api-field-actions">
+                <div class="api-mode-toggle" role="group" aria-label="Headers 编辑模式">
+                  <button type="button" class="btn-sm api-mode-btn active" data-api-headers-mode="kv">键值</button>
+                  <button type="button" class="btn-sm api-mode-btn" data-api-headers-mode="json">JSON</button>
+                </div>
+                <button type="button" id="api-headers-add-btn" class="btn-sm">添加</button>
+                <button type="button" id="api-headers-format-btn" class="btn-sm" hidden>格式化</button>
+                <button type="button" id="api-headers-minify-btn" class="btn-sm" hidden>压缩</button>
+              </div>
+            </div>
+            <div id="api-headers-kv" class="api-kv">
+              <div class="api-kv-head" aria-hidden="true">
+                <span>Name</span>
+                <span>Value</span>
+                <span></span>
+              </div>
+              <div id="api-headers-kv-body"></div>
+            </div>
+            <textarea id="api-headers" class="mono api-textarea" rows="8" aria-label="请求 Headers JSON" spellcheck="false" hidden>{}</textarea>
+            <p id="api-headers-status" class="api-json-status" aria-live="polite">JSON object</p>
+          </div>
+
+          <div class="api-pane" id="api-body-field">
+            <div class="api-pane-head">
+              <h3>Body <span class="api-pane-sub">JSON</span></h3>
+              <div class="api-field-actions">
+                <button type="button" id="api-body-sample-btn" class="btn-sm">示例</button>
+                <button type="button" id="api-body-format-btn" class="btn-sm">格式化</button>
+                <button type="button" id="api-body-minify-btn" class="btn-sm">压缩</button>
+                <button type="button" id="api-body-validate-btn" class="btn-sm">校验</button>
+              </div>
+            </div>
+            <textarea id="api-body" class="mono api-textarea api-body-textarea" rows="12" aria-label="请求 Body JSON" spellcheck="false" placeholder="在此输入 JSON…"></textarea>
+            <p id="api-body-status" class="api-json-status" aria-live="polite">空（允许）</p>
+          </div>
+        </div>
+
+        <div class="api-options-bar">
+          <label>
+            <span class="label">超时 ms</span>
+            <input id="api-timeout" type="number" min="1" step="1" class="mono" value="10000">
+          </label>
+          <label>
+            <span class="label">期望状态码</span>
+            <input id="api-expect-status" type="number" min="100" max="599" step="1" class="mono" value="200">
+          </label>
+          <label class="api-options-grow">
+            <span class="label">Spec 数值字段</span>
+            <input id="api-output-fields" type="text" class="mono" placeholder="逗号分隔，如 power,code" aria-label="响应 JSON 顶层数值字段名">
+          </label>
+          <button id="api-extract-fields-btn" type="button" class="btn-sm">从响应提取</button>
+        </div>
+
+        <p id="api-msg" class="msg" hidden></p>
+
+        <div id="api-response" class="api-response" hidden>
+          <div class="api-response-meta">
+            <span class="api-resp-code">HTTP <strong id="api-resp-status">—</strong></span>
+            <span id="api-resp-elapsed" class="muted-hint"></span>
+            <span id="api-resp-ok" class="muted-hint"></span>
+          </div>
+          <pre id="api-resp-body" class="mono lv-pre api-resp-pre">—</pre>
+        </div>
+      </section>
+
+      <details class="api-templates-drawer" id="api-templates-drawer" open>
+        <summary>中心 REST 模板</summary>
+        <div class="api-templates-body">
+          <p id="api-center-msg" class="msg" hidden></p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>名称</th>
+                  <th>Method</th>
+                  <th>来源机台</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="api-center-body">
+                <tr><td colspan="5" class="empty">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div id="page-sequence" hidden>

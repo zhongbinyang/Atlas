@@ -781,9 +781,11 @@ let seqRegisteredSource = 'all';
 function showPage(page) {
   const workbench = document.getElementById('page-workbench');
   const general = document.getElementById('page-general');
+  const apiPage = document.getElementById('page-api');
   const sequence = document.getElementById('page-sequence');
   workbench.hidden = page !== 'workbench';
   if (general) general.hidden = page !== 'general';
+  if (apiPage) apiPage.hidden = page !== 'api';
   sequence.hidden = page !== 'sequence';
   document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
     btn.classList.toggle('active', btn.getAttribute('data-page') === page);
@@ -794,6 +796,8 @@ function showPage(page) {
     fetchLabviewCenterTemplates();
   } else if (page === 'general') {
     fetchGeneralTemplates();
+  } else if (page === 'api') {
+    fetchRestTemplates();
   }
 }
 
@@ -1138,7 +1142,9 @@ function renderSeqRegistered() {
     const t = list[i];
     const row = document.createElement('tr');
     const isGeneral = t._source === 'general';
-    const typeLabel = isGeneral ? '通用' : 'VI';
+    const kind = (t.kind || (isGeneral ? 'general' : 'labview')).toLowerCase();
+    const typeLabel = isGeneral ? kindLabel(kind) : 'VI';
+    const badgeClass = kind === 'rest' ? 'rest' : (isGeneral ? 'general' : 'labview');
     const name = escapeHtml(t.name || t.id || '—');
     const origin = escapeHtml(t.origin_agent_name || '—');
     const actions = document.createElement('td');
@@ -1152,7 +1158,7 @@ function renderSeqRegistered() {
     actions.appendChild(addBtn);
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
-      '<td><span class="kind-badge kind-' + (isGeneral ? 'general' : 'labview') + '">' + typeLabel + '</span></td>' +
+      '<td><span class="kind-badge kind-' + badgeClass + '">' + typeLabel + '</span></td>' +
       '<td>' + name + '</td>' +
       '<td>' + origin + '</td>' +
       '<td class="inputs-cell-host"></td>';
@@ -1282,7 +1288,7 @@ function renderSeqSelected() {
     const source = item.template_source === 'general' ? 'general' : 'labview';
     const templateId = source === 'general' ? item.general_template_id : item.vi_template_id;
     const name = escapeHtml(item.name || templateId || '—');
-    const kind = escapeHtml(item.kind || 'labview');
+    const kindDisplay = kindLabel(item.kind || 'labview');
     const enabled = item.enabled !== false;
     const breakpoint = !!item.breakpoint;
     const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
@@ -1294,7 +1300,7 @@ function renderSeqSelected() {
       '<td class="seq-check-cell"></td>' +
       '<td class="seq-check-cell"></td>' +
       '<td>' + name + '</td>' +
-      '<td class="mono">' + kind + '</td>' +
+      '<td class="mono">' + kindDisplay + '</td>' +
       '<td class="seq-result-cell">' + resultBadgeHtml(stepResult) + '</td>';
 
     const enabledCb = document.createElement('input');
@@ -1933,7 +1939,555 @@ async function registerGeneralDelay() {
 function kindLabel(kind) {
   switch ((kind || '').toLowerCase()) {
     case 'delay': return '延迟';
+    case 'rest': return 'REST';
+    case 'labview': return 'VI';
     default: return escapeHtml(kind || '通用');
+  }
+}
+
+let apiLastResponse = null;
+let apiHeadersMode = 'kv'; // 'kv' | 'json'
+
+function showApiMsg(text, ok) {
+  const msg = document.getElementById('api-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+function showApiCenterMsg(text, ok) {
+  const msg = document.getElementById('api-center-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+function apiInputValue(inputs, name) {
+  if (!Array.isArray(inputs)) return null;
+  for (let i = 0; i < inputs.length; i++) {
+    if (inputs[i] && inputs[i].name === name) {
+      return inputs[i].value != null ? String(inputs[i].value) : '';
+    }
+  }
+  return null;
+}
+
+function setJsonStatus(el, text, state) {
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'api-json-status' + (state ? ' is-' + state : '');
+}
+
+function parseJsonObjectText(raw, allowEmptyObject) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    if (allowEmptyObject) return { ok: true, value: {} };
+    return { ok: false, error: '不能为空' };
+  }
+  try {
+    const value = JSON.parse(trimmed);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, error: '必须是 JSON object（{ ... }）' };
+    }
+    return { ok: true, value: value };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function parseJsonValueText(raw, allowEmpty) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    if (allowEmpty) return { ok: true, value: null, empty: true };
+    return { ok: false, error: '不能为空' };
+  }
+  try {
+    return { ok: true, value: JSON.parse(trimmed), empty: false };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function headersObjectFromKv() {
+  const rows = document.querySelectorAll('#api-headers-kv-body .api-kv-row');
+  const obj = {};
+  for (let i = 0; i < rows.length; i++) {
+    const nameInput = rows[i].querySelector('[data-api-header-name]');
+    const valueInput = rows[i].querySelector('[data-api-header-value]');
+    const name = String(nameInput && nameInput.value || '').trim();
+    if (!name) continue;
+    obj[name] = String(valueInput && valueInput.value || '');
+  }
+  return obj;
+}
+
+function syncHeadersTextareaFromKv() {
+  const el = document.getElementById('api-headers');
+  if (!el) return;
+  el.value = JSON.stringify(headersObjectFromKv(), null, 2);
+  refreshHeadersJsonStatus();
+}
+
+function addApiHeaderRow(name, value) {
+  const body = document.getElementById('api-headers-kv-body');
+  if (!body) return;
+  const row = document.createElement('div');
+  row.className = 'api-kv-row';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.setAttribute('data-api-header-name', '1');
+  nameInput.setAttribute('aria-label', 'Header 名称');
+  nameInput.placeholder = '名称';
+  nameInput.value = name || '';
+  nameInput.spellcheck = false;
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.setAttribute('data-api-header-value', '1');
+  valueInput.setAttribute('aria-label', 'Header 值');
+  valueInput.placeholder = '值';
+  valueInput.value = value || '';
+  valueInput.spellcheck = false;
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'btn-sm api-kv-remove';
+  removeBtn.setAttribute('aria-label', '删除该 Header');
+  removeBtn.textContent = '×';
+  removeBtn.addEventListener('click', function () {
+    row.remove();
+    if (!document.querySelectorAll('#api-headers-kv-body .api-kv-row').length) {
+      addApiHeaderRow('', '');
+    }
+    syncHeadersTextareaFromKv();
+  });
+  nameInput.addEventListener('input', syncHeadersTextareaFromKv);
+  valueInput.addEventListener('input', syncHeadersTextareaFromKv);
+  row.appendChild(nameInput);
+  row.appendChild(valueInput);
+  row.appendChild(removeBtn);
+  body.appendChild(row);
+}
+
+function renderHeadersKvFromObject(obj) {
+  const body = document.getElementById('api-headers-kv-body');
+  if (!body) return;
+  body.innerHTML = '';
+  const entries = obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj) : [];
+  if (!entries.length) {
+    addApiHeaderRow('', '');
+    return;
+  }
+  for (let i = 0; i < entries.length; i++) {
+    const key = entries[i];
+    const val = obj[key];
+    addApiHeaderRow(key, val == null ? '' : String(val));
+  }
+}
+
+function refreshHeadersJsonStatus() {
+  const el = document.getElementById('api-headers');
+  const status = document.getElementById('api-headers-status');
+  if (!el) return;
+  const parsed = parseJsonObjectText(el.value, true);
+  el.classList.remove('api-json-invalid', 'api-json-valid');
+  if (parsed.ok) {
+    const n = Object.keys(parsed.value).length;
+    el.classList.add('api-json-valid');
+    setJsonStatus(status, n ? ('合法 JSON object · ' + n + ' 项') : '合法 JSON object · 空', 'ok');
+    return true;
+  }
+  el.classList.add('api-json-invalid');
+  setJsonStatus(status, 'JSON 无效: ' + parsed.error, 'err');
+  return false;
+}
+
+function setApiHeadersMode(mode) {
+  apiHeadersMode = mode === 'json' ? 'json' : 'kv';
+  const kv = document.getElementById('api-headers-kv');
+  const ta = document.getElementById('api-headers');
+  const addBtn = document.getElementById('api-headers-add-btn');
+  const formatBtn = document.getElementById('api-headers-format-btn');
+  const minifyBtn = document.getElementById('api-headers-minify-btn');
+  document.querySelectorAll('[data-api-headers-mode]').forEach(function (btn) {
+    btn.classList.toggle('active', btn.getAttribute('data-api-headers-mode') === apiHeadersMode);
+  });
+  if (apiHeadersMode === 'kv') {
+    const parsed = parseJsonObjectText(ta.value, true);
+    if (!parsed.ok) {
+      showApiMsg('Headers JSON 无效，无法切换到键值模式: ' + parsed.error, false);
+      apiHeadersMode = 'json';
+      document.querySelectorAll('[data-api-headers-mode]').forEach(function (btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-api-headers-mode') === 'json');
+      });
+      return;
+    }
+    renderHeadersKvFromObject(parsed.value);
+    if (kv) kv.hidden = false;
+    if (ta) ta.hidden = true;
+    if (addBtn) addBtn.hidden = false;
+    if (formatBtn) formatBtn.hidden = true;
+    if (minifyBtn) minifyBtn.hidden = true;
+    syncHeadersTextareaFromKv();
+  } else {
+    syncHeadersTextareaFromKv();
+    if (kv) kv.hidden = true;
+    if (ta) ta.hidden = false;
+    if (addBtn) addBtn.hidden = true;
+    if (formatBtn) formatBtn.hidden = false;
+    if (minifyBtn) minifyBtn.hidden = false;
+    refreshHeadersJsonStatus();
+  }
+}
+
+function getApiHeadersJsonText() {
+  if (apiHeadersMode === 'kv') syncHeadersTextareaFromKv();
+  const el = document.getElementById('api-headers');
+  return String(el && el.value || '').trim() || '{}';
+}
+
+function setApiHeadersFromText(raw) {
+  const el = document.getElementById('api-headers');
+  const parsed = parseJsonObjectText(raw, true);
+  if (parsed.ok) {
+    el.value = JSON.stringify(parsed.value, null, 2);
+    renderHeadersKvFromObject(parsed.value);
+  } else {
+    el.value = String(raw || '').trim() || '{}';
+  }
+  refreshHeadersJsonStatus();
+  if (apiHeadersMode === 'kv' && !parsed.ok) {
+    setApiHeadersMode('json');
+  } else {
+    setApiHeadersMode(apiHeadersMode);
+  }
+}
+
+function refreshBodyJsonStatus() {
+  const el = document.getElementById('api-body');
+  const status = document.getElementById('api-body-status');
+  const method = String(document.getElementById('api-method').value || 'POST').toUpperCase();
+  if (!el) return true;
+  const parsed = parseJsonValueText(el.value, true);
+  el.classList.remove('api-json-invalid', 'api-json-valid');
+  if (parsed.empty) {
+    const needs = method === 'POST' || method === 'PUT' || method === 'PATCH';
+    setJsonStatus(status, needs ? '空（允许）；发送时不带 body' : '空', '');
+    return true;
+  }
+  if (parsed.ok) {
+    el.classList.add('api-json-valid');
+    const kind = Array.isArray(parsed.value)
+      ? 'array'
+      : (parsed.value === null ? 'null' : typeof parsed.value);
+    setJsonStatus(status, '合法 JSON · ' + kind, 'ok');
+    return true;
+  }
+  el.classList.add('api-json-invalid');
+  setJsonStatus(status, 'JSON 无效: ' + parsed.error, 'err');
+  return false;
+}
+
+function formatJsonTextarea(el, allowEmpty, minify) {
+  const raw = String(el.value || '').trim();
+  if (!raw) {
+    if (allowEmpty) {
+      el.value = '';
+      return true;
+    }
+    el.value = minify ? '{}' : '{\n}';
+    return true;
+  }
+  try {
+    const value = JSON.parse(raw);
+    el.value = minify ? JSON.stringify(value) : JSON.stringify(value, null, 2);
+    return true;
+  } catch (e) {
+    showApiMsg('JSON 无效: ' + e.message, false);
+    return false;
+  }
+}
+
+function validateApiBodyForMethod(method, body) {
+  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+    refreshBodyJsonStatus();
+    return true;
+  }
+  const parsed = parseJsonValueText(body, true);
+  if (parsed.ok) {
+    refreshBodyJsonStatus();
+    return true;
+  }
+  showApiMsg('Body 必须是合法 JSON: ' + parsed.error, false);
+  refreshBodyJsonStatus();
+  return false;
+}
+
+function bindJsonTextareaHelpers(el, onChange) {
+  if (!el) return;
+  el.addEventListener('input', onChange);
+  el.addEventListener('keydown', function (event) {
+    if (event.key !== 'Tab' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const value = el.value;
+    el.value = value.slice(0, start) + '  ' + value.slice(end);
+    el.selectionStart = el.selectionEnd = start + 2;
+    onChange();
+  });
+}
+
+function readApiForm() {
+  return {
+    name: String(document.getElementById('api-name').value || '').trim(),
+    method: String(document.getElementById('api-method').value || 'POST').toUpperCase(),
+    url: String(document.getElementById('api-url').value || '').trim(),
+    headers: getApiHeadersJsonText(),
+    body: String(document.getElementById('api-body').value || ''),
+    timeout_ms: Number(document.getElementById('api-timeout').value),
+    expect_status: Number(document.getElementById('api-expect-status').value),
+    output_fields: String(document.getElementById('api-output-fields').value || '')
+      .split(',')
+      .map(function (s) { return s.trim(); })
+      .filter(Boolean),
+  };
+}
+
+function fillApiFormFromTemplate(t) {
+  document.getElementById('api-name').value = t.name || '';
+  const method = (apiInputValue(t.inputs, 'method') || 'POST').toUpperCase();
+  const methodEl = document.getElementById('api-method');
+  methodEl.value = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) >= 0 ? method : 'POST';
+  document.getElementById('api-url').value = apiInputValue(t.inputs, 'url') || '';
+  setApiHeadersFromText(apiInputValue(t.inputs, 'headers') || '{}');
+  const body = apiInputValue(t.inputs, 'body') || '';
+  document.getElementById('api-body').value = body;
+  if (body.trim()) formatJsonTextarea(document.getElementById('api-body'), true, false);
+  refreshBodyJsonStatus();
+  const timeout = apiInputValue(t.inputs, 'timeout_ms');
+  document.getElementById('api-timeout').value = timeout != null && timeout !== '' ? timeout : '10000';
+  const expectStatus = apiInputValue(t.inputs, 'expect_status');
+  document.getElementById('api-expect-status').value =
+    expectStatus != null && expectStatus !== '' ? expectStatus : '200';
+  const extras = [];
+  if (Array.isArray(t.outputs)) {
+    const reserved = { ok: 1, kind: 1, status: 1, elapsed_ms: 1, body: 1 };
+    for (let i = 0; i < t.outputs.length; i++) {
+      const n = t.outputs[i] && t.outputs[i].name;
+      if (n && !reserved[n]) extras.push(n);
+    }
+  }
+  document.getElementById('api-output-fields').value = extras.join(',');
+}
+
+function renderApiResponse(data) {
+  apiLastResponse = data;
+  const box = document.getElementById('api-response');
+  box.hidden = false;
+  document.getElementById('api-resp-status').textContent =
+    data && data.status != null ? String(data.status) : '—';
+  document.getElementById('api-resp-elapsed').textContent =
+    data && data.elapsed_ms != null ? (data.elapsed_ms + ' ms') : '';
+  const okEl = document.getElementById('api-resp-ok');
+  if (data && data.ok === true) {
+    okEl.textContent = 'ok';
+    okEl.className = 'msg ok';
+  } else if (data && data.ok === false) {
+    okEl.textContent = data.error || 'fail';
+    okEl.className = 'msg err';
+  } else {
+    okEl.textContent = '';
+    okEl.className = 'muted-hint';
+  }
+  let bodyText = '—';
+  if (data && data.body_json != null) {
+    try {
+      bodyText = JSON.stringify(data.body_json, null, 2);
+    } catch (e) {
+      bodyText = String(data.body || '');
+    }
+  } else if (data && data.body != null) {
+    bodyText = String(data.body);
+  } else if (data) {
+    bodyText = JSON.stringify(data, null, 2);
+  }
+  document.getElementById('api-resp-body').textContent = bodyText;
+}
+
+async function runRestRequest() {
+  const form = readApiForm();
+  if (!form.url) {
+    showApiMsg('URL 不能为空', false);
+    return;
+  }
+  if (!Number.isFinite(form.timeout_ms) || form.timeout_ms <= 0) {
+    showApiMsg('请输入有效的超时毫秒数', false);
+    return;
+  }
+  if (!Number.isFinite(form.expect_status) || form.expect_status < 100) {
+    showApiMsg('请输入有效的期望状态码', false);
+    return;
+  }
+  const headersParsed = parseJsonObjectText(form.headers, true);
+  if (!headersParsed.ok) {
+    showApiMsg('Headers 必须是 JSON object: ' + headersParsed.error, false);
+    refreshHeadersJsonStatus();
+    return;
+  }
+  form.headers = JSON.stringify(headersParsed.value);
+  if (!validateApiBodyForMethod(form.method, form.body)) return;
+
+  showApiMsg('试跑中…', true);
+  try {
+    const resp = await fetch('/api/general/rest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        method: form.method,
+        url: form.url,
+        headers: form.headers,
+        body: form.body,
+        timeout_ms: Math.round(form.timeout_ms),
+        expect_status: Math.round(form.expect_status),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      renderApiResponse(data);
+      showApiMsg('试跑失败: ' + err, false);
+      return;
+    }
+    renderApiResponse(data);
+    showApiMsg(
+      data.ok ? ('试跑完成 HTTP ' + data.status) : ('试跑完成但未达期望状态码: ' + (data.error || data.status)),
+      !!data.ok
+    );
+  } catch (e) {
+    showApiMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+function extractFieldsFromLastResponse() {
+  if (!apiLastResponse || !apiLastResponse.body_json || typeof apiLastResponse.body_json !== 'object') {
+    showApiMsg('请先试跑并得到 JSON object 响应', false);
+    return;
+  }
+  const reserved = { ok: 1, kind: 1, status: 1, elapsed_ms: 1, headers: 1, body: 1, body_json: 1, error: 1 };
+  const names = Object.keys(apiLastResponse.body_json).filter(function (k) {
+    return !reserved[k] && typeof apiLastResponse.body_json[k] === 'number';
+  });
+  document.getElementById('api-output-fields').value = names.join(',');
+  showApiMsg(
+    names.length ? ('已提取字段: ' + names.join(', ')) : '响应中没有可用的顶层数值字段',
+    names.length > 0
+  );
+}
+
+async function registerRestTemplate() {
+  const form = readApiForm();
+  if (!form.name) {
+    showApiMsg('名称不能为空', false);
+    return;
+  }
+  if (!form.url) {
+    showApiMsg('URL 不能为空', false);
+    return;
+  }
+  if (!Number.isFinite(form.timeout_ms) || form.timeout_ms <= 0) {
+    showApiMsg('请输入有效的超时毫秒数', false);
+    return;
+  }
+  if (!Number.isFinite(form.expect_status) || form.expect_status < 100) {
+    showApiMsg('请输入有效的期望状态码', false);
+    return;
+  }
+  const headersParsed = parseJsonObjectText(form.headers, true);
+  if (!headersParsed.ok) {
+    showApiMsg('Headers 必须是 JSON object: ' + headersParsed.error, false);
+    refreshHeadersJsonStatus();
+    return;
+  }
+  form.headers = JSON.stringify(headersParsed.value);
+  if (!validateApiBodyForMethod(form.method, form.body)) return;
+
+  showApiMsg('注册中…', true);
+  try {
+    const resp = await fetch('/api/general/rest/register-template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: form.name,
+        method: form.method,
+        url: form.url,
+        headers: form.headers,
+        body: form.body,
+        timeout_ms: Math.round(form.timeout_ms),
+        expect_status: Math.round(form.expect_status),
+        output_fields: form.output_fields,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showApiMsg('注册失败: ' + err, false);
+      return;
+    }
+    showApiMsg('已注册: ' + (data.name || form.name) + ' (ID ' + data.id + ')', true);
+    await fetchRestTemplates();
+  } catch (e) {
+    showApiMsg('注册失败: ' + e.message, false);
+  }
+}
+
+function renderRestTemplates(templates) {
+  const tbody = document.getElementById('api-center-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无 REST 模板</td></tr>';
+    return;
+  }
+  for (let i = 0; i < templates.length; i++) {
+    const t = templates[i];
+    const method = apiInputValue(t.inputs, 'method') || '—';
+    const row = document.createElement('tr');
+    row.innerHTML =
+      '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
+      '<td>' + escapeHtml(t.name || '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(String(method).toUpperCase()) + '</td>' +
+      '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>';
+    const actions = document.createElement('td');
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.textContent = '加载到编辑区';
+    loadBtn.addEventListener('click', function () {
+      fillApiFormFromTemplate(t);
+      showApiMsg('已加载到编辑区: ' + (t.name || t.id), true);
+    });
+    actions.appendChild(loadBtn);
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  }
+}
+
+async function fetchRestTemplates() {
+  const tbody = document.getElementById('api-center-body');
+  if (!tbody) return;
+  try {
+    const resp = await fetch('/api/general/rest/templates');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(String(err)) + '</td></tr>';
+      return;
+    }
+    renderRestTemplates(Array.isArray(data) ? data : []);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
   }
 }
 
@@ -1950,7 +2504,7 @@ function renderGeneralTemplates(templates) {
     const row = document.createElement('tr');
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
-      '<td><span class="kind-badge kind-general">' + kindLabel(t.kind) + '</span></td>' +
+      '<td><span class="kind-badge kind-' + ((t.kind || '').toLowerCase() === 'rest' ? 'rest' : 'general') + '">' + kindLabel(t.kind) + '</span></td>' +
       '<td>' + escapeHtml(t.name || '—') + '</td>' +
       '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>';
     const actions = document.createElement('td');
@@ -2018,6 +2572,102 @@ const genRunBtn = document.getElementById('gen-delay-run-btn');
 const genRegBtn = document.getElementById('gen-delay-register-btn');
 if (genRunBtn) genRunBtn.addEventListener('click', runGeneralDelay);
 if (genRegBtn) genRegBtn.addEventListener('click', registerGeneralDelay);
+const apiRunBtn = document.getElementById('api-run-btn');
+const apiRegBtn = document.getElementById('api-register-btn');
+const apiExtractBtn = document.getElementById('api-extract-fields-btn');
+const apiHeadersAddBtn = document.getElementById('api-headers-add-btn');
+const apiHeadersFormatBtn = document.getElementById('api-headers-format-btn');
+const apiHeadersMinifyBtn = document.getElementById('api-headers-minify-btn');
+const apiBodyFormatBtn = document.getElementById('api-body-format-btn');
+const apiBodyMinifyBtn = document.getElementById('api-body-minify-btn');
+const apiBodyValidateBtn = document.getElementById('api-body-validate-btn');
+const apiBodySampleBtn = document.getElementById('api-body-sample-btn');
+const apiMethodEl = document.getElementById('api-method');
+const apiHeadersEl = document.getElementById('api-headers');
+const apiBodyEl = document.getElementById('api-body');
+if (apiRunBtn) apiRunBtn.addEventListener('click', runRestRequest);
+if (apiRegBtn) apiRegBtn.addEventListener('click', registerRestTemplate);
+if (apiExtractBtn) apiExtractBtn.addEventListener('click', extractFieldsFromLastResponse);
+document.querySelectorAll('[data-api-headers-mode]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    setApiHeadersMode(btn.getAttribute('data-api-headers-mode'));
+  });
+});
+if (apiHeadersAddBtn) {
+  apiHeadersAddBtn.addEventListener('click', function () {
+    addApiHeaderRow('', '');
+    syncHeadersTextareaFromKv();
+  });
+}
+if (apiHeadersFormatBtn) {
+  apiHeadersFormatBtn.addEventListener('click', function () {
+    if (formatJsonTextarea(apiHeadersEl, false, false)) {
+      refreshHeadersJsonStatus();
+      showApiMsg('Headers 已格式化', true);
+    } else {
+      refreshHeadersJsonStatus();
+    }
+  });
+}
+if (apiHeadersMinifyBtn) {
+  apiHeadersMinifyBtn.addEventListener('click', function () {
+    if (formatJsonTextarea(apiHeadersEl, false, true)) {
+      refreshHeadersJsonStatus();
+      showApiMsg('Headers 已压缩', true);
+    } else {
+      refreshHeadersJsonStatus();
+    }
+  });
+}
+if (apiBodyFormatBtn) {
+  apiBodyFormatBtn.addEventListener('click', function () {
+    if (formatJsonTextarea(apiBodyEl, true, false)) {
+      refreshBodyJsonStatus();
+      showApiMsg('Body 已格式化', true);
+    } else {
+      refreshBodyJsonStatus();
+    }
+  });
+}
+if (apiBodyMinifyBtn) {
+  apiBodyMinifyBtn.addEventListener('click', function () {
+    if (formatJsonTextarea(apiBodyEl, true, true)) {
+      refreshBodyJsonStatus();
+      showApiMsg('Body 已压缩', true);
+    } else {
+      refreshBodyJsonStatus();
+    }
+  });
+}
+if (apiBodyValidateBtn) {
+  apiBodyValidateBtn.addEventListener('click', function () {
+    const method = String((apiMethodEl && apiMethodEl.value) || 'POST').toUpperCase();
+    const body = apiBodyEl ? apiBodyEl.value : '';
+    if (validateApiBodyForMethod(method, body)) {
+      showApiMsg(String(body || '').trim() ? 'Body JSON 合法' : 'Body 为空（允许）', true);
+    }
+  });
+}
+if (apiBodySampleBtn) {
+  apiBodySampleBtn.addEventListener('click', function () {
+    if (apiBodyEl && String(apiBodyEl.value || '').trim()) {
+      if (!window.confirm('当前 Body 非空，是否用示例覆盖？')) return;
+    }
+    if (apiBodyEl) {
+      apiBodyEl.value = JSON.stringify({ key: 'value', count: 1 }, null, 2);
+      refreshBodyJsonStatus();
+      showApiMsg('已填入 Body JSON 示例', true);
+    }
+  });
+}
+if (apiMethodEl) apiMethodEl.addEventListener('change', refreshBodyJsonStatus);
+bindJsonTextareaHelpers(apiHeadersEl, refreshHeadersJsonStatus);
+bindJsonTextareaHelpers(apiBodyEl, refreshBodyJsonStatus);
+if (document.getElementById('api-headers-kv-body')) {
+  setApiHeadersFromText('{}');
+  setApiHeadersMode('kv');
+  refreshBodyJsonStatus();
+}
 const seqInputsCancelBtn = document.getElementById('seq-inputs-cancel-btn');
 const seqInputsSaveBtn = document.getElementById('seq-inputs-save-btn');
 if (seqInputsCancelBtn) seqInputsCancelBtn.addEventListener('click', closeSeqInputsModal);

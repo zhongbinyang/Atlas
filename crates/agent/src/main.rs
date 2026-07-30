@@ -10,6 +10,7 @@ mod limits;
 mod executor;
 mod metrics;
 mod register;
+mod rest;
 mod sequence_session;
 mod task_slot;
 mod web;
