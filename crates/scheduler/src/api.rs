@@ -1846,11 +1846,24 @@ async fn create_general_template(
     if req.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "name is required".into() })).into_response();
     }
-    if !req.inputs.is_array() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "inputs must be an array".into() })).into_response();
+    if !(req.inputs.is_array() || req.inputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "inputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
     }
-    if !req.outputs.is_array() {
-        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "outputs must be an array".into() })).into_response();
+    // LabVIEW uses [{name,className,value},...]; delay/REST store native JSON objects.
+    if !(req.outputs.is_array() || req.outputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "outputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
     }
 
     match s.store.get_agent(req.agent_id.trim()).await {

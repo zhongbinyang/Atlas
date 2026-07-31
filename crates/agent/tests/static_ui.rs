@@ -162,25 +162,30 @@ fn api_page_exposes_rest_client_controls() {
             && INDEX.contains("id=\"api-body\"")
             && INDEX.contains("id=\"api-run-btn\"")
             && INDEX.contains("id=\"api-register-btn\"")
-            && INDEX.contains("id=\"api-extract-fields-btn\"")
             && INDEX.contains("id=\"api-body-format-btn\"")
             && INDEX.contains("id=\"api-body-minify-btn\"")
-            && INDEX.contains("data-api-headers-mode=\"json\""),
-        "REST editor needs method/url bar, headers kv+json panes, body JSON tools, and trial/register"
+            && INDEX.contains("id=\"api-response\"")
+            && INDEX.contains("data-api-headers-mode=\"json\"")
+            && !INDEX.contains("api-output-fields")
+            && !INDEX.contains("api-extract-fields-btn"),
+        "REST editor needs method/url/headers/body tools and response panel without Spec field UI"
     );
     assert!(
         APP.contains("/api/general/rest/run")
             && APP.contains("/api/general/rest/register-template")
             && APP.contains("case 'rest': return 'REST'")
             && APP.contains("setApiHeadersMode")
+            && APP.contains("setApiEditorTab")
             && APP.contains("refreshBodyJsonStatus"),
         "client must call REST endpoints and support JSON header/body editors"
     );
     assert!(
         INDEX.contains("class=\"api-workbench\"")
-            && INDEX.contains("class=\"api-editor-grid\"")
+            && INDEX.contains("class=\"api-main-split\"")
+            && INDEX.contains("data-api-editor-tab=\"headers\"")
+            && INDEX.contains("data-api-editor-tab=\"body\"")
             && INDEX.contains("id=\"api-templates-drawer\""),
-        "API page should use workbench + editor grid + templates drawer layout"
+        "API page should use workbench + Headers/Body tabs + response split + templates drawer"
     );
 }
 

@@ -7,51 +7,68 @@ pub const DELAY_VI_PATH: &str = "__builtin__/delay";
 use serde_json::Value;
 use std::time::Duration;
 
+fn delay_ms_from_value(value: &Value) -> Result<u64, String> {
+    if let Some(n) = value.as_u64() {
+        return Ok(n);
+    }
+    if let Some(n) = value.as_i64() {
+        if n < 0 {
+            return Err("delay_ms must be >= 0".into());
+        }
+        return Ok(n as u64);
+    }
+    if let Some(n) = value.as_f64() {
+        if n < 0.0 || !n.is_finite() {
+            return Err("delay_ms must be a non-negative number".into());
+        }
+        return Ok(n.round() as u64);
+    }
+    if let Some(s) = value.as_str() {
+        return s
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| "delay_ms value must be a number".into());
+    }
+    Err("delay_ms value must be a number".into())
+}
+
 pub fn delay_ms_from_inputs(inputs: &Value) -> Result<u64, String> {
+    // Native object form: {"delay_ms": 1000}
+    if let Some(obj) = inputs.as_object() {
+        let value = obj
+            .get("delay_ms")
+            .ok_or_else(|| "delay_ms input required".to_string())?;
+        return delay_ms_from_value(value);
+    }
+    // Legacy VI-style array: [{"name":"delay_ms","className":"Digital","value":1000}]
     let arr = inputs
         .as_array()
-        .ok_or_else(|| "delay inputs must be an array".to_string())?;
+        .ok_or_else(|| "delay inputs must be an object or array".to_string())?;
     for item in arr {
         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
         if name != "delay_ms" {
             continue;
         }
-        let value = item.get("value").ok_or_else(|| "delay_ms missing value".to_string())?;
-        if let Some(n) = value.as_u64() {
-            return Ok(n);
-        }
-        if let Some(n) = value.as_i64() {
-            if n < 0 {
-                return Err("delay_ms must be >= 0".into());
-            }
-            return Ok(n as u64);
-        }
-        if let Some(n) = value.as_f64() {
-            if n < 0.0 || !n.is_finite() {
-                return Err("delay_ms must be a non-negative number".into());
-            }
-            return Ok(n.round() as u64);
-        }
-        return Err("delay_ms value must be a number".into());
+        let value = item
+            .get("value")
+            .ok_or_else(|| "delay_ms missing value".to_string())?;
+        return delay_ms_from_value(value);
     }
     Err("delay_ms input required".into())
 }
 
+/// Native delay inputs JSON (not LabVIEW VI param array).
 pub fn delay_inputs(delay_ms: u64) -> Value {
-    serde_json::json!([{
-        "name": "delay_ms",
-        "className": "Digital",
-        "value": delay_ms
-    }])
+    serde_json::json!({ "delay_ms": delay_ms })
 }
 
-/// Output schema registered with delay templates (matches run_delay_ms result keys).
+/// Output schema registered with delay templates — same object shape as `run_delay_ms`.
 pub fn delay_outputs() -> Value {
-    serde_json::json!([
-        { "name": "ok", "className": "Boolean", "value": true },
-        { "name": "kind", "className": "String", "value": KIND_DELAY },
-        { "name": "delay_ms", "className": "Digital", "value": 0 }
-    ])
+    serde_json::json!({
+        "ok": true,
+        "kind": KIND_DELAY,
+        "delay_ms": 0
+    })
 }
 
 pub fn is_delay_template(kind: Option<&str>, vi_path: &str) -> bool {
@@ -72,9 +89,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_delay_ms() {
-        let inputs = delay_inputs(1500);
-        assert_eq!(delay_ms_from_inputs(&inputs).unwrap(), 1500);
+    fn delay_outputs_matches_runtime_object_shape() {
+        let outs = delay_outputs();
+        assert!(outs.is_object());
+        assert_eq!(outs.get("kind").and_then(|v| v.as_str()), Some(KIND_DELAY));
+        assert_eq!(outs.get("ok"), Some(&serde_json::json!(true)));
+        assert!(outs.get("delay_ms").is_some());
+    }
+
+    #[test]
+    fn parses_delay_ms_object_and_legacy_array() {
+        assert_eq!(delay_ms_from_inputs(&delay_inputs(1500)).unwrap(), 1500);
+        let legacy = serde_json::json!([{
+            "name": "delay_ms",
+            "className": "Digital",
+            "value": 800
+        }]);
+        assert_eq!(delay_ms_from_inputs(&legacy).unwrap(), 800);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::labview::{
     build_run_args, ensure_vi, error_message, inputs_to_cli_object, normalize_fs_path, run_cli,
@@ -10,6 +11,7 @@ use crate::labview::{
 use crate::limits::{
     extract_sn_from_outputs, judge_limits_with_vars, parse_limits_json, LimitRule, StepJudge,
 };
+use crate::sequence_session::SequenceProgressSlot;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QueueItemForRun {
@@ -70,8 +72,10 @@ pub struct SequenceResponse {
 pub struct SequenceRunOpts {
     pub sn: Option<String>,
     pub work_order: Option<String>,
-    /// Variable map for `/Name` expansion (empty = no expansion).
+    /// Variable map for `${Name}` expansion (empty = no expansion).
     pub vars: std::collections::HashMap<String, String>,
+    /// Optional live progress publisher for UI polling.
+    pub progress: Option<Arc<SequenceProgressSlot>>,
 }
 
 fn parse_limits_from_item(item: &Value) -> Result<Vec<LimitRule>, String> {
@@ -144,8 +148,10 @@ fn limits_value(rules: &[LimitRule]) -> Option<Value> {
                 .map(|r| {
                     serde_json::json!({
                         "output": r.output,
+                        "op": r.op,
                         "min": r.min,
                         "max": r.max,
+                        "expect": r.expect,
                         "unit": r.unit,
                     })
                 })
@@ -293,8 +299,25 @@ where
     let mut stopped = false;
     let mut failed_at = None;
     let vars = opts.vars.clone();
+    let progress = opts.progress.clone();
     let mut sn = opts.sn;
     let work_order = opts.work_order;
+
+    async fn publish_steps(progress: &Option<Arc<SequenceProgressSlot>>, steps: &[SequenceStepResult]) {
+        if let Some(p) = progress {
+            p.set_steps(steps.to_vec()).await;
+        }
+    }
+
+    async fn publish_current(
+        progress: &Option<Arc<SequenceProgressSlot>>,
+        position: usize,
+        name: &str,
+    ) {
+        if let Some(p) = progress {
+            p.set_current(position, name.to_string()).await;
+        }
+    }
 
     for (i, item) in items.iter().enumerate().skip(start_index) {
         if !item.enabled {
@@ -310,11 +333,15 @@ where
                 result: None,
                 error: None,
             });
+            publish_steps(&progress, &steps).await;
             continue;
         }
 
         if item.breakpoint && !(i == start_index && resume_breakpoint) {
             let overall = compute_overall(&steps);
+            if let Some(p) = &progress {
+                p.finish(steps.clone()).await;
+            }
             return SequenceResponse {
                 stopped: false,
                 failed_at: None,
@@ -328,6 +355,8 @@ where
                 }),
             };
         }
+
+        publish_current(&progress, item.position, &item.name).await;
 
         match run_one(item).await {
             Ok(result) => {
@@ -364,6 +393,7 @@ where
                         }
                     }),
                 });
+                publish_steps(&progress, &steps).await;
 
                 if should_stop_on_status(&status, &item.fail_policy) {
                     stopped = true;
@@ -384,6 +414,7 @@ where
                     result: None,
                     error: Some(err),
                 });
+                publish_steps(&progress, &steps).await;
 
                 if should_stop_on_status("error", &item.fail_policy) {
                     stopped = true;
@@ -395,6 +426,10 @@ where
     }
 
     let overall = compute_overall(&steps);
+
+    if let Some(p) = &progress {
+        p.finish(steps.clone()).await;
+    }
 
     SequenceResponse {
         stopped,
@@ -418,6 +453,7 @@ where
             sn: None,
             work_order: None,
             vars: Default::default(),
+            progress: None,
         },
         run_one,
     )
@@ -460,7 +496,14 @@ async fn run_one_step(
     item: &QueueItemForRun,
     vars: &std::collections::HashMap<String, String>,
 ) -> Result<Value, String> {
-    let inputs = crate::expand::expand_json_value(&item.inputs, vars).map_err(|e| e.to_string())?;
+    let expand_mode = if crate::rest::is_rest_template(Some(item.kind.as_str()), &item.vi_path) {
+        // REST: lenient so typos in optional ${vars} don't hard-fail every call.
+        crate::expand::ExpandMode::Lenient
+    } else {
+        crate::expand::ExpandMode::Strict
+    };
+    let inputs = crate::expand::expand_json_value_mode(&item.inputs, vars, expand_mode)
+        .map_err(|e| e.to_string())?;
 
     if crate::general::is_delay_template(Some(item.kind.as_str()), &item.vi_path) {
         let delay_ms = crate::general::delay_ms_from_inputs(&inputs)?;
@@ -522,8 +565,10 @@ mod tests {
     fn sample_limit() -> LimitRule {
         LimitRule {
             output: "Power_dBm".into(),
+            op: None,
             min: Some(serde_json::json!(-5.0)),
             max: Some(serde_json::json!(3.0)),
+            expect: None,
             unit: None,
         }
     }
@@ -598,7 +643,7 @@ mod tests {
         let items = vec![sample_item(0, "a")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), },
+            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), progress: None, },
             |_item| async move { Ok(serde_json::json!({ "SN": "DUT1" })) },
         )
         .await;
@@ -612,7 +657,7 @@ mod tests {
         let items = vec![sample_item(0, "a"), sample_item(1, "b")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), },
+            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), progress: None, },
             |item| {
                 let name = item.name.clone();
                 async move { Ok(serde_json::json!({ "name": name })) }
@@ -755,7 +800,7 @@ mod tests {
         let resp2 = run_sequence_from_with_opts(
             &items,
             1,
-            SequenceRunOpts { sn: resp1.sn.clone(), work_order: resp1.work_order.clone(), vars: Default::default(), },
+            SequenceRunOpts { sn: resp1.sn.clone(), work_order: resp1.work_order.clone(), vars: Default::default(), progress: None, },
             resp1.steps,
             true,
             |_item| {

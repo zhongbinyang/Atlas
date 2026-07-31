@@ -86,7 +86,7 @@ Before using a value for LabVIEW CLI / Delay / REST / Spec compare:
 
 ### Ambiguity note
 
-Windows paths use `\`, not `/Name`-shaped tokens. A lone `/` in URLs is fine; only `/` + legal name is a candidate. If a URL path segment equals a variable name (e.g. `https://h/LOT/x` and variable `LOT`), it **will** expand — document that operators should avoid colliding path segments or rename variables.
+Windows paths use `\`, not `/Name`-shaped tokens. Strings containing `://` (URLs) use **lenient** expand: only **defined** variables are substituted, so ordinary path segments like `/add` are left intact. Outside URLs, undefined `/Name` still fails the step. If a URL path segment equals a defined variable name (e.g. `https://h/LOT/x` and variable `LOT`), it **will** expand — operators should avoid colliding path segments or rename variables.
 
 ## Logging / results
 

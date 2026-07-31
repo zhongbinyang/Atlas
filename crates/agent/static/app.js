@@ -867,9 +867,11 @@ function acceptVarPickerItem(el, name) {
   const caret = el.selectionStart != null ? el.selectionStart : val.length;
   let start = caret;
   while (start > 0 && /[A-Za-z0-9_]/.test(val.charAt(start - 1))) start -= 1;
+  // Trigger is `/` — replace `/` + optional filter with `${Name}`
   if (start > 0 && val.charAt(start - 1) === '/') start -= 1;
-  el.value = val.slice(0, start) + '/' + name + val.slice(caret);
-  const pos = start + 1 + name.length;
+  const token = '${' + name + '}';
+  el.value = val.slice(0, start) + token + val.slice(caret);
+  const pos = start + token.length;
   if (el.setSelectionRange) el.setSelectionRange(pos, pos);
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -898,9 +900,8 @@ function showVarPicker(el, filterPrefix) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.setAttribute('aria-selected', i === varPickerIndex ? 'true' : 'false');
-    btn.textContent = v.description
-      ? ('/' + name + ' — ' + v.description)
-      : ('/' + name);
+    const token = '${' + name + '}';
+    btn.textContent = v.description ? (token + ' — ' + v.description) : token;
     btn.addEventListener('mousedown', function (ev) {
       ev.preventDefault();
       acceptVarPickerItem(el, name);
@@ -1650,6 +1651,12 @@ async function fetchLabviewCenterTemplates() {
 }
 
 function delayMsFromInputs(inputs) {
+  if (inputs && typeof inputs === 'object' && !Array.isArray(inputs)) {
+    if (inputs.delay_ms == null) return null;
+    const n = Number(inputs.delay_ms);
+    if (Number.isFinite(n) && n >= 0) return Math.round(n);
+    return null;
+  }
   if (!Array.isArray(inputs)) return null;
   for (let i = 0; i < inputs.length; i++) {
     if (inputs[i] && inputs[i].name === 'delay_ms' && inputs[i].value != null) {
@@ -1736,6 +1743,7 @@ let seqSelected = [];
 let seqRunning = false;
 let seqPaused = false;
 let seqStepResults = {};
+let seqProgressPollTimer = null;
 let seqDragIndex = null;
 let seqInputsEditIndex = -1;
 let seqTemplates = [];
@@ -1826,7 +1834,14 @@ function formatSpecSummary(limits) {
 }
 
 function formatStepStatus(status) {
-  const map = { pass: '通过', fail: '失败', ok: 'OK', error: '错误', skipped: '跳过' };
+  const map = {
+    pass: '通过',
+    fail: '失败',
+    ok: 'OK',
+    error: '错误',
+    skipped: '跳过',
+    running: '执行中',
+  };
   return map[status] || status || '—';
 }
 
@@ -1837,6 +1852,122 @@ function formatMeasuredSummary(measured) {
     return raw.length <= 32 ? raw : raw.slice(0, 32) + '…';
   } catch (e) {
     return String(measured);
+  }
+}
+
+function formatLimitBoundDisplay(raw) {
+  if (raw == null || raw === '') return '—';
+  if (typeof raw === 'object') {
+    try {
+      return JSON.stringify(raw);
+    } catch (e) {
+      return String(raw);
+    }
+  }
+  return String(raw);
+}
+
+function lookupMeasuredValue(measured, output) {
+  if (!measured || typeof measured !== 'object' || Array.isArray(measured)) return null;
+  if (!Object.prototype.hasOwnProperty.call(measured, output)) return null;
+  return measured[output];
+}
+
+/** Build { value, min, max, unit } HTML cell contents for Spec columns. */
+function formatSeqLimitCells(item, stepResult) {
+  const dash = '—';
+  const empty = { value: dash, min: dash, max: dash, unit: dash };
+  let limits = Array.isArray(item && item.limits) ? item.limits : [];
+  if ((!limits || !limits.length) && stepResult && Array.isArray(stepResult.limits)) {
+    limits = stepResult.limits;
+  }
+  if (!limits.length) return empty;
+
+  const measured = stepResult && stepResult.measured != null ? stepResult.measured : null;
+  const multi = limits.length > 1;
+  const valueLines = [];
+  const minLines = [];
+  const maxLines = [];
+  const unitLines = [];
+
+  for (let i = 0; i < limits.length; i++) {
+    const rule = limits[i] || {};
+    const output = rule.output || '';
+    const op = normalizeSpecOp(rule.op);
+    const measuredVal = lookupMeasuredValue(measured, output);
+    let valueText = dash;
+    if (measuredVal != null) {
+      valueText = formatLimitBoundDisplay(measuredVal);
+    }
+    if (multi && output) {
+      valueText = output + ': ' + valueText;
+    }
+    valueLines.push(escapeHtml(valueText));
+
+    if (op === 'eq' || op === 'ne' || op === 'in') {
+      const expectVal = rule.expect != null ? rule.expect : rule.min;
+      const expectText = formatLimitBoundDisplay(expectVal);
+      // Op is configured in Spec; 下限 column shows expect only (no leading =/≠/∈).
+      const prefix = op === 'eq' ? '' : op === 'ne' ? '≠' : '∈';
+      minLines.push(escapeHtml(prefix + expectText));
+      maxLines.push(escapeHtml(dash));
+    } else {
+      minLines.push(escapeHtml(formatLimitBoundDisplay(rule.min)));
+      maxLines.push(escapeHtml(formatLimitBoundDisplay(rule.max)));
+    }
+    unitLines.push(escapeHtml(rule.unit ? String(rule.unit) : dash));
+  }
+
+  return {
+    value: valueLines.join('<br>'),
+    min: minLines.join('<br>'),
+    max: maxLines.join('<br>'),
+    unit: unitLines.join('<br>'),
+  };
+}
+
+function normalizeSpecOp(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s || s === 'range' || s === 'between' || s === 'num' || s === 'number') return 'range';
+  if (s === 'eq' || s === '==' || s === '=' || s === 'equal') return 'eq';
+  if (s === 'ne' || s === '!=' || s === '<>' || s === 'not_equal') return 'ne';
+  if (s === 'in' || s === 'one_of') return 'in';
+  return 'range';
+}
+
+function syncSpecRowOpUi(tr) {
+  if (!tr) return;
+  const opSel = tr.querySelector('.spec-op-select');
+  const minInput = tr.querySelector('.spec-min');
+  const maxInput = tr.querySelector('.spec-max');
+  const op = normalizeSpecOp(opSel && opSel.value);
+  if (!minInput) return;
+  if (op === 'range') {
+    minInput.placeholder = '下限或 ${Var}';
+    minInput.disabled = false;
+    if (maxInput) {
+      maxInput.disabled = false;
+      maxInput.hidden = false;
+      maxInput.placeholder = '上限或 ${Var}';
+    }
+  } else if (op === 'in') {
+    minInput.placeholder = '期望列表，如 A,B,C';
+    minInput.disabled = false;
+    if (maxInput) {
+      maxInput.value = '';
+      maxInput.disabled = true;
+      maxInput.hidden = false;
+      maxInput.placeholder = '—';
+    }
+  } else {
+    minInput.placeholder = op === 'ne' ? '不等于…' : '期望值或 ${Var}';
+    minInput.disabled = false;
+    if (maxInput) {
+      maxInput.value = '';
+      maxInput.disabled = true;
+      maxInput.hidden = false;
+      maxInput.placeholder = '—';
+    }
   }
 }
 
@@ -1865,18 +1996,78 @@ function applyStepResults(steps) {
   }
 }
 
+function applySequenceProgress(prog) {
+  if (!prog) return;
+  applyStepResults(prog.steps);
+  if (prog.current_position != null && prog.running) {
+    const pos = prog.current_position;
+    if (!seqStepResults[pos]) {
+      seqStepResults[pos] = {
+        position: pos,
+        name: prog.current_name || '',
+        ok: true,
+        status: 'running',
+        measured: null,
+        limits: null,
+        result: null,
+        error: null,
+      };
+    }
+  }
+  renderSeqSelected();
+}
+
+function clearSequenceResultsUi() {
+  seqStepResults = {};
+  updateSeqOverall({});
+  const resultsEl = document.getElementById('seq-results');
+  if (resultsEl) {
+    resultsEl.innerHTML = '';
+    resultsEl.hidden = true;
+  }
+  renderSeqSelected();
+}
+
+function startSequenceProgressPoll() {
+  stopSequenceProgressPoll();
+  seqProgressPollTimer = setInterval(async function () {
+    try {
+      const resp = await fetch('/api/labview/run-sequence/progress');
+      if (!resp.ok) return;
+      const prog = await resp.json();
+      applySequenceProgress(prog);
+    } catch (e) {
+      /* ignore transient poll errors */
+    }
+  }, 250);
+}
+
+function stopSequenceProgressPoll() {
+  if (seqProgressPollTimer != null) {
+    clearInterval(seqProgressPollTimer);
+    seqProgressPollTimer = null;
+  }
+}
+
 let specEditIndex = null;
 
 function outputNamesFromSchema(outputs) {
-  if (!Array.isArray(outputs)) return [];
-  const names = [];
-  for (let i = 0; i < outputs.length; i++) {
-    const o = outputs[i];
-    if (!o) continue;
-    if (typeof o === 'string' && o.trim()) names.push(o.trim());
-    else if (o.name && String(o.name).trim()) names.push(String(o.name).trim());
+  if (Array.isArray(outputs)) {
+    const names = [];
+    for (let i = 0; i < outputs.length; i++) {
+      const o = outputs[i];
+      if (!o) continue;
+      if (typeof o === 'string' && o.trim()) names.push(o.trim());
+      else if (o.name && String(o.name).trim()) names.push(String(o.name).trim());
+    }
+    return names;
   }
-  return names;
+  if (outputs && typeof outputs === 'object') {
+    return Object.keys(outputs).filter(function (k) {
+      return k && k !== 'headers' && k !== 'body' && k !== 'body_json' && k !== 'error';
+    });
+  }
+  return [];
 }
 
 function resolveStepOutputNames(item) {
@@ -1897,7 +2088,9 @@ function resolveStepOutputNames(item) {
 function renderSpecModalRows(limits, outputNames) {
   const tbody = document.getElementById('spec-modal-body');
   tbody.innerHTML = '';
-  const rows = Array.isArray(limits) && limits.length ? limits : [{ output: '', min: null, max: null, unit: '' }];
+  const rows = Array.isArray(limits) && limits.length
+    ? limits
+    : [{ output: '', op: 'range', min: null, max: null, expect: null, unit: '' }];
   for (let i = 0; i < rows.length; i++) {
     const lim = rows[i] || {};
     const tr = document.createElement('tr');
@@ -1940,18 +2133,51 @@ function renderSpecModalRows(limits, outputNames) {
     const outCell = document.createElement('td');
     outCell.appendChild(select);
     outCell.appendChild(nameInput);
+
+    const opSelect = document.createElement('select');
+    opSelect.className = 'spec-op-select';
+    [
+      { value: 'range', label: '区间' },
+      { value: 'eq', label: '等于' },
+      { value: 'ne', label: '不等于' },
+      { value: 'in', label: '属于' },
+    ].forEach(function (optDef) {
+      const opt = document.createElement('option');
+      opt.value = optDef.value;
+      opt.textContent = optDef.label;
+      opSelect.appendChild(opt);
+    });
+    opSelect.value = normalizeSpecOp(lim.op);
+    opSelect.addEventListener('change', function () {
+      syncSpecRowOpUi(tr);
+    });
+    const opCell = document.createElement('td');
+    opCell.appendChild(opSelect);
+
+    const op = normalizeSpecOp(lim.op);
+    const expectSeed = lim.expect != null ? lim.expect : (op !== 'range' ? lim.min : null);
     const minInput = document.createElement('input');
     minInput.type = 'text';
     minInput.className = 'spec-min mono';
-    minInput.placeholder = 'min 或 /Var';
-    minInput.value = lim.min == null ? '' : String(lim.min);
+    minInput.placeholder = '下限或 ${Var}';
+    if (op === 'range') {
+      minInput.value = lim.min == null ? '' : String(lim.min);
+    } else if (expectSeed == null) {
+      minInput.value = '';
+    } else if (Array.isArray(expectSeed)) {
+      minInput.value = expectSeed.map(function (x) { return String(x); }).join(',');
+    } else {
+      minInput.value = String(expectSeed);
+    }
     attachVarPicker(minInput);
+
     const maxInput = document.createElement('input');
     maxInput.type = 'text';
     maxInput.className = 'spec-max mono';
-    maxInput.placeholder = 'max 或 /Var';
+    maxInput.placeholder = '上限或 ${Var}';
     maxInput.value = lim.max == null ? '' : String(lim.max);
     attachVarPicker(maxInput);
+
     const unitWrap = document.createElement('div');
     const unitSelect = document.createElement('select');
     unitSelect.className = 'spec-unit-select';
@@ -2006,18 +2232,24 @@ function renderSpecModalRows(limits, outputNames) {
       if (!tbody.children.length) renderSpecModalRows([], outputNames);
     });
     tr.appendChild(outCell);
+    tr.appendChild(opCell);
     const tdMin = document.createElement('td'); tdMin.appendChild(minInput); tr.appendChild(tdMin);
     const tdMax = document.createElement('td'); tdMax.appendChild(maxInput); tr.appendChild(tdMax);
     const tdUnit = document.createElement('td'); tdUnit.appendChild(unitWrap); tr.appendChild(tdUnit);
     const tdRm = document.createElement('td'); tdRm.appendChild(rm); tr.appendChild(tdRm);
     tbody.appendChild(tr);
+    syncSpecRowOpUi(tr);
   }
+}
+
+function looksLikeVarToken(text) {
+  return String(text || '').indexOf('${') >= 0;
 }
 
 function parseSpecBound(raw) {
   const t = String(raw || '').trim();
   if (t === '') return null;
-  if (t.indexOf('/') >= 0) return t;
+  if (looksLikeVarToken(t)) return t;
   const n = Number(t);
   if (!Number.isFinite(n)) return t;
   return n;
@@ -2034,17 +2266,35 @@ function collectSpecModalLimits() {
     if (select && select.value && select.value !== '__custom__') name = select.value;
     else if (custom) name = custom.value.trim();
     if (!name) continue;
-    const minRaw = tr.querySelector('.spec-min').value.trim();
-    const maxRaw = tr.querySelector('.spec-max').value.trim();
+    const op = normalizeSpecOp(tr.querySelector('.spec-op-select') && tr.querySelector('.spec-op-select').value);
+    const minEl = tr.querySelector('.spec-min');
+    const maxEl = tr.querySelector('.spec-max');
+    const minRaw = minEl ? minEl.value.trim() : '';
+    const maxRaw = maxEl ? maxEl.value.trim() : '';
     const unitSelect = tr.querySelector('.spec-unit-select');
     const unitCustom = tr.querySelector('.spec-unit');
     let unit = '';
     if (unitSelect && unitSelect.value === '__custom__') unit = (unitCustom && unitCustom.value || '').trim();
     else if (unitSelect) unit = unitSelect.value.trim();
     else if (unitCustom) unit = unitCustom.value.trim();
-    const lim = { output: name, min: null, max: null };
-    lim.min = parseSpecBound(minRaw);
-    lim.max = parseSpecBound(maxRaw);
+
+    const lim = { output: name, op: op };
+    if (op === 'range') {
+      lim.min = parseSpecBound(minRaw);
+      lim.max = parseSpecBound(maxRaw);
+    } else if (op === 'in') {
+      if (minRaw) {
+        lim.expect = minRaw.split(',').map(function (p) { return p.trim(); }).filter(Boolean);
+      } else {
+        lim.expect = null;
+      }
+      lim.min = null;
+      lim.max = null;
+    } else {
+      lim.expect = parseSpecBound(minRaw);
+      lim.min = null;
+      lim.max = null;
+    }
     if (unit) lim.unit = unit;
     out.push(lim);
   }
@@ -2083,7 +2333,7 @@ document.getElementById('spec-add-row-btn').addEventListener('click', function (
   const item = seqSelected[specEditIndex];
   const names = resolveStepOutputNames(item);
   const current = collectSpecModalLimits();
-  current.push({ output: '', min: null, max: null, unit: '' });
+  current.push({ output: '', op: 'range', min: null, max: null, expect: null, unit: '' });
   renderSpecModalRows(current, names);
 });
 
@@ -2312,7 +2562,7 @@ function renderSeqSelected() {
   }
   seqExpandedIndexes = keep;
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
     setSeqControlsDisabled(false);
     return;
   }
@@ -2333,6 +2583,7 @@ function renderSeqSelected() {
     const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
     const limits = Array.isArray(item.limits) ? item.limits : [];
     const expanded = !!seqExpandedIndexes[i];
+    const limitCells = formatSeqLimitCells(item, stepResult);
 
     row.innerHTML =
       '<td class="mono">' + (i + 1) + '</td>' +
@@ -2340,7 +2591,11 @@ function renderSeqSelected() {
       '<td class="seq-check-cell"></td>' +
       '<td>' + name + '</td>' +
       '<td class="mono">' + kindDisplay + '</td>' +
-      '<td class="seq-result-cell">' + resultBadgeHtml(stepResult) + '</td>';
+      '<td class="seq-result-cell">' + resultBadgeHtml(stepResult) + '</td>' +
+      '<td class="seq-limit-cell mono">' + limitCells.value + '</td>' +
+      '<td class="seq-limit-cell mono">' + limitCells.min + '</td>' +
+      '<td class="seq-limit-cell mono">' + limitCells.max + '</td>' +
+      '<td class="seq-limit-cell mono">' + limitCells.unit + '</td>';
 
     const enabledCb = document.createElement('input');
     enabledCb.type = 'checkbox';
@@ -2410,7 +2665,7 @@ function renderSeqSelected() {
     detailRow.className = 'seq-detail-row';
     detailRow.hidden = !expanded;
     const detailTd = document.createElement('td');
-    detailTd.colSpan = 7;
+    detailTd.colSpan = 11;
     const panel = document.createElement('div');
     panel.className = 'seq-detail-panel';
 
@@ -2511,7 +2766,10 @@ async function saveQueue() {
         template_source: item.template_source === 'general' ? 'general' : 'labview',
         vi_template_id: item.template_source === 'general' ? null : item.vi_template_id,
         general_template_id: item.template_source === 'general' ? item.general_template_id : null,
-        inputs: Array.isArray(item.inputs) ? item.inputs : [],
+        inputs:
+          item.inputs != null && typeof item.inputs === 'object'
+            ? item.inputs
+            : [],
         enabled: item.enabled !== false,
         breakpoint: !!item.breakpoint,
         fail_policy: item.fail_policy === 'continue' ? 'continue' : 'stop',
@@ -2562,6 +2820,22 @@ function openSeqInputsEditor(index) {
   seqInputsEditIndex = index;
   hint.textContent = (item.name || '步骤') + ' · 修改后只影响当前序列步骤';
   body.innerHTML = '';
+  // delay/REST: native JSON object — edit as one JSON blob
+  if (item.inputs && typeof item.inputs === 'object' && !Array.isArray(item.inputs)) {
+    hint.textContent =
+      (item.name || '步骤') + ' · 通用步骤入参为 JSON 对象，修改后只影响当前序列步骤';
+    const row = document.createElement('tr');
+    row.innerHTML =
+      '<td>inputs</td>' +
+      '<td class="mono">object</td>' +
+      '<td><textarea class="seq-input-edit mono seq-input-object-json" rows="12">' +
+      escapeHtml(JSON.stringify(item.inputs, null, 2)) +
+      '</textarea></td>';
+    body.appendChild(row);
+    modal.hidden = false;
+    attachVarPickersIn(body);
+    return;
+  }
   const inputs = Array.isArray(item.inputs) ? item.inputs : [];
   if (!inputs.length) {
     body.innerHTML = '<tr><td colspan="3" class="empty">该步骤没有可编辑入参</td></tr>';
@@ -2586,6 +2860,14 @@ function openSeqInputsEditor(index) {
 
 function collectSeqInputsModalValues() {
   if (seqInputsEditIndex < 0 || seqInputsEditIndex >= seqSelected.length) return [];
+  const objectEl = document.querySelector('#seq-inputs-modal .seq-input-object-json');
+  if (objectEl) {
+    const parsed = JSON.parse(objectEl.value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('入参必须是 JSON object');
+    }
+    return parsed;
+  }
   const original = Array.isArray(seqSelected[seqInputsEditIndex].inputs) ? seqSelected[seqInputsEditIndex].inputs : [];
   const next = original.map(function (inp) {
     return Object.assign({}, inp);
@@ -2804,6 +3086,7 @@ async function runSequence() {
   if ((seqRunning && !seqPaused) || !seqSelected.length) return;
   seqPaused = false;
   setSeqControlsDisabled(true);
+  clearSequenceResultsUi();
   document.getElementById('seq-results').innerHTML = '';
   showSeqMsg('执行中…', true);
   const snRaw = document.getElementById('seq-sn').value.trim();
@@ -2812,6 +3095,7 @@ async function runSequence() {
   if (snRaw) payload.sn = snRaw;
   if (woRaw) payload.work_order = woRaw;
   if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
+  startSequenceProgressPoll();
   try {
     const resp = await fetch('/api/labview/run-sequence', {
       method: 'POST',
@@ -2840,6 +3124,7 @@ async function runSequence() {
   } catch (e) {
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
+    stopSequenceProgressPoll();
     if (!seqPaused) {
       setSeqControlsDisabled(false);
     }
@@ -2855,6 +3140,7 @@ async function continueSequence() {
   if (abortBtn) abortBtn.disabled = true;
   setSeqControlsDisabled(true);
   showSeqMsg('继续执行…', true);
+  startSequenceProgressPoll();
   try {
     const resp = await fetch('/api/labview/run-sequence/continue', { method: 'POST' });
     const data = await resp.json();
@@ -2869,6 +3155,7 @@ async function continueSequence() {
     showSeqMsg('继续失败: ' + e.message, false);
     seqPaused = false;
   } finally {
+    stopSequenceProgressPoll();
     if (!seqPaused) {
       setSeqControlsDisabled(false);
     }
@@ -2923,7 +3210,7 @@ async function runGeneralDelay() {
     showGenDelayMsg('请输入有效的延迟毫秒数', false);
     return;
   }
-  const delayPayload = raw.indexOf('/') >= 0 ? raw : Number(raw);
+  const delayPayload = looksLikeVarToken(raw) ? raw : Number(raw);
   if (typeof delayPayload === 'number' && (!Number.isFinite(delayPayload) || delayPayload < 0)) {
     showGenDelayMsg('请输入有效的延迟毫秒数', false);
     return;
@@ -3003,6 +3290,33 @@ function showApiMsg(text, ok) {
   msg.className = 'msg ' + (ok ? 'ok' : 'err');
 }
 
+function clearApiMsg() {
+  const msg = document.getElementById('api-msg');
+  if (!msg) return;
+  msg.hidden = true;
+  msg.textContent = '';
+}
+
+function hideAppAlert() {
+  const modal = document.getElementById('app-alert-modal');
+  if (modal) modal.hidden = true;
+}
+
+function showAppAlert(message, title) {
+  const modal = document.getElementById('app-alert-modal');
+  const titleEl = document.getElementById('app-alert-title');
+  const bodyEl = document.getElementById('app-alert-body');
+  const okBtn = document.getElementById('app-alert-ok-btn');
+  if (!modal || !titleEl || !bodyEl) {
+    window.alert(message);
+    return;
+  }
+  titleEl.textContent = title || '提示';
+  bodyEl.textContent = message || '';
+  modal.hidden = false;
+  if (okBtn) okBtn.focus();
+}
+
 function showApiCenterMsg(text, ok) {
   const msg = document.getElementById('api-center-msg');
   if (!msg) return;
@@ -3011,11 +3325,26 @@ function showApiCenterMsg(text, ok) {
   msg.className = 'msg ' + (ok ? 'ok' : 'err');
 }
 
+function apiValueToFormText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (e) {
+    return String(value);
+  }
+}
+
 function apiInputValue(inputs, name) {
+  if (inputs && typeof inputs === 'object' && !Array.isArray(inputs)) {
+    if (!Object.prototype.hasOwnProperty.call(inputs, name)) return null;
+    return apiValueToFormText(inputs[name]);
+  }
   if (!Array.isArray(inputs)) return null;
   for (let i = 0; i < inputs.length; i++) {
     if (inputs[i] && inputs[i].name === name) {
-      return inputs[i].value != null ? String(inputs[i].value) : '';
+      return inputs[i].value != null ? apiValueToFormText(inputs[i].value) : '';
     }
   }
   return null;
@@ -3296,10 +3625,6 @@ function readApiForm() {
     body: String(document.getElementById('api-body').value || ''),
     timeout_ms: Number(document.getElementById('api-timeout').value),
     expect_status: Number(document.getElementById('api-expect-status').value),
-    output_fields: String(document.getElementById('api-output-fields').value || '')
-      .split(',')
-      .map(function (s) { return s.trim(); })
-      .filter(Boolean),
   };
 }
 
@@ -3319,21 +3644,29 @@ function fillApiFormFromTemplate(t) {
   const expectStatus = apiInputValue(t.inputs, 'expect_status');
   document.getElementById('api-expect-status').value =
     expectStatus != null && expectStatus !== '' ? expectStatus : '200';
-  const extras = [];
-  if (Array.isArray(t.outputs)) {
-    const reserved = { ok: 1, kind: 1, status: 1, elapsed_ms: 1, body: 1 };
-    for (let i = 0; i < t.outputs.length; i++) {
-      const n = t.outputs[i] && t.outputs[i].name;
-      if (n && !reserved[n]) extras.push(n);
-    }
-  }
-  document.getElementById('api-output-fields').value = extras.join(',');
+}
+
+function setApiEditorTab(tab) {
+  const which = tab === 'headers' ? 'headers' : 'body';
+  document.querySelectorAll('[data-api-editor-tab]').forEach(function (btn) {
+    const active = btn.getAttribute('data-api-editor-tab') === which;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const headersPanel = document.getElementById('api-headers-panel');
+  const bodyPanel = document.getElementById('api-body-panel');
+  const headersActions = document.getElementById('api-headers-actions');
+  const bodyActions = document.getElementById('api-body-actions');
+  if (headersPanel) headersPanel.hidden = which !== 'headers';
+  if (bodyPanel) bodyPanel.hidden = which !== 'body';
+  if (headersActions) headersActions.hidden = which !== 'headers';
+  if (bodyActions) bodyActions.hidden = which !== 'body';
 }
 
 function renderApiResponse(data) {
   apiLastResponse = data;
   const box = document.getElementById('api-response');
-  box.hidden = false;
+  if (box) box.hidden = false;
   document.getElementById('api-resp-status').textContent =
     data && data.status != null ? String(data.status) : '—';
   document.getElementById('api-resp-elapsed').textContent =
@@ -3349,7 +3682,7 @@ function renderApiResponse(data) {
     okEl.textContent = '';
     okEl.className = 'muted-hint';
   }
-  let bodyText = '—';
+  let bodyText = '试跑后显示返回';
   if (data && data.body_json != null) {
     try {
       bodyText = JSON.stringify(data.body_json, null, 2);
@@ -3418,22 +3751,6 @@ async function runRestRequest() {
   }
 }
 
-function extractFieldsFromLastResponse() {
-  if (!apiLastResponse || !apiLastResponse.body_json || typeof apiLastResponse.body_json !== 'object') {
-    showApiMsg('请先试跑并得到 JSON object 响应', false);
-    return;
-  }
-  const reserved = { ok: 1, kind: 1, status: 1, elapsed_ms: 1, headers: 1, body: 1, body_json: 1, error: 1 };
-  const names = Object.keys(apiLastResponse.body_json).filter(function (k) {
-    return !reserved[k] && typeof apiLastResponse.body_json[k] === 'number';
-  });
-  document.getElementById('api-output-fields').value = names.join(',');
-  showApiMsg(
-    names.length ? ('已提取字段: ' + names.join(', ')) : '响应中没有可用的顶层数值字段',
-    names.length > 0
-  );
-}
-
 async function registerRestTemplate() {
   const form = readApiForm();
   if (!form.name) {
@@ -3461,6 +3778,22 @@ async function registerRestTemplate() {
   form.headers = JSON.stringify(headersParsed.value);
   if (!validateApiBodyForMethod(form.method, form.body)) return;
 
+  // outputs_json = trial response body JSON (e.g. {"a":10,"result":15}), not REST wrapper.
+  let outputs = {};
+  if (apiLastResponse && apiLastResponse.body_json != null) {
+    if (
+      typeof apiLastResponse.body_json !== 'object' ||
+      Array.isArray(apiLastResponse.body_json)
+    ) {
+      showApiMsg('请先试跑并得到 JSON object 响应体，再注册（outputs 需为对象）', false);
+      return;
+    }
+    outputs = apiLastResponse.body_json;
+  } else {
+    showApiMsg('请先试跑成功后再注册（需用响应 body 作为 outputs）', false);
+    return;
+  }
+
   showApiMsg('注册中…', true);
   try {
     const resp = await fetch('/api/general/rest/register-template', {
@@ -3474,7 +3807,7 @@ async function registerRestTemplate() {
         body: form.body,
         timeout_ms: Math.round(form.timeout_ms),
         expect_status: Math.round(form.expect_status),
-        output_fields: form.output_fields,
+        outputs: outputs,
       }),
     });
     const data = await resp.json();
@@ -3483,7 +3816,8 @@ async function registerRestTemplate() {
       showApiMsg('注册失败: ' + err, false);
       return;
     }
-    showApiMsg('已注册: ' + (data.name || form.name) + ' (ID ' + data.id + ')', true);
+    clearApiMsg();
+    showAppAlert('已注册: ' + (data.name || form.name) + ' (ID ' + data.id + ')', '注册成功');
     await fetchRestTemplates();
   } catch (e) {
     showApiMsg('注册失败: ' + e.message, false);
@@ -3542,16 +3876,20 @@ function renderGeneralTemplates(templates) {
   const tbody = document.getElementById('gen-center-body');
   if (!tbody) return;
   tbody.innerHTML = '';
-  if (!templates || templates.length === 0) {
+  // 通用页只展示非 REST（REST 在 REST 页模板列表）
+  const list = (templates || []).filter(function (t) {
+    return (t.kind || '').toLowerCase() !== 'rest';
+  });
+  if (!list.length) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无已注册通用功能</td></tr>';
     return;
   }
-  for (let i = 0; i < templates.length; i++) {
-    const t = templates[i];
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
     const row = document.createElement('tr');
     row.innerHTML =
       '<td class="mono">' + escapeHtml(String(t.id ?? '—')) + '</td>' +
-      '<td><span class="kind-badge kind-' + ((t.kind || '').toLowerCase() === 'rest' ? 'rest' : 'general') + '">' + kindLabel(t.kind) + '</span></td>' +
+      '<td><span class="kind-badge kind-general">' + kindLabel(t.kind) + '</span></td>' +
       '<td>' + escapeHtml(t.name || '—') + '</td>' +
       '<td>' + escapeHtml(t.origin_agent_name || '—') + '</td>';
     const actions = document.createElement('td');
@@ -3623,7 +3961,6 @@ if (genRunBtn) genRunBtn.addEventListener('click', runGeneralDelay);
 if (genRegBtn) genRegBtn.addEventListener('click', registerGeneralDelay);
 const apiRunBtn = document.getElementById('api-run-btn');
 const apiRegBtn = document.getElementById('api-register-btn');
-const apiExtractBtn = document.getElementById('api-extract-fields-btn');
 const apiHeadersAddBtn = document.getElementById('api-headers-add-btn');
 const apiHeadersFormatBtn = document.getElementById('api-headers-format-btn');
 const apiHeadersMinifyBtn = document.getElementById('api-headers-minify-btn');
@@ -3636,7 +3973,12 @@ const apiHeadersEl = document.getElementById('api-headers');
 const apiBodyEl = document.getElementById('api-body');
 if (apiRunBtn) apiRunBtn.addEventListener('click', runRestRequest);
 if (apiRegBtn) apiRegBtn.addEventListener('click', registerRestTemplate);
-if (apiExtractBtn) apiExtractBtn.addEventListener('click', extractFieldsFromLastResponse);
+document.querySelectorAll('[data-api-editor-tab]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    setApiEditorTab(btn.getAttribute('data-api-editor-tab'));
+  });
+});
+setApiEditorTab('body');
 document.querySelectorAll('[data-api-headers-mode]').forEach(function (btn) {
   btn.addEventListener('click', function () {
     setApiHeadersMode(btn.getAttribute('data-api-headers-mode'));
@@ -3721,6 +4063,14 @@ const seqInputsCancelBtn = document.getElementById('seq-inputs-cancel-btn');
 const seqInputsSaveBtn = document.getElementById('seq-inputs-save-btn');
 if (seqInputsCancelBtn) seqInputsCancelBtn.addEventListener('click', closeSeqInputsModal);
 if (seqInputsSaveBtn) seqInputsSaveBtn.addEventListener('click', saveSeqInputsModal);
+const appAlertOkBtn = document.getElementById('app-alert-ok-btn');
+if (appAlertOkBtn) appAlertOkBtn.addEventListener('click', hideAppAlert);
+const appAlertModal = document.getElementById('app-alert-modal');
+if (appAlertModal) {
+  appAlertModal.addEventListener('click', function (ev) {
+    if (ev.target === appAlertModal) hideAppAlert();
+  });
+}
 
 const settingsSaveBtn = document.getElementById('settings-save-btn');
 const settingsUnitAddBtn = document.getElementById('settings-unit-add-btn');

@@ -1,4 +1,6 @@
-//! Expand `/VarName` tokens using agent settings variables.
+//! Expand `${VarName}` tokens using agent settings variables.
+//!
+//! UI may use `/` only as a picker trigger; persisted / expanded syntax is `${Name}`.
 
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -11,41 +13,67 @@ pub enum ExpandError {
 impl std::fmt::Display for ExpandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExpandError::Undefined(name) => write!(f, "undefined variable: /{name}"),
+            ExpandError::Undefined(name) => write!(f, "undefined variable: ${{{name}}}"),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpandMode {
+    /// Unknown `${Name}` → error (LabVIEW inputs, Spec, Delay).
+    Strict,
+    /// Unknown `${Name}` left literal (optional soft fail for REST).
+    Lenient,
 }
 
 pub fn variables_map(variables: &[(String, String)]) -> HashMap<String, String> {
     variables.iter().cloned().collect()
 }
 
-/// Replace `/Name` tokens where Name is `[A-Za-z_][A-Za-z0-9_]*`
-/// and the next char is end or not alphanumeric/underscore.
+/// Replace `${Name}` tokens where Name is `[A-Za-z_][A-Za-z0-9_]*`.
 pub fn expand_str(input: &str, vars: &HashMap<String, String>) -> Result<String, ExpandError> {
+    expand_str_with(input, vars, ExpandMode::Strict)
+}
+
+fn expand_str_with(
+    input: &str,
+    vars: &HashMap<String, String>,
+    mode: ExpandMode,
+) -> Result<String, ExpandError> {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'/' {
-            let start = i + 1;
-            if start < bytes.len() {
-                let b0 = bytes[start];
+        // Look for `${`
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let name_start = i + 2;
+            if name_start < bytes.len() {
+                let b0 = bytes[name_start];
                 if b0.is_ascii_alphabetic() || b0 == b'_' {
-                    let mut end = start + 1;
-                    while end < bytes.len()
-                        && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                    let mut name_end = name_start + 1;
+                    while name_end < bytes.len()
+                        && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
                     {
-                        end += 1;
+                        name_end += 1;
                     }
-                    let name = &input[start..end];
-                    match vars.get(name) {
-                        Some(val) => {
-                            out.push_str(val);
-                            i = end;
-                            continue;
+                    if name_end < bytes.len() && bytes[name_end] == b'}' {
+                        let name = &input[name_start..name_end];
+                        match vars.get(name) {
+                            Some(val) => {
+                                out.push_str(val);
+                                i = name_end + 1;
+                                continue;
+                            }
+                            None => {
+                                if mode == ExpandMode::Strict {
+                                    return Err(ExpandError::Undefined(name.to_string()));
+                                }
+                                // Lenient: keep `${name}` as literal.
+                                out.push_str(&input[i..=name_end]);
+                                i = name_end + 1;
+                                continue;
+                            }
                         }
-                        None => return Err(ExpandError::Undefined(name.to_string())),
                     }
                 }
             }
@@ -57,19 +85,27 @@ pub fn expand_str(input: &str, vars: &HashMap<String, String>) -> Result<String,
 }
 
 pub fn expand_json_value(value: &Value, vars: &HashMap<String, String>) -> Result<Value, ExpandError> {
+    expand_json_value_mode(value, vars, ExpandMode::Strict)
+}
+
+pub fn expand_json_value_mode(
+    value: &Value,
+    vars: &HashMap<String, String>,
+    mode: ExpandMode,
+) -> Result<Value, ExpandError> {
     match value {
-        Value::String(s) => Ok(Value::String(expand_str(s, vars)?)),
+        Value::String(s) => Ok(Value::String(expand_str_with(s, vars, mode)?)),
         Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for item in arr {
-                out.push(expand_json_value(item, vars)?);
+                out.push(expand_json_value_mode(item, vars, mode)?);
             }
             Ok(Value::Array(out))
         }
         Value::Object(map) => {
             let mut out = Map::new();
             for (k, v) in map {
-                out.insert(k.clone(), expand_json_value(v, vars)?);
+                out.insert(k.clone(), expand_json_value_mode(v, vars, mode)?);
             }
             Ok(Value::Object(out))
         }
@@ -77,7 +113,7 @@ pub fn expand_json_value(value: &Value, vars: &HashMap<String, String>) -> Resul
     }
 }
 
-/// Expand Spec min/max when stored as string containing `/`; numbers pass through.
+/// Expand Spec min/max when stored as string containing `${…}`; numbers pass through.
 pub fn expand_limit_number(
     raw: &Value,
     vars: &HashMap<String, String>,
@@ -114,31 +150,77 @@ mod tests {
     #[test]
     fn expands_embedded_and_boundary() {
         let vars = map(&[("LOT", "A12"), ("SN", "9")]);
-        // brace form is NOT expanded — only /Name
+        assert_eq!(
+            expand_str("prefix-${LOT}-suffix", &vars).unwrap(),
+            "prefix-A12-suffix"
+        );
+        assert_eq!(expand_str("${SN}", &vars).unwrap(), "9");
+        assert_eq!(expand_str("pre-${LOT}-post", &vars).unwrap(), "pre-A12-post");
+        // Incomplete / non-token forms stay literal
         assert_eq!(expand_str("prefix-{LOT}-suffix", &vars).unwrap(), "prefix-{LOT}-suffix");
-        assert_eq!(expand_str("path-/LOT-next", &vars).unwrap(), "path-A12-next");
-        assert_eq!(expand_str("/SN", &vars).unwrap(), "9");
-        assert_eq!(expand_str("pre-/LOT-post", &vars).unwrap(), "pre-A12-post");
-        assert!(matches!(
-            expand_str("/LOTextra", &vars),
-            Err(ExpandError::Undefined(_))
-        ));
+        assert_eq!(expand_str("${LOTextra}", &vars).unwrap_err(), ExpandError::Undefined("LOTextra".into()));
     }
 
     #[test]
-    fn undefined_errors() {
+    fn undefined_errors_in_strict() {
         let vars = map(&[]);
         assert_eq!(
-            expand_str("a=/MISSING", &vars).unwrap_err(),
+            expand_str("a=${MISSING}", &vars).unwrap_err(),
             ExpandError::Undefined("MISSING".into())
+        );
+    }
+
+    #[test]
+    fn urls_and_mime_are_untouched_without_dollar_brace() {
+        let empty = map(&[]);
+        assert_eq!(
+            expand_str("http://127.0.0.1:8080/add", &empty).unwrap(),
+            "http://127.0.0.1:8080/add"
+        );
+        assert_eq!(
+            expand_str("application/json", &empty).unwrap(),
+            "application/json"
+        );
+        let vars = map(&[("LOT", "A12")]);
+        assert_eq!(
+            expand_str("https://h/${LOT}/x", &vars).unwrap(),
+            "https://h/A12/x"
+        );
+        assert_eq!(
+            expand_str("https://h/LOT/x", &vars).unwrap(),
+            "https://h/LOT/x"
         );
     }
 
     #[test]
     fn expand_json_tree() {
         let vars = map(&[("CH", "2")]);
-        let v = json!([{"name":"Channel","value":"/CH"}]);
+        let v = json!([{"name":"Channel","value":"${CH}"}]);
         let out = expand_json_value(&v, &vars).unwrap();
         assert_eq!(out[0]["value"], "2");
+    }
+
+    #[test]
+    fn rest_lenient_keeps_undefined_and_expands_defined() {
+        let vars = map(&[("LOT", "A12")]);
+        let v = json!({
+            "url": "http://127.0.0.1:8080/json",
+            "headers": { "Content-Type": "application/json" },
+            "body": { "path": "/json", "lot": "${LOT}", "missing": "${NOPE}" }
+        });
+        let out = expand_json_value_mode(&v, &vars, ExpandMode::Lenient).unwrap();
+        assert_eq!(out["url"], "http://127.0.0.1:8080/json");
+        assert_eq!(out["headers"]["Content-Type"], "application/json");
+        assert_eq!(out["body"]["path"], "/json");
+        assert_eq!(out["body"]["lot"], "A12");
+        assert_eq!(out["body"]["missing"], "${NOPE}");
+    }
+
+    #[test]
+    fn error_display_uses_dollar_brace() {
+        assert_eq!(
+            ExpandError::Undefined("json".into()).to_string(),
+            "undefined variable: ${json}"
+        );
     }
 }

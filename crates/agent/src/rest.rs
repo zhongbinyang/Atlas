@@ -1,7 +1,6 @@
 //! Builtin REST API client steps (`kind=rest`).
 
 use serde_json::{Map, Value};
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub const KIND_REST: &str = "rest";
@@ -9,17 +8,6 @@ pub const REST_VI_PATH: &str = "__builtin__/rest";
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_EXPECT_STATUS: u16 = 200;
-
-const RESERVED_RESULT_KEYS: &[&str] = &[
-    "ok",
-    "kind",
-    "status",
-    "elapsed_ms",
-    "headers",
-    "body",
-    "body_json",
-    "error",
-];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RestRequest {
@@ -36,6 +24,9 @@ pub fn is_rest_template(kind: Option<&str>, vi_path: &str) -> bool {
 }
 
 fn input_value<'a>(inputs: &'a Value, name: &str) -> Option<&'a Value> {
+    if let Some(obj) = inputs.as_object() {
+        return obj.get(name);
+    }
     inputs.as_array()?.iter().find_map(|item| {
         if item.get("name").and_then(|n| n.as_str()) == Some(name) {
             item.get("value")
@@ -48,7 +39,25 @@ fn input_value<'a>(inputs: &'a Value, name: &str) -> Option<&'a Value> {
 fn value_as_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
+        Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+fn body_to_request_string(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn headers_from_value(v: &Value) -> Result<Map<String, Value>, String> {
+    match v {
+        Value::Null => Ok(Map::new()),
+        Value::Object(map) => Ok(map.clone()),
+        Value::String(s) => parse_headers_object(s),
+        _ => Err("headers must be a JSON object or object string".into()),
     }
 }
 
@@ -116,6 +125,10 @@ pub fn validate_json_body(method: &str, body: &str) -> Result<(), String> {
 }
 
 pub fn rest_request_from_inputs(inputs: &Value) -> Result<RestRequest, String> {
+    if !inputs.is_object() && !inputs.is_array() {
+        return Err("rest inputs must be an object or array".into());
+    }
+
     let method_raw = input_value(inputs, "method")
         .map(value_as_string)
         .unwrap_or_else(|| "POST".into());
@@ -130,13 +143,13 @@ pub fn rest_request_from_inputs(inputs: &Value) -> Result<RestRequest, String> {
         return Err("url is required".into());
     }
 
-    let headers_raw = input_value(inputs, "headers")
-        .map(value_as_string)
-        .unwrap_or_else(|| "{}".into());
-    let headers = parse_headers_object(&headers_raw)?;
+    let headers = match input_value(inputs, "headers") {
+        Some(v) => headers_from_value(v)?,
+        None => Map::new(),
+    };
 
     let body = input_value(inputs, "body")
-        .map(value_as_string)
+        .map(body_to_request_string)
         .unwrap_or_default();
     validate_json_body(&method, &body)?;
 
@@ -169,6 +182,8 @@ pub fn rest_request_from_inputs(inputs: &Value) -> Result<RestRequest, String> {
     })
 }
 
+/// Native REST inputs JSON (not LabVIEW VI param array).
+/// `headers` is an object; `body` is a JSON value when parseable, otherwise a string.
 pub fn rest_inputs(
     method: &str,
     url: &str,
@@ -177,43 +192,24 @@ pub fn rest_inputs(
     timeout_ms: u64,
     expect_status: u16,
 ) -> Value {
-    serde_json::json!([
-        { "name": "method", "className": "String", "value": method },
-        { "name": "url", "className": "String", "value": url },
-        { "name": "headers", "className": "String", "value": headers },
-        { "name": "body", "className": "String", "value": body },
-        { "name": "timeout_ms", "className": "Digital", "value": timeout_ms },
-        { "name": "expect_status", "className": "Digital", "value": expect_status }
-    ])
-}
-
-pub fn rest_outputs(extra_numeric_fields: &[String]) -> Value {
-    let mut outs = vec![
-        serde_json::json!({ "name": "ok", "className": "Boolean", "value": true }),
-        serde_json::json!({ "name": "kind", "className": "String", "value": KIND_REST }),
-        serde_json::json!({ "name": "status", "className": "Digital", "value": 0 }),
-        serde_json::json!({ "name": "elapsed_ms", "className": "Digital", "value": 0 }),
-        serde_json::json!({ "name": "body", "className": "String", "value": "" }),
-    ];
-    let reserved: HashSet<&str> = RESERVED_RESULT_KEYS.iter().copied().collect();
-    for name in extra_numeric_fields {
-        let trimmed = name.trim();
-        if trimmed.is_empty() || reserved.contains(trimmed) {
-            continue;
-        }
-        if outs
-            .iter()
-            .any(|o| o.get("name").and_then(|n| n.as_str()) == Some(trimmed))
-        {
-            continue;
-        }
-        outs.push(serde_json::json!({
-            "name": trimmed,
-            "className": "Digital",
-            "value": 0
-        }));
-    }
-    Value::Array(outs)
+    let method = normalize_method(method).unwrap_or_else(|_| method.trim().to_uppercase());
+    let headers_val = parse_headers_object(headers)
+        .map(Value::Object)
+        .unwrap_or_else(|_| Value::Object(Map::new()));
+    let body_trimmed = body.trim();
+    let body_val = if body_trimmed.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str::<Value>(body_trimmed).unwrap_or_else(|_| Value::String(body.to_string()))
+    };
+    serde_json::json!({
+        "method": method,
+        "url": url,
+        "headers": headers_val,
+        "body": body_val,
+        "timeout_ms": timeout_ms,
+        "expect_status": expect_status
+    })
 }
 
 fn header_has_content_type(headers: &Map<String, Value>) -> bool {
@@ -234,21 +230,6 @@ fn apply_default_json_content_type(headers: &mut Map<String, Value>, method: &st
         "Content-Type".into(),
         Value::String("application/json".into()),
     );
-}
-
-fn flatten_numeric_fields(target: &mut Map<String, Value>, body_json: &Value) {
-    let Some(obj) = body_json.as_object() else {
-        return;
-    };
-    let reserved: HashSet<&str> = RESERVED_RESULT_KEYS.iter().copied().collect();
-    for (key, value) in obj {
-        if reserved.contains(key.as_str()) {
-            continue;
-        }
-        if value.is_number() {
-            target.insert(key.clone(), value.clone());
-        }
-    }
 }
 
 pub async fn run_request(req: &RestRequest) -> Result<Value, String> {
@@ -311,10 +292,7 @@ pub async fn run_request(req: &RestRequest) -> Result<Value, String> {
     result.insert("body".into(), Value::String(body_text.clone()));
 
     if let Ok(parsed) = serde_json::from_str::<Value>(&body_text) {
-        if parsed.is_object() {
-            flatten_numeric_fields(&mut result, &parsed);
-            result.insert("body_json".into(), parsed);
-        }
+        result.insert("body_json".into(), parsed);
     }
 
     if !ok {
@@ -342,7 +320,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn parses_rest_inputs() {
+    fn parses_rest_inputs_object_and_legacy_array() {
         let inputs = rest_inputs(
             "post",
             "https://example.com/api",
@@ -351,6 +329,8 @@ mod tests {
             5000,
             201,
         );
+        assert!(inputs.is_object());
+        assert!(inputs.get("body").unwrap().is_object());
         let req = rest_request_from_inputs(&inputs).unwrap();
         assert_eq!(req.method, "POST");
         assert_eq!(req.url, "https://example.com/api");
@@ -360,6 +340,19 @@ mod tests {
             req.headers.get("Authorization").and_then(|v| v.as_str()),
             Some("Bearer x")
         );
+        assert_eq!(req.body, r#"{"a":1}"#);
+
+        let legacy = serde_json::json!([
+            { "name": "method", "className": "String", "value": "GET" },
+            { "name": "url", "className": "String", "value": "https://example.com/x" },
+            { "name": "headers", "className": "String", "value": "{}" },
+            { "name": "body", "className": "String", "value": "" },
+            { "name": "timeout_ms", "className": "Digital", "value": 3000 },
+            { "name": "expect_status", "className": "Digital", "value": 200 }
+        ]);
+        let legacy_req = rest_request_from_inputs(&legacy).unwrap();
+        assert_eq!(legacy_req.method, "GET");
+        assert_eq!(legacy_req.url, "https://example.com/x");
     }
 
     #[test]
@@ -381,38 +374,8 @@ mod tests {
         assert_eq!(rest_request_from_inputs(&inputs).unwrap_err(), "url is required");
     }
 
-    #[test]
-    fn flatten_skips_reserved_keys() {
-        let mut target = Map::new();
-        let body = serde_json::json!({
-            "status": 99,
-            "ok": false,
-            "power": 1.5,
-            "code": 0
-        });
-        flatten_numeric_fields(&mut target, &body);
-        assert!(target.get("status").is_none());
-        assert!(target.get("ok").is_none());
-        assert_eq!(target.get("power").and_then(|v| v.as_f64()), Some(1.5));
-        assert_eq!(target.get("code").and_then(|v| v.as_u64()), Some(0));
-    }
-
-    #[test]
-    fn rest_outputs_dedupes_extras() {
-        let outs = rest_outputs(&["status".into(), "power".into(), "power".into()]);
-        let names: Vec<_> = outs
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|o| o.get("name").and_then(|n| n.as_str()))
-            .collect();
-        assert!(names.contains(&"power"));
-        assert_eq!(names.iter().filter(|n| **n == "power").count(), 1);
-        assert_eq!(names.iter().filter(|n| **n == "status").count(), 1);
-    }
-
     #[tokio::test]
-    async fn run_request_posts_json_and_flattens() {
+    async fn run_request_posts_json_and_returns_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/ping"))
@@ -436,9 +399,12 @@ mod tests {
         let result = run_request(&req).await.unwrap();
         assert_eq!(result.get("ok"), Some(&Value::Bool(true)));
         assert_eq!(result.get("status").and_then(|v| v.as_u64()), Some(200));
-        assert_eq!(result.get("power").and_then(|v| v.as_f64()), Some(-2.5));
-        assert_eq!(result.get("code").and_then(|v| v.as_u64()), Some(0));
-        assert!(result.get("body_json").is_some());
+        assert!(result.get("power").is_none());
+        assert!(result.get("code").is_none());
+        assert_eq!(
+            result.get("body_json"),
+            Some(&serde_json::json!({"power": -2.5, "code": 0}))
+        );
     }
 
     #[tokio::test]

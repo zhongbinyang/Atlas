@@ -18,7 +18,7 @@
       <nav class="page-tabs">
         <button type="button" class="tab active" data-page="workbench">VI</button>
         <button type="button" class="tab" data-page="general">通用</button>
-        <button type="button" class="tab" data-page="api">API</button>
+        <button type="button" class="tab" data-page="api">REST</button>
         <button type="button" class="tab" data-page="sequence">序列</button>
         <button type="button" class="tab" data-page="settings">配置</button>
       </nav>
@@ -263,10 +263,10 @@
       <section class="api-workbench" id="api-section">
         <header class="api-workbench-head">
           <div>
-            <p class="lv-eyebrow">API 工作台</p>
+            <p class="lv-eyebrow">REST 工作台</p>
             <h2>REST Client</h2>
           </div>
-          <p class="muted-hint api-workbench-hint">编辑请求、试跑，注册后可加入序列执行顺序</p>
+          <p class="muted-hint api-workbench-hint">编辑请求并试跑查看返回；注册后可加入序列</p>
         </header>
 
         <div class="api-request-bar">
@@ -290,47 +290,6 @@
           </div>
         </div>
 
-        <div class="api-editor-grid">
-          <div class="api-pane" id="api-headers-field">
-            <div class="api-pane-head">
-              <h3>Headers</h3>
-              <div class="api-field-actions">
-                <div class="api-mode-toggle" role="group" aria-label="Headers 编辑模式">
-                  <button type="button" class="btn-sm api-mode-btn active" data-api-headers-mode="kv">键值</button>
-                  <button type="button" class="btn-sm api-mode-btn" data-api-headers-mode="json">JSON</button>
-                </div>
-                <button type="button" id="api-headers-add-btn" class="btn-sm">添加</button>
-                <button type="button" id="api-headers-format-btn" class="btn-sm" hidden>格式化</button>
-                <button type="button" id="api-headers-minify-btn" class="btn-sm" hidden>压缩</button>
-              </div>
-            </div>
-            <div id="api-headers-kv" class="api-kv">
-              <div class="api-kv-head" aria-hidden="true">
-                <span>Name</span>
-                <span>Value</span>
-                <span></span>
-              </div>
-              <div id="api-headers-kv-body"></div>
-            </div>
-            <textarea id="api-headers" class="mono api-textarea" rows="8" aria-label="请求 Headers JSON" spellcheck="false" hidden>{}</textarea>
-            <p id="api-headers-status" class="api-json-status" aria-live="polite">JSON object</p>
-          </div>
-
-          <div class="api-pane" id="api-body-field">
-            <div class="api-pane-head">
-              <h3>Body <span class="api-pane-sub">JSON</span></h3>
-              <div class="api-field-actions">
-                <button type="button" id="api-body-sample-btn" class="btn-sm">示例</button>
-                <button type="button" id="api-body-format-btn" class="btn-sm">格式化</button>
-                <button type="button" id="api-body-minify-btn" class="btn-sm">压缩</button>
-                <button type="button" id="api-body-validate-btn" class="btn-sm">校验</button>
-              </div>
-            </div>
-            <textarea id="api-body" class="mono api-textarea api-body-textarea" rows="12" aria-label="请求 Body JSON" spellcheck="false" placeholder="在此输入 JSON…"></textarea>
-            <p id="api-body-status" class="api-json-status" aria-live="polite">空（允许）</p>
-          </div>
-        </div>
-
         <div class="api-options-bar">
           <label>
             <span class="label">超时 ms</span>
@@ -340,22 +299,64 @@
             <span class="label">期望状态码</span>
             <input id="api-expect-status" type="number" min="100" max="599" step="1" class="mono" value="200">
           </label>
-          <label class="api-options-grow">
-            <span class="label">Spec 数值字段</span>
-            <input id="api-output-fields" type="text" class="mono" placeholder="逗号分隔，如 power,code" aria-label="响应 JSON 顶层数值字段名">
-          </label>
-          <button id="api-extract-fields-btn" type="button" class="btn-sm">从响应提取</button>
         </div>
 
         <p id="api-msg" class="msg" hidden></p>
 
-        <div id="api-response" class="api-response" hidden>
-          <div class="api-response-meta">
-            <span class="api-resp-code">HTTP <strong id="api-resp-status">—</strong></span>
-            <span id="api-resp-elapsed" class="muted-hint"></span>
-            <span id="api-resp-ok" class="muted-hint"></span>
+        <div class="api-main-split">
+          <div class="api-request-side api-pane">
+            <div class="api-editor-toolbar">
+              <div class="api-editor-tabs" role="tablist" aria-label="请求编辑">
+                <button type="button" class="api-editor-tab" role="tab" id="api-tab-headers" data-api-editor-tab="headers" aria-controls="api-headers-panel" aria-selected="false">Headers</button>
+                <button type="button" class="api-editor-tab active" role="tab" id="api-tab-body" data-api-editor-tab="body" aria-controls="api-body-panel" aria-selected="true">Body</button>
+              </div>
+              <div class="api-field-actions" id="api-headers-actions" hidden>
+                <div class="api-mode-toggle" role="group" aria-label="Headers 编辑模式">
+                  <button type="button" class="btn-sm api-mode-btn active" data-api-headers-mode="kv">键值</button>
+                  <button type="button" class="btn-sm api-mode-btn" data-api-headers-mode="json">JSON</button>
+                </div>
+                <button type="button" id="api-headers-add-btn" class="btn-sm">添加</button>
+                <button type="button" id="api-headers-format-btn" class="btn-sm" hidden>格式化</button>
+                <button type="button" id="api-headers-minify-btn" class="btn-sm" hidden>压缩</button>
+              </div>
+              <div class="api-field-actions" id="api-body-actions">
+                <button type="button" id="api-body-sample-btn" class="btn-sm">示例</button>
+                <button type="button" id="api-body-format-btn" class="btn-sm">格式化</button>
+                <button type="button" id="api-body-minify-btn" class="btn-sm">压缩</button>
+                <button type="button" id="api-body-validate-btn" class="btn-sm">校验</button>
+              </div>
+            </div>
+
+            <div id="api-headers-panel" class="api-tab-panel" role="tabpanel" aria-labelledby="api-tab-headers" hidden>
+              <div id="api-headers-kv" class="api-kv">
+                <div class="api-kv-head" aria-hidden="true">
+                  <span>Name</span>
+                  <span>Value</span>
+                  <span></span>
+                </div>
+                <div id="api-headers-kv-body"></div>
+              </div>
+              <textarea id="api-headers" class="mono api-textarea" rows="8" aria-label="请求 Headers JSON" spellcheck="false" hidden>{}</textarea>
+              <p id="api-headers-status" class="api-json-status" aria-live="polite">JSON object</p>
+            </div>
+
+            <div id="api-body-panel" class="api-tab-panel" role="tabpanel" aria-labelledby="api-tab-body">
+              <textarea id="api-body" class="mono api-textarea api-body-textarea" rows="12" aria-label="请求 Body JSON" spellcheck="false" placeholder="在此输入 JSON…"></textarea>
+              <p id="api-body-status" class="api-json-status" aria-live="polite">空（允许）</p>
+            </div>
           </div>
-          <pre id="api-resp-body" class="mono lv-pre api-resp-pre">—</pre>
+
+          <div class="api-response-side api-pane" id="api-response">
+            <div class="api-pane-head">
+              <h3>返回值</h3>
+              <div class="api-response-meta">
+                <span class="api-resp-code">HTTP <strong id="api-resp-status">—</strong></span>
+                <span id="api-resp-elapsed" class="muted-hint"></span>
+                <span id="api-resp-ok" class="muted-hint"></span>
+              </div>
+            </div>
+            <pre id="api-resp-body" class="mono lv-pre api-resp-pre">试跑后显示返回</pre>
+          </div>
         </div>
       </section>
 
@@ -401,7 +402,7 @@
           <ul>
             <li>单位与变量按<strong>本机台</strong>保存在中心；改完后需点<strong>保存</strong>。</li>
             <li>Spec 的 unit 下拉来自单位表；说明仅展示，不参与判定。</li>
-            <li>入参 / Spec / Delay / REST 等处输入 <code class="mono">/</code> 可选变量，例如 <code class="mono">/Hostname</code>、<code class="mono">{"sn":"/Lot"}</code>。</li>
+            <li>入参 / Spec / Delay / REST 等处输入 <code class="mono">/</code> 打开变量选择器，写入语法为 <code class="mono">${Name}</code>，例如 <code class="mono">${Hostname}</code>、<code class="mono">{"sn":"${Lot}"}</code>。</li>
             <li><code class="mono">Hostname</code>、<code class="mono">IP</code> 为系统变量，值随本机刷新。</li>
           </ul>
         </details>
@@ -507,11 +508,15 @@
                   <th>名称</th>
                   <th>类型</th>
                   <th>结果</th>
+                  <th>值</th>
+                  <th>下限</th>
+                  <th>上限</th>
+                  <th>单位</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody id="seq-selected-body">
-                <tr><td colspan="7" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>
+                <tr><td colspan="11" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>
               </tbody>
             </table>
           </div>
@@ -566,9 +571,10 @@
           <thead>
             <tr>
               <th>输出</th>
-              <th>min</th>
-              <th>max</th>
-              <th>unit</th>
+              <th>操作</th>
+              <th>下限/期望</th>
+              <th>上限</th>
+              <th>单位</th>
               <th></th>
             </tr>
           </thead>
@@ -601,6 +607,15 @@
       <div class="spec-modal-actions">
         <button type="button" id="seq-inputs-cancel-btn">取消</button>
         <button type="button" id="seq-inputs-save-btn" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+  <div id="app-alert-modal" class="spec-modal" hidden>
+    <div class="spec-modal-card app-alert-card">
+      <h3 id="app-alert-title">提示</h3>
+      <p id="app-alert-body" class="app-alert-body"></p>
+      <div class="spec-modal-actions">
+        <button type="button" id="app-alert-ok-btn" class="btn-primary">确定</button>
       </div>
     </div>
   </div>

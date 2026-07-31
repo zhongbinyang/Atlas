@@ -61,7 +61,7 @@ fn builtin_value(name: &str, hostname: &str, ip: &str) -> String {
     }
 }
 
-/// Variable map for `/VarName` expand, with live Hostname/IP.
+/// Variable map for `${VarName}` expand, with live Hostname/IP.
 pub fn variables_map_for_expand(
     settings: &AgentSettingsPayload,
     hostname: &str,

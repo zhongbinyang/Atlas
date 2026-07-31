@@ -25,7 +25,9 @@ use crate::labview_sequence::{
     queue_items_for_run, run_sequence, SequencePause, SequenceResponse, SequenceRunOpts,
 };
 use crate::metrics::MetricsSnapshot;
-use crate::sequence_session::{SequenceSession, SequenceSessionSlot};
+use crate::sequence_session::{
+    SequenceProgressSlot, SequenceSession, SequenceSessionSlot,
+};
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
 
@@ -44,6 +46,7 @@ pub struct AppState {
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
     pub sequence_session: Arc<SequenceSessionSlot>,
+    pub sequence_progress: Arc<SequenceProgressSlot>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -198,6 +201,10 @@ pub fn router(state: AppState) -> Router {
             post(sequence_template_load_to_agent),
         )
         .route("/api/labview/run-sequence", post(labview_run_sequence))
+        .route(
+            "/api/labview/run-sequence/progress",
+            get(labview_run_sequence_progress),
+        )
         .route(
             "/api/labview/run-sequence/continue",
             post(labview_run_sequence_continue),
@@ -466,6 +473,7 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
     let was_busy = s.slot.is_busy().await || s.sequence_session.get().await.is_some();
     s.sequence_session.clear().await;
+    s.sequence_progress.clear().await;
     s.slot.release().await;
     (
         StatusCode::OK,
@@ -1209,8 +1217,9 @@ struct RestRegisterRequest {
     body: Option<String>,
     timeout_ms: Option<u64>,
     expect_status: Option<u16>,
+    /// Response body JSON from trial run (native API payload, not VI outputs array).
     #[serde(default)]
-    output_fields: Vec<String>,
+    outputs: Option<Value>,
 }
 
 fn rest_inputs_from_request(
@@ -1261,7 +1270,12 @@ async fn general_rest_run(
         }
     };
     let vars = load_settings_vars(&s).await;
-    let inputs = match crate::expand::expand_json_value(&inputs, &vars) {
+    // Lenient: undefined ${Name} left as-is; MIME/URL paths no longer collide with vars.
+    let inputs = match crate::expand::expand_json_value_mode(
+        &inputs,
+        &vars,
+        crate::expand::ExpandMode::Lenient,
+    ) {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -1344,11 +1358,25 @@ async fn general_rest_register(
         }
     };
 
+    let outputs = match req.outputs {
+        Some(Value::Object(map)) => Value::Object(map),
+        Some(Value::Null) | None => Value::Object(serde_json::Map::new()),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "outputs must be a JSON object (response body from trial run)"
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let center_body = serde_json::json!({
         "agent_id": agent_id,
         "kind": crate::rest::KIND_REST,
         "inputs": inputs,
-        "outputs": crate::rest::rest_outputs(&req.output_fields),
+        "outputs": outputs,
         "name": req.name.trim(),
     });
 
@@ -1493,6 +1521,7 @@ async fn labview_run_sequence(
             sn: normalize_run_sequence_opt(req.sn.clone()),
             work_order: normalize_run_sequence_opt(req.work_order.clone()),
             vars: Default::default(),
+            progress: None,
         })
         .unwrap_or_default();
     run_opts.vars = load_settings_vars(&s).await;
@@ -1558,6 +1587,9 @@ async fn labview_run_sequence(
             .into_response();
     }
 
+    s.sequence_progress.begin().await;
+    run_opts.progress = Some(s.sequence_progress.clone());
+
     let resp = run_sequence(
         &s.labview_cli,
         &s.labview_getinfo,
@@ -1574,6 +1606,7 @@ async fn labview_run_sequence(
             Ok(idx) => idx,
             Err(msg) => {
                 s.sequence_session.clear().await;
+                s.sequence_progress.clear().await;
                 s.slot.release().await;
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1602,6 +1635,11 @@ async fn labview_run_sequence(
     (StatusCode::OK, Json(resp)).into_response()
 }
 
+async fn labview_run_sequence_progress(State(s): State<AppState>) -> impl IntoResponse {
+    let snap = s.sequence_progress.snapshot().await;
+    (StatusCode::OK, Json(snap))
+}
+
 async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoResponse {
     let session = match s.sequence_session.take().await {
         Some(v) => v,
@@ -1616,6 +1654,10 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
         }
     };
 
+    s.sequence_progress
+        .begin_from(session.steps_so_far.clone())
+        .await;
+
     let resp = run_sequence(
         &s.labview_cli,
         &s.labview_getinfo,
@@ -1625,6 +1667,7 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
             sn: session.sn.clone(),
             work_order: session.work_order.clone(),
             vars: load_settings_vars(&s).await,
+            progress: Some(s.sequence_progress.clone()),
         },
         session.steps_so_far,
         true,
@@ -1636,6 +1679,7 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
             Ok(idx) => idx,
             Err(msg) => {
                 s.sequence_session.clear().await;
+                s.sequence_progress.clear().await;
                 s.slot.release().await;
                 return (
                     StatusCode::CONFLICT,
@@ -1679,6 +1723,9 @@ async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoRespo
     };
 
     s.sequence_session.clear().await;
+    s.sequence_progress
+        .finish(session.steps_so_far.clone())
+        .await;
     s.slot.release().await;
 
     let resp = SequenceResponse {
@@ -1732,6 +1779,7 @@ mod tests {
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
             sequence_session: SequenceSessionSlot::new(),
+            sequence_progress: SequenceProgressSlot::new(),
         }
     }
 

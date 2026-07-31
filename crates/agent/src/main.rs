@@ -21,7 +21,7 @@ mod web;
 use api::AppState;
 use config::AgentConfig;
 use metrics::{MetricsSampler, MetricsSnapshot};
-use sequence_session::SequenceSessionSlot;
+use sequence_session::{SequenceProgressSlot, SequenceSessionSlot};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,6 +63,7 @@ async fn main() {
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
         sequence_session: SequenceSessionSlot::new(),
+        sequence_progress: SequenceProgressSlot::new(),
     };
 
     let reg = common::RegisterAgentRequest {
