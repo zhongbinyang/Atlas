@@ -452,9 +452,9 @@ test('toast controller shows one message for 4000 ms and pauses while hovered or
     clearTimeout: timers.clearTimeout,
   });
 
-  toast.show('截图已获取', 'success');
+  toast.show('操作成功', 'success');
   assert.equal(element.hidden, false);
-  assert.equal(element.textContent, '截图已获取');
+  assert.equal(element.textContent, '操作成功');
   assert.equal(timers.nextActive().delay, 4000);
 
   element.dispatch('mouseenter');
@@ -476,7 +476,7 @@ test('toast mouseleave does not resume auto-close while focus remains inside', (
     clearTimeout: timers.clearTimeout,
   });
 
-  toast.show('截图已获取', 'success');
+  toast.show('操作成功', 'success');
   element.dispatch('focusin');
   element.dispatch('mouseenter');
   element.dispatch('mouseleave');

@@ -2032,7 +2032,7 @@ function startSequenceProgressPoll() {
   stopSequenceProgressPoll();
   seqProgressPollTimer = setInterval(async function () {
     try {
-      const resp = await fetch('/api/labview/run-sequence/progress');
+      const resp = await fetch('/api/sequence/run/progress');
       if (!resp.ok) return;
       const prog = await resp.json();
       applySequenceProgress(prog);
@@ -2460,7 +2460,7 @@ function renderSeqRegistered() {
 
 async function loadQueue() {
   try {
-    const resp = await fetch('/api/labview/run-queue');
+    const resp = await fetch('/api/sequence/run-queue');
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
@@ -2779,7 +2779,7 @@ async function saveQueue() {
     }),
   };
   try {
-    const resp = await fetch('/api/labview/run-queue', {
+    const resp = await fetch('/api/sequence/run-queue', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3097,7 +3097,7 @@ async function runSequence() {
   if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
   startSequenceProgressPoll();
   try {
-    const resp = await fetch('/api/labview/run-sequence', {
+    const resp = await fetch('/api/sequence/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -3142,7 +3142,7 @@ async function continueSequence() {
   showSeqMsg('继续执行…', true);
   startSequenceProgressPoll();
   try {
-    const resp = await fetch('/api/labview/run-sequence/continue', { method: 'POST' });
+    const resp = await fetch('/api/sequence/run/continue', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
@@ -3170,7 +3170,7 @@ async function abortSequence() {
   if (abortBtn) abortBtn.disabled = true;
   showSeqMsg('中止中…', true);
   try {
-    const resp = await fetch('/api/labview/run-sequence/abort', { method: 'POST' });
+    const resp = await fetch('/api/sequence/run/abort', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;

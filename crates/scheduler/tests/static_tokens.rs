@@ -172,10 +172,6 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
     assert!(manifest_dir().join("../agent/static/favicon.svg").is_file());
 
     assert!(index.contains("id=\"toast\" class=\"toast\" role=\"status\""));
-    assert!(index.contains("id=\"shot-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
-    assert!(index.contains("id=\"shot-history-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
-    assert!(index.contains("id=\"files-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
-    assert!(index.contains("id=\"file-preview-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
     assert!(index.contains("id=\"confirm-modal\" class=\"modal\" role=\"dialog\" aria-modal=\"true\""));
     assert!(app.contains("dialogController.confirm"));
     assert!(
@@ -184,34 +180,17 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
     );
     assert!(!app.contains("alert("), "native alerts must be removed");
     assert!(app.contains("setAttribute('aria-current', 'page')"));
-    for toast_message in ["加载文件失败: ", "截图失败: ", "加载历史失败: "] {
-        assert!(
-            app.contains(&format!("showToast('{toast_message}")),
-            "recoverable UI failures must use a Chinese Toast prefix: {toast_message}"
-        );
-    }
     assert!(
-        app.contains("parent: document.getElementById('files-modal')"),
-        "file preview must use the dialog controller's parent flow"
+        !app.contains("detail-shot")
+            && !app.contains("detail-history")
+            && !app.contains("detail-files")
+            && !index.contains("shot-modal")
+            && !index.contains("files-modal"),
+        "screenshot/history/files UI must be removed"
     );
     assert!(
-        app.contains(
-            "parent: returnToHistory ? document.getElementById('shot-history-modal') : null"
-        ),
-        "historical screenshots must use the dialog controller's parent flow"
-    );
-    assert!(
-        app.contains("showScreenshotImage(item.id, true)"),
-        "history screenshot controls must opt into restoring their parent dialog"
-    );
-    assert!(
-        app.contains("root.type = 'button'") && app.contains("link.type = 'button'"),
-        "file breadcrumb controls must use native keyboard-accessible buttons"
-    );
-    assert!(
-        !app.contains("const root = document.createElement('a')")
-            && !app.contains("const link = document.createElement('a')"),
-        "file breadcrumb controls must not be href-less links"
+        !app.contains("btn-vi-edit") && app.contains("btn-template-delete"),
+        "center functions page must expose delete but not rename/edit"
     );
 }
 

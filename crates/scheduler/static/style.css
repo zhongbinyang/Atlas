@@ -311,17 +311,6 @@ body {
   margin-bottom: 0.2rem;
 }
 
-.detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
-
-.detail-actions .btn-sm {
-  margin-left: 0;
-}
-
 h2 {
   margin: 0 0 0.75rem;
   font-size: 1.1rem;
@@ -633,63 +622,6 @@ pre {
   display: block;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-}
-
-.modal-pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-  font-size: 0.9rem;
-}
-
-.vi-distribute-agents {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-bottom: 0.5rem;
-}
-
-.vi-distribute-path-label {
-  margin-top: 0.75rem;
-}
-
-.vi-distribute-actions {
-  margin-top: 0.75rem;
-}
-
-#vi-distribute-results:not(:empty) {
-  margin-top: 0.75rem;
-}
-
-.files-crumb {
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
-  font-family: var(--font-mono);
-}
-
-.files-crumb button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.files-crumb button:hover {
-  text-decoration: underline;
-}
-
-.files-crumb .crumb-sep {
-  color: var(--muted);
-  margin: 0 0.25rem;
-}
-
-#file-preview-pre {
-  max-height: 70vh;
 }
 
 .table-scroll {

@@ -1,15 +1,12 @@
 mod advertise;
 mod api;
-mod capture;
 mod config;
 mod expand;
-mod files;
 mod general;
 mod labview;
 mod labview_sequence;
 mod limits;
 mod logging;
-mod executor;
 mod metrics;
 mod register;
 mod rest;
@@ -58,7 +55,6 @@ async fn main() {
         metrics,
         center_url: cfg.center_url.clone(),
         http_client: http_client.clone(),
-        files_root: cfg.files_root.clone(),
         log_dir: cfg.log_dir.clone(),
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),

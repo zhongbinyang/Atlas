@@ -1,21 +1,18 @@
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{header, Request, StatusCode},
     response::IntoResponse,
     routing::{get, patch, post},
     Json, Router,
 };
-use common::{
-    AgentStatusResponse, CreateAgentTaskRequest, ErrorBody, RegisterAgentRequest,
-};
+use common::{AgentStatusResponse, ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
-use crate::files::{self, EntryKind, FilesError};
 use crate::labview::{
     build_inspect_args, build_run_args, ensure_vi, inputs_to_cli_object, map_status,
     normalize_fs_path, run_cli,
@@ -41,7 +38,6 @@ pub struct AppState {
     pub metrics: Arc<RwLock<MetricsSnapshot>>,
     pub center_url: String,
     pub http_client: reqwest::Client,
-    pub files_root: Option<PathBuf>,
     pub log_dir: PathBuf,
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
@@ -105,71 +101,12 @@ struct LabviewRegisterTemplateRequest {
     timeout_secs: Option<u64>,
 }
 
-#[derive(Deserialize)]
-struct FilesQuery {
-    path: Option<String>,
-    download: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FilesListResponse {
-    path: String,
-    entries: Vec<FileEntryJson>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FileEntryJson {
-    name: String,
-    kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ext: Option<String>,
-}
-
-fn files_error_status(e: FilesError) -> (StatusCode, String) {
-    match e {
-        FilesError::NotConfigured | FilesError::RootMissing => {
-            (StatusCode::SERVICE_UNAVAILABLE, "files not configured".into())
-        }
-        FilesError::BadPath | FilesError::NotDir => {
-            (StatusCode::BAD_REQUEST, "invalid path".into())
-        }
-        FilesError::NotFound => (StatusCode::NOT_FOUND, "not found".into()),
-        FilesError::ForbiddenExt => (StatusCode::FORBIDDEN, "forbidden extension".into()),
-        FilesError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "file too large".into()),
-        FilesError::Io(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-    }
-}
-
-fn entry_to_json(e: files::FileEntry) -> FileEntryJson {
-    match e.kind {
-        EntryKind::Dir => FileEntryJson {
-            name: e.name,
-            kind: "dir".into(),
-            size: None,
-            ext: None,
-        },
-        EntryKind::File => FileEntryJson {
-            name: e.name,
-            kind: "file".into(),
-            size: e.size,
-            ext: Some(e.ext.unwrap_or_default()),
-        },
-    }
-}
-
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/status", get(status))
         .route("/api/slot/force-release", post(slot_force_release))
-        .route("/api/tasks", get(list_tasks).post(create_task))
-        .route("/api/tasks/{id}", get(get_task))
-        .route("/api/screenshot", get(screenshot))
         .route("/api/register-now", post(register_now))
-        .route("/api/files", get(list_files))
-        .route("/api/files/content", get(files_content))
         .route("/api/labview/config", get(labview_config))
         .route("/api/labview/inspect", post(labview_inspect))
         .route("/api/labview/run", post(labview_run))
@@ -187,11 +124,7 @@ pub fn router(state: AppState) -> Router {
             "/api/labview/templates/{id}",
             patch(labview_patch_template),
         )
-        .route(
-            "/api/labview/templates/{id}/claim",
-            post(labview_claim_template),
-        )
-        .route("/api/labview/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
+        .route("/api/sequence/run-queue", get(labview_run_queue_get).put(labview_run_queue_put))
         .route(
             "/api/sequence-templates",
             get(sequence_templates_list).post(sequence_templates_create),
@@ -200,17 +133,17 @@ pub fn router(state: AppState) -> Router {
             "/api/sequence-templates/{id}/load",
             post(sequence_template_load_to_agent),
         )
-        .route("/api/labview/run-sequence", post(labview_run_sequence))
+        .route("/api/sequence/run", post(labview_run_sequence))
         .route(
-            "/api/labview/run-sequence/progress",
+            "/api/sequence/run/progress",
             get(labview_run_sequence_progress),
         )
         .route(
-            "/api/labview/run-sequence/continue",
+            "/api/sequence/run/continue",
             post(labview_run_sequence_continue),
         )
         .route(
-            "/api/labview/run-sequence/abort",
+            "/api/sequence/run/abort",
             post(labview_run_sequence_abort),
         )
         .route("/api/settings", get(agent_settings_get).put(agent_settings_put))
@@ -409,7 +342,6 @@ async fn build_busy_snapshot(s: &AppState) -> BusySnapshot {
         "sequence" => "序列正在执行中".to_string(),
         "delay" => "Delay 试跑进行中".to_string(),
         "rest" => "REST 试跑进行中".to_string(),
-        "shell_task" => "Shell 任务执行中".to_string(),
         other => format!("机台忙碌（{other}）"),
     };
     BusySnapshot {
@@ -483,156 +415,6 @@ async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
             "message": if was_busy { "已强制释放占用" } else { "当前已空闲" },
         })),
     )
-}
-
-async fn create_task(
-    State(s): State<AppState>,
-    Json(req): Json<CreateAgentTaskRequest>,
-) -> impl IntoResponse {
-    if req.command.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "command is required".into(),
-            }),
-        )
-            .into_response();
-    }
-    if req.timeout_secs == 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "timeout_secs must be greater than 0".into(),
-            }),
-        )
-            .into_response();
-    }
-    match s.slot.submit(req).await {
-        Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
-        Err("busy") => {
-            let snap = build_busy_snapshot(&s).await;
-            (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response()
-        }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                error: "unknown".into(),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-async fn list_tasks(State(s): State<AppState>) -> Json<Vec<common::AgentTaskView>> {
-    Json(s.slot.list().await)
-}
-
-async fn get_task(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    match s.slot.get(&id).await {
-        Some(t) => (StatusCode::OK, Json(t)).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                error: "task not found".into(),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-async fn screenshot() -> impl IntoResponse {
-    match tokio::task::spawn_blocking(crate::capture::capture_primary_png).await {
-        Ok(Ok(bytes)) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "image/png")],
-            bytes,
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody { error: e }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                error: format!("capture join: {e}"),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-async fn list_files(
-    State(s): State<AppState>,
-    Query(q): Query<FilesQuery>,
-) -> impl IntoResponse {
-    let Some(root) = s.files_root.as_deref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorBody {
-                error: "files not configured".into(),
-            }),
-        )
-            .into_response();
-    };
-    let rel = q.path.as_deref().unwrap_or("");
-    match files::list_dir(root, rel) {
-        Ok((path, entries)) => (
-            StatusCode::OK,
-            Json(FilesListResponse {
-                path,
-                entries: entries.into_iter().map(entry_to_json).collect(),
-            }),
-        )
-            .into_response(),
-        Err(e) => {
-            let (status, error) = files_error_status(e);
-            (status, Json(ErrorBody { error })).into_response()
-        }
-    }
-}
-
-async fn files_content(
-    State(s): State<AppState>,
-    Query(q): Query<FilesQuery>,
-) -> impl IntoResponse {
-    let Some(root) = s.files_root.as_deref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorBody {
-                error: "files not configured".into(),
-            }),
-        )
-            .into_response();
-    };
-    let rel = q.path.as_deref().unwrap_or("");
-    let download = q.download.as_deref() == Some("1");
-    match files::read_file(root, rel) {
-        Ok((filename, content_type, bytes)) => {
-            let mut headers = axum::http::HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                content_type.parse().expect("content-type"),
-            );
-            if download {
-                headers.insert(
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{filename}\"")
-                        .parse()
-                        .expect("content-disposition"),
-                );
-            }
-            (StatusCode::OK, headers, bytes).into_response()
-        }
-        Err(e) => {
-            let (status, error) = files_error_status(e);
-            (status, Json(ErrorBody { error })).into_response()
-        }
-    }
 }
 
 async fn labview_register_template(
@@ -798,34 +580,6 @@ async fn labview_agent_id(State(s): State<AppState>) -> impl IntoResponse {
     match resolve_agent_id_for_proxy(&s).await {
         Ok(agent_id) => (StatusCode::OK, Json(serde_json::json!({ "agent_id": agent_id })))
             .into_response(),
-        Err(resp) => resp,
-    }
-}
-
-async fn labview_claim_template(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    match resolve_agent_id_for_proxy(&s).await {
-        Ok(agent_id) => match crate::register::distribute_vi_template(
-            &s.http_client,
-            &s.center_url,
-            &id,
-            &agent_id,
-        )
-        .await
-        {
-            Ok((status, body)) => {
-                let axum_status =
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-                (axum_status, Json(body)).into_response()
-            }
-            Err(e) => (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorBody { error: e }),
-            )
-                .into_response(),
-        },
         Err(resp) => resp,
     }
 }
@@ -1760,7 +1514,6 @@ async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    use common::ShellKind;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -1774,7 +1527,6 @@ mod tests {
             metrics: Arc::new(RwLock::new(MetricsSnapshot::default())),
             center_url: "http://localhost:3000".into(),
             http_client: crate::register::http_client(),
-            files_root: None,
             log_dir: std::env::temp_dir().join("atlas-agent-test-logs"),
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
@@ -1794,13 +1546,6 @@ mod tests {
         AppState {
             labview_cli: cli,
             labview_getinfo: getinfo,
-            ..test_state()
-        }
-    }
-
-    fn test_state_with_files(root: PathBuf) -> AppState {
-        AppState {
-            files_root: Some(root),
             ..test_state()
         }
     }
@@ -1831,104 +1576,6 @@ mod tests {
             "status request took {:?}",
             started.elapsed()
         );
-    }
-
-    #[tokio::test]
-    async fn list_files_and_content() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("EyeDiagram/35")).unwrap();
-        std::fs::write(dir.path().join("Log.txt"), b"hello").unwrap();
-        std::fs::write(dir.path().join("EyeDiagram/35/CH1.gif"), b"GIF89a").unwrap();
-
-        let app = router(test_state_with_files(dir.path().to_path_buf()));
-
-        let req = Request::builder()
-            .uri("/api/files")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let body: FilesListResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(body.entries.iter().any(|e| e.name == "Log.txt" && e.kind == "file"));
-        assert!(body
-            .entries
-            .iter()
-            .any(|e| e.name == "EyeDiagram" && e.kind == "dir"));
-
-        let req = Request::builder()
-            .uri("/api/files/content?path=Log.txt")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&bytes[..], b"hello");
-
-        let req = Request::builder()
-            .uri("/api/files/content?path=EyeDiagram/35/CH1.gif")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&bytes[..], b"GIF89a");
-
-        let req = Request::builder()
-            .uri("/api/files/content?path=../x")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn list_files_not_configured() {
-        let app = router(test_state());
-        let req = Request::builder()
-            .uri("/api/files")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[tokio::test]
-    async fn post_task_conflict_when_busy() {
-        let app = router(test_state());
-        let payload = CreateAgentTaskRequest {
-            shell: ShellKind::Cmd,
-            command: "ping -n 5 127.0.0.1".into(),
-            workdir: None,
-            timeout_secs: 30,
-        };
-        let body = serde_json::to_vec(&payload).unwrap();
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/tasks")
-            .header("content-type", "application/json")
-            .body(Body::from(body.clone()))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/tasks")
-            .header("content-type", "application/json")
-            .body(Body::from(body))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(err.error, "agent is busy");
-        let rich: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(rich["busy_reason"], "shell_task");
-        assert_eq!(rich["can_force_release"], true);
-        assert_eq!(rich["can_continue"], false);
     }
 
     #[tokio::test]
@@ -2395,68 +2042,6 @@ mod tests {
         assert_eq!(arr[1].get("id").and_then(|v| v.as_str()), Some("tpl-b"));
     }
 
-    #[tokio::test]
-    async fn labview_claim_posts_distribute_with_local_agent_id() {
-        use wiremock::matchers::{body_json, method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/agents"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                "id": "agent-uuid-1",
-                "name": "test-host",
-                "ip": "127.0.0.1",
-                "port": 8080,
-                "status": "online",
-                "cpu_percent": 0.0,
-                "memory_percent": 0.0,
-                "busy": false,
-                "last_seen_at": null,
-                "created_at": "2026-01-01T00:00:00Z"
-            }])))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/vi-templates/tpl-src/distribute"))
-            .and(body_json(serde_json::json!({ "target_agent_id": "agent-uuid-1" })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "tpl-copy",
-                "name": "Copied",
-                "origin_agent_id": "agent-other",
-                "origin_agent_name": "other",
-                "vi_path": "C:\\x\\Add.vi",
-                "cli_path": "C:\\cli.exe",
-                "getinfo_path": "C:\\getinfo.vi",
-                "inputs": [{ "name": "a", "className": "Digital", "value": 2.0 }],
-                "show_front_panel": false,
-                "timeout_secs": null,
-                "created_at": "2026-01-01T00:00:00Z"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let mut state = test_state();
-        state.center_url = mock_server.uri();
-        let app = router(state);
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/labview/templates/tpl-src/claim")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some("tpl-copy"));
-        assert_eq!(
-            body.get("origin_agent_id").and_then(|v| v.as_str()),
-            Some("agent-other")
-        );
-    }
 
     #[tokio::test]
     async fn labview_run_queue_get_proxies_to_center() {
@@ -2483,7 +2068,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/agents/agent-uuid-1/vi-run-queue"))
+            .and(path("/api/agents/agent-uuid-1/run-queue"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [{
                     "id": "q-1",
@@ -2505,7 +2090,7 @@ mod tests {
 
         let req = Request::builder()
             .method("GET")
-            .uri("/api/labview/run-queue")
+            .uri("/api/sequence/run-queue")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -2542,7 +2127,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/agents/agent-uuid-1/vi-run-queue"))
+            .and(path("/api/agents/agent-uuid-1/run-queue"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": []
             })))
@@ -2555,7 +2140,7 @@ mod tests {
 
         let req = Request::builder()
             .method("POST")
-            .uri("/api/labview/run-sequence")
+            .uri("/api/sequence/run")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -2590,7 +2175,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/agents/agent-uuid-1/vi-run-queue"))
+            .and(path("/api/agents/agent-uuid-1/run-queue"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": []
             })))
@@ -2603,7 +2188,7 @@ mod tests {
 
         let req = Request::builder()
             .method("POST")
-            .uri("/api/labview/run-sequence")
+            .uri("/api/sequence/run")
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
@@ -2622,27 +2207,13 @@ mod tests {
 
     #[tokio::test]
     async fn labview_run_sequence_conflict_when_busy() {
-        let app = router(test_state());
-        let payload = CreateAgentTaskRequest {
-            shell: ShellKind::Cmd,
-            command: "ping -n 5 127.0.0.1".into(),
-            workdir: None,
-            timeout_secs: 30,
-        };
-        let body = serde_json::to_vec(&payload).unwrap();
+        let state = test_state();
+        state.slot.try_acquire("delay").await.unwrap();
+        let app = router(state);
 
         let req = Request::builder()
             .method("POST")
-            .uri("/api/tasks")
-            .header("content-type", "application/json")
-            .body(Body::from(body))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/labview/run-sequence")
+            .uri("/api/sequence/run")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -2651,7 +2222,7 @@ mod tests {
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent is busy");
         let rich: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(rich["busy_reason"], "shell_task");
+        assert_eq!(rich["busy_reason"], "delay");
         assert_eq!(rich["can_force_release"], true);
     }
 
@@ -2660,7 +2231,7 @@ mod tests {
         let app = router(test_state());
         let req = Request::builder()
             .method("POST")
-            .uri("/api/labview/run-sequence/continue")
+            .uri("/api/sequence/run/continue")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -2675,7 +2246,7 @@ mod tests {
         let app = router(test_state());
         let req = Request::builder()
             .method("POST")
-            .uri("/api/labview/run-sequence/abort")
+            .uri("/api/sequence/run/abort")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

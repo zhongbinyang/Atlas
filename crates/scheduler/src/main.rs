@@ -1,12 +1,9 @@
 mod api;
 mod config;
 mod db;
-mod dispatcher;
 mod labview_cmd;
 mod poller;
-mod screenshot;
 mod store;
-mod vi_distribute;
 mod web;
 
 use std::net::SocketAddr;
@@ -23,14 +20,6 @@ fn http_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(5))
         .build()
         .expect("http client")
-}
-
-fn labview_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("labview http client")
 }
 
 #[tokio::main]
@@ -53,7 +42,6 @@ async fn main() {
     });
     let store = Store::new(pool);
     let client = http_client();
-    let labview_client = labview_http_client();
 
     let poll_store = store.clone();
     let poll_client = client.clone();
@@ -62,20 +50,9 @@ async fn main() {
         poller::run_status_poller(poll_store, poll_client, poll_interval).await;
     });
 
-    let dispatch_store = store.clone();
-    let dispatch_client = client.clone();
-    let dispatch_interval = cfg.poll_task_interval_secs;
-    tokio::spawn(async move {
-        dispatcher::run_dispatcher(dispatch_store, dispatch_client, dispatch_interval).await;
-    });
 
-    let app = api::router(AppState {
-        store,
-        client,
-        labview_client,
-        screenshot_dir: cfg.screenshot_dir,
-    })
-    .merge(web::static_router());
+    let app = api::router(AppState { store })
+        .merge(web::static_router());
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse().unwrap();
     tracing::info!("scheduler listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

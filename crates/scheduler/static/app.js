@@ -5,11 +5,6 @@ let agents = [];
 let lastAgentsRefreshAt = null;
 let viTemplates = [];
 let sequenceTemplates = [];
-let historyAgentId = null;
-let historyOffset = 0;
-const HISTORY_LIMIT = 50;
-let filesAgentId = null;
-let filesPath = '';
 let inputsPopoverEl = null;
 let inputsPopoverHideTimer = null;
 const toastMessages = dashboardRuntime.createToastController(document.getElementById('toast'));
@@ -217,326 +212,10 @@ async function fetchAgents() {
   await requestAgents();
 }
 
-function formatByteSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function openShotModal(returnToHistory) {
-  dialogController.open(document.getElementById('shot-modal'), {
-    parent: returnToHistory ? document.getElementById('shot-history-modal') : null,
-    onClose: () => {
-      document.getElementById('shot-img').removeAttribute('src');
-    },
-  });
-}
-
-function closeShotModal() {
-  dialogController.close(document.getElementById('shot-modal'));
-}
-
-function openShotHistoryModal() {
-  dialogController.open(document.getElementById('shot-history-modal'), {
-    onClose: (reason) => {
-      if (reason === 'replaced') return;
-      historyAgentId = null;
-      historyOffset = 0;
-    },
-  });
-}
-
-function closeShotHistoryModal() {
-  dialogController.close(document.getElementById('shot-history-modal'));
-}
-
-function openFilesModal() {
-  dialogController.open(document.getElementById('files-modal'), {
-    onClose: (reason) => {
-      if (reason === 'replaced') return;
-      filesAgentId = null;
-      filesPath = '';
-    },
-  });
-}
-
-function closeFilesModal() {
-  dialogController.close(document.getElementById('files-modal'));
-}
-
-function openFilePreviewModal() {
-  dialogController.open(document.getElementById('file-preview-modal'), {
-    parent: document.getElementById('files-modal'),
-    onClose: () => {
-      document.getElementById('file-preview-pre').hidden = true;
-      document.getElementById('file-preview-pre').textContent = '';
-      document.getElementById('file-preview-img').hidden = true;
-      document.getElementById('file-preview-img').removeAttribute('src');
-    },
-  });
-}
-
-function closeFilePreviewModal() {
-  dialogController.close(document.getElementById('file-preview-modal'));
-}
-
-function joinFilesPath(base, name) {
-  return base ? base + '/' + name : name;
-}
-
-function fileContentUrl(relPath, download) {
-  let url = '/api/agents/' + encodeURIComponent(filesAgentId) +
-    '/files/content?path=' + encodeURIComponent(relPath);
-  if (download) url += '&download=1';
-  return url;
-}
-
-async function openFiles(agentId) {
-  filesAgentId = agentId;
-  filesPath = '';
-  const agent = agents.find(a => a.id === agentId);
-  const title = document.getElementById('files-title');
-  title.textContent = '文件' + (agent ? ' — ' + agent.name : '');
-  if (await loadFiles()) openFilesModal();
-}
-
-async function loadFiles() {
-  try {
-    const q = filesPath ? ('?path=' + encodeURIComponent(filesPath)) : '';
-    const resp = await fetch('/api/agents/' + encodeURIComponent(filesAgentId) + '/files' + q);
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      showToast('加载文件失败: ' + (err.error || resp.status), 'error');
-      return false;
-    }
-    const data = await resp.json();
-    renderFilesCrumb(data.path || filesPath);
-    renderFiles(data.entries || []);
-    return true;
-  } catch (error) {
-    showToast('加载文件失败: ' + (error.message || '网络异常'), 'error');
-    return false;
-  }
-}
-
-function renderFilesCrumb(path) {
-  const crumb = document.getElementById('files-crumb');
-  crumb.innerHTML = '';
-  const root = document.createElement('button');
-  root.type = 'button';
-  root.textContent = '根目录';
-  root.addEventListener('click', () => {
-    filesPath = '';
-    loadFiles();
-  });
-  crumb.appendChild(root);
-
-  if (!path) return;
-  const parts = path.split('/').filter(Boolean);
-  let acc = '';
-  for (const part of parts) {
-    const sep = document.createElement('span');
-    sep.className = 'crumb-sep';
-    sep.textContent = '/';
-    crumb.appendChild(sep);
-
-    acc = joinFilesPath(acc, part);
-    const link = document.createElement('button');
-    link.type = 'button';
-    link.textContent = part;
-    const target = acc;
-    link.addEventListener('click', () => {
-      filesPath = target;
-      loadFiles();
-    });
-    crumb.appendChild(link);
-  }
-}
-
-function renderFiles(entries) {
-  const tbody = document.getElementById('files-body');
-  tbody.innerHTML = '';
-  if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无文件</td></tr>';
-    return;
-  }
-
-  const sorted = entries.slice().sort((a, b) => {
-    if (a.kind === 'dir' && b.kind !== 'dir') return -1;
-    if (a.kind !== 'dir' && b.kind === 'dir') return 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  for (const entry of sorted) {
-    const row = document.createElement('tr');
-    const isDir = entry.kind === 'dir';
-    const ext = entry.ext || '';
-    const relPath = joinFilesPath(filesPath, entry.name);
-    const size = isDir ? '—' : formatByteSize(entry.size || 0);
-    const kindLabel = isDir ? '目录' : (ext || '文件');
-
-    let actions = '';
-    if (isDir) {
-      actions = '<button type="button" class="btn-sm btn-files-open">打开</button>';
-    } else if (ext === 'txt' || ext === 'gif') {
-      actions =
-        '<button type="button" class="btn-sm btn-files-preview">预览</button>' +
-        '<button type="button" class="btn-sm btn-files-download">下载</button>';
-    }
-
-    row.innerHTML =
-      '<td>' + escapeHtml(entry.name) + '</td>' +
-      '<td>' + escapeHtml(kindLabel) + '</td>' +
-      '<td>' + escapeHtml(size) + '</td>' +
-      '<td>' + actions + '</td>';
-
-    const openBtn = row.querySelector('.btn-files-open');
-    if (openBtn) {
-      openBtn.addEventListener('click', () => {
-        filesPath = relPath;
-        loadFiles();
-      });
-    }
-
-    const previewBtn = row.querySelector('.btn-files-preview');
-    if (previewBtn) {
-      previewBtn.addEventListener('click', () => previewFile(relPath, ext, entry.name));
-    }
-
-    const downloadBtn = row.querySelector('.btn-files-download');
-    if (downloadBtn) {
-      downloadBtn.addEventListener('click', () => downloadFile(relPath));
-    }
-
-    tbody.appendChild(row);
-  }
-}
-
-function previewFile(relPath, ext, name) {
-  const pre = document.getElementById('file-preview-pre');
-  const img = document.getElementById('file-preview-img');
-  document.getElementById('file-preview-title').textContent = '预览 — ' + name;
-  const url = fileContentUrl(relPath, false);
-
-  if (ext === 'gif') {
-    pre.hidden = true;
-    pre.textContent = '';
-    img.hidden = false;
-    img.src = url;
-    openFilePreviewModal();
-    return;
-  }
-
-  img.hidden = true;
-  img.removeAttribute('src');
-  pre.hidden = false;
-  pre.textContent = '加载中…';
-  openFilePreviewModal();
-
-  fetch(url)
-    .then(r => {
-      if (!r.ok) throw new Error('加载失败: ' + r.status);
-      return r.text();
-    })
-    .then(t => { pre.textContent = t; })
-    .catch(err => { pre.textContent = err.message; });
-}
-
-function downloadFile(relPath) {
-  window.open(fileContentUrl(relPath, true), '_blank');
-}
-
-function showScreenshotImage(id, returnToHistory) {
-  document.getElementById('shot-img').src =
-    '/api/screenshots/' + encodeURIComponent(id) + '/image?' + Date.now();
-  openShotModal(returnToHistory);
-}
-
-async function takeScreenshot(agentId) {
-  try {
-    const resp = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/screenshots', {
-      method: 'POST',
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      showToast('截图失败: ' + (err.error || resp.status), 'error');
-      return;
-    }
-    const meta = await resp.json();
-    showToast('截图已获取', 'success');
-    showScreenshotImage(meta.id);
-  } catch (error) {
-    showToast('截图失败: ' + (error.message || '网络异常'), 'error');
-  }
-}
-
-async function openHistory(agentId, offset = 0) {
-  historyAgentId = agentId;
-  historyOffset = offset;
-  const agent = agents.find(a => a.id === agentId);
-  const title = document.getElementById('shot-history-title');
-  title.textContent = '截图历史' + (agent ? ' — ' + agent.name : '');
-
-  try {
-    const resp = await fetch(
-      '/api/agents/' + encodeURIComponent(agentId) +
-        '/screenshots?limit=' + HISTORY_LIMIT + '&offset=' + offset
-    );
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      showToast('加载历史失败: ' + (err.error || resp.status), 'error');
-      return;
-    }
-    const data = await resp.json();
-    renderHistory(data.items, data.total, offset);
-    openShotHistoryModal();
-  } catch (error) {
-    showToast('加载历史失败: ' + (error.message || '网络异常'), 'error');
-  }
-}
-
-function renderHistory(items, total, offset) {
-  const tbody = document.getElementById('shot-history-body');
-  tbody.innerHTML = '';
-  if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无截图</td></tr>';
-  } else {
-    for (const item of items) {
-      const row = document.createElement('tr');
-      row.innerHTML =
-        '<td>' + escapeHtml(item.created_at) + '</td>' +
-        '<td>' + escapeHtml(formatByteSize(item.byte_size)) + '</td>' +
-        '<td><button type="button" class="btn-sm btn-view-shot" data-id="' +
-          escapeHtml(item.id) + '">查看</button></td>';
-      row.querySelector('.btn-view-shot').addEventListener('click', () => {
-        showScreenshotImage(item.id, true);
-      });
-      tbody.appendChild(row);
-    }
-  }
-
-  const pager = document.getElementById('shot-history-pager');
-  const prevBtn = document.getElementById('shot-history-prev');
-  const nextBtn = document.getElementById('shot-history-next');
-  const pageInfo = document.getElementById('shot-history-page-info');
-
-  if (total > items.length || offset > 0) {
-    pager.hidden = false;
-    const start = offset + 1;
-    const end = offset + items.length;
-    pageInfo.textContent = start + '–' + end + ' / ' + total;
-    prevBtn.disabled = offset === 0;
-    nextBtn.disabled = offset + items.length >= total;
-  } else {
-    pager.hidden = true;
-  }
-}
-
 function statusLabel(a) {
   if (a.status === 'offline') return '离线';
   return a.busy ? '在线·忙碌' : '在线·空闲';
 }
-
 function createAgentCard() {
   const card = document.createElement('button');
   card.type = 'button';
@@ -661,30 +340,6 @@ function ensureAgentDetailFields() {
   return bar._atlasFields;
 }
 
-function ensureAgentDetailActions() {
-  const actions = document.getElementById('agent-detail-actions');
-  if (actions._atlasButtons) return actions._atlasButtons;
-
-  const shot = document.createElement('button');
-  shot.type = 'button';
-  shot.className = 'btn-primary';
-  shot.id = 'detail-shot';
-  shot.textContent = '截图';
-  const history = document.createElement('button');
-  history.type = 'button';
-  history.className = 'btn-sm';
-  history.id = 'detail-history';
-  history.textContent = '历史';
-  const files = document.createElement('button');
-  files.type = 'button';
-  files.className = 'btn-sm';
-  files.id = 'detail-files';
-  files.textContent = '文件';
-  actions.append(shot, history, files);
-  actions._atlasButtons = { shot, history, files };
-  return actions._atlasButtons;
-}
-
 function renderAgentDetail(agentId) {
   const a = agents.find((x) => x.id === agentId);
   if (!a) {
@@ -700,15 +355,6 @@ function renderAgentDetail(agentId) {
   fields.memory.textContent = a.memory_percent.toFixed(1) + '%';
   fields.busy.textContent = a.busy ? '是' : '否';
   fields.lastSeen.textContent = dashboardRuntime.formatAgentHeartbeat(a.last_seen_at);
-
-  const buttons = ensureAgentDetailActions();
-  const offline = a.status === 'offline';
-  buttons.shot.disabled = offline;
-  buttons.history.disabled = offline;
-  buttons.files.disabled = offline;
-  buttons.shot.onclick = offline ? null : () => takeScreenshot(a.id);
-  buttons.history.onclick = offline ? null : () => openHistory(a.id);
-  buttons.files.onclick = offline ? null : () => openFiles(a.id);
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
@@ -723,32 +369,11 @@ document.getElementById('agent-sort').addEventListener('change', renderAgentsFro
 document.getElementById('agent-abnormal-only').addEventListener('change', renderAgentsFromTelemetryControl);
 document.addEventListener('visibilitychange', renderAutoRefreshStatus);
 
-document.getElementById('shot-close').addEventListener('click', closeShotModal);
-document.getElementById('shot-history-close').addEventListener('click', closeShotHistoryModal);
-document.getElementById('files-close').addEventListener('click', closeFilesModal);
-document.getElementById('file-preview-close').addEventListener('click', closeFilePreviewModal);
-
 document.querySelectorAll('.modal-backdrop').forEach(el => {
   el.addEventListener('click', () => {
     const id = el.getAttribute('data-close');
-    if (id === 'shot-modal') closeShotModal();
-    else if (id === 'shot-history-modal') closeShotHistoryModal();
-    else if (id === 'files-modal') closeFilesModal();
-    else if (id === 'file-preview-modal') closeFilePreviewModal();
-    else if (id === 'confirm-modal') dialogController.close(document.getElementById('confirm-modal'));
+    if (id === 'confirm-modal') dialogController.close(document.getElementById('confirm-modal'));
   });
-});
-
-document.getElementById('shot-history-prev').addEventListener('click', () => {
-  if (historyAgentId && historyOffset > 0) {
-    openHistory(historyAgentId, Math.max(0, historyOffset - HISTORY_LIMIT));
-  }
-});
-
-document.getElementById('shot-history-next').addEventListener('click', () => {
-  if (historyAgentId) {
-    openHistory(historyAgentId, historyOffset + HISTORY_LIMIT);
-  }
 });
 
 document.getElementById('nav-machines').addEventListener('click', () => setHash('machines'));
@@ -910,14 +535,9 @@ function renderViTemplates() {
       '<td class="mono">' + escapeHtml(configCol) + '</td>' +
       '<td class="inputs-cell-host"></td>' +
       '<td class="row-actions">' +
-        (t._source === 'labview'
-          ? '<button type="button" class="btn-sm btn-vi-edit">修改</button>'
-          : '') +
         '<button type="button" class="btn-sm btn-danger btn-template-delete">删除</button>' +
       '</td>';
     attachInputsHover(row.querySelector('.inputs-cell-host'), t.inputs);
-    const editBtn = row.querySelector('.btn-vi-edit');
-    if (editBtn) editBtn.addEventListener('click', () => editViTemplate(t));
     row.querySelector('.btn-template-delete').addEventListener('click', () => deleteTemplate(t));
     if (t._source === 'general') {
       generalBody.appendChild(row);
@@ -930,37 +550,6 @@ function renderViTemplates() {
   const source = sourceFilterEl && sourceFilterEl.value ? sourceFilterEl.value : '';
   if (viGroup) viGroup.hidden = source === 'general';
   if (generalGroup) generalGroup.hidden = source === 'labview';
-}
-
-async function editViTemplate(t) {
-  const current = t.name || '';
-  const next = prompt('修改名称', current);
-  if (next == null) return;
-  const name = String(next).trim();
-  if (!name) {
-    showViTemplatesMsg('名称不能为空', false);
-    return;
-  }
-  if (name === current) return;
-  showViTemplatesMsg('修改中…', true);
-  try {
-    const resp = await fetch('/api/vi-templates/' + encodeURIComponent(t.id), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      showViTemplatesMsg('修改失败: ' + (data.error || resp.status), false);
-      return;
-    }
-    showViTemplatesMsg('已修改: ' + (data.name || name), true);
-    showToast('功能名称已修改', 'success');
-    await fetchViTemplates();
-  } catch (e) {
-    showViTemplatesMsg('修改失败: ' + e.message, false);
-    showToast('修改功能失败: ' + e.message, 'error');
-  }
 }
 
 function requestDeleteConfirmation(label, detail) {

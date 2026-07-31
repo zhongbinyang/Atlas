@@ -76,7 +76,6 @@
           <h2 id="agent-detail-name" class="view-title">—</h2>
         </div>
         <div id="agent-detail-status" class="status-rail"></div>
-        <div id="agent-detail-actions" class="detail-actions"></div>
       </section>
     </div>
 
@@ -171,92 +170,6 @@
       </section>
     </div>
   </main>
-
-  <div id="shot-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shot-title" tabindex="-1" hidden>
-    <div class="modal-backdrop" data-close="shot-modal"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h2 id="shot-title">截图</h2>
-        <button id="shot-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <img id="shot-img" alt="截图">
-      </div>
-    </div>
-  </div>
-
-  <div id="shot-history-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shot-history-title" tabindex="-1" hidden>
-    <div class="modal-backdrop" data-close="shot-history-modal"></div>
-    <div class="modal-panel modal-panel-wide">
-      <div class="modal-header">
-        <h2 id="shot-history-title">截图历史</h2>
-        <button id="shot-history-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>大小</th>
-                <th>查看</th>
-              </tr>
-            </thead>
-            <tbody id="shot-history-body">
-              <tr><td colspan="3" class="empty">暂无截图</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div id="shot-history-pager" class="modal-pager" hidden>
-          <button id="shot-history-prev" type="button" class="btn-sm">上一页</button>
-          <span id="shot-history-page-info"></span>
-          <button id="shot-history-next" type="button" class="btn-sm">下一页</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="files-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="files-title" tabindex="-1" hidden>
-    <div class="modal-backdrop" data-close="files-modal"></div>
-    <div class="modal-panel modal-panel-wide">
-      <div class="modal-header">
-        <h2 id="files-title">文件</h2>
-        <button id="files-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <nav id="files-crumb" class="files-crumb"></nav>
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>类型</th>
-                <th>大小</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="files-body">
-              <tr><td colspan="4" class="empty">暂无文件</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="file-preview-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="file-preview-title" tabindex="-1" hidden>
-    <div class="modal-backdrop" data-close="file-preview-modal"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h2 id="file-preview-title">预览</h2>
-        <button id="file-preview-close" type="button" class="btn-sm">关闭</button>
-      </div>
-      <div class="modal-body">
-        <pre id="file-preview-pre" hidden></pre>
-        <img id="file-preview-img" alt="预览" hidden>
-      </div>
-    </div>
-  </div>
 
   <div id="confirm-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" tabindex="-1" hidden>
     <div class="modal-backdrop" data-close="confirm-modal"></div>
