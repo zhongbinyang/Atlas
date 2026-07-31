@@ -20,6 +20,7 @@
         <button type="button" class="tab" data-page="general">通用</button>
         <button type="button" class="tab" data-page="api">API</button>
         <button type="button" class="tab" data-page="sequence">序列</button>
+        <button type="button" class="tab" data-page="settings">配置</button>
       </nav>
     </div>
     <div class="topbar-right">
@@ -221,7 +222,7 @@
               </label>
               <label class="lv-path-label">
                 <span class="label">延迟 (ms)</span>
-                <input id="gen-delay-ms" type="number" min="0" step="1" class="lv-path-input mono" placeholder="例如 1000" value="1000">
+                <input id="gen-delay-ms" type="text" class="lv-path-input mono" placeholder="例如 1000 或 /DELAY_MS" value="1000">
               </label>
             </div>
             <div class="lv-actions">
@@ -380,6 +381,78 @@
           </div>
         </div>
       </details>
+    </div>
+
+    <div id="page-settings" hidden>
+      <section class="settings-panel">
+        <div class="settings-toolbar">
+          <div class="settings-toolbar-left">
+            <h2>机台配置</h2>
+            <span id="settings-sync-status" class="settings-sync-status is-synced" aria-live="polite">已同步</span>
+          </div>
+          <div class="settings-toolbar-right">
+            <button type="button" id="settings-restore-units-btn" class="btn-sm">恢复默认单位</button>
+            <button type="button" id="settings-save-btn" class="btn-primary">保存</button>
+          </div>
+        </div>
+        <p id="settings-msg" class="msg" hidden></p>
+        <details class="settings-help">
+          <summary>使用说明</summary>
+          <ul>
+            <li>单位与变量按<strong>本机台</strong>保存在中心；改完后需点<strong>保存</strong>。</li>
+            <li>Spec 的 unit 下拉来自单位表；说明仅展示，不参与判定。</li>
+            <li>入参 / Spec / Delay / REST 等处输入 <code class="mono">/</code> 可选变量，例如 <code class="mono">/Hostname</code>、<code class="mono">{"sn":"/Lot"}</code>。</li>
+            <li><code class="mono">Hostname</code>、<code class="mono">IP</code> 为系统变量，值随本机刷新。</li>
+          </ul>
+        </details>
+
+        <div class="settings-grid">
+          <section class="settings-card" id="settings-units-card">
+            <div class="settings-card-head">
+              <div class="settings-card-title">
+                <h3>单位</h3>
+                <span id="settings-units-count" class="settings-count">0</span>
+              </div>
+              <button type="button" id="settings-unit-add-btn" class="btn-sm">+ 添加</button>
+            </div>
+            <div class="settings-table-scroll">
+              <table class="settings-table">
+                <thead>
+                  <tr>
+                    <th class="settings-col-symbol">单位</th>
+                    <th class="settings-col-desc">说明</th>
+                    <th class="settings-col-actions"></th>
+                  </tr>
+                </thead>
+                <tbody id="settings-units-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="settings-card" id="settings-vars-card">
+            <div class="settings-card-head">
+              <div class="settings-card-title">
+                <h3>变量</h3>
+                <span id="settings-vars-count" class="settings-count">0</span>
+              </div>
+              <button type="button" id="settings-var-add-btn" class="btn-sm">+ 添加</button>
+            </div>
+            <div class="settings-table-scroll">
+              <table class="settings-table">
+                <thead>
+                  <tr>
+                    <th class="settings-col-name">名称</th>
+                    <th class="settings-col-value">值</th>
+                    <th class="settings-col-desc">说明</th>
+                    <th class="settings-col-actions"></th>
+                  </tr>
+                </thead>
+                <tbody id="settings-vars-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
     </div>
 
     <div id="page-sequence" hidden>

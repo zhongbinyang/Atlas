@@ -1,5 +1,64 @@
 const POLL_MS = 2000;
 let lastAgentStatus = null;
+let agentSettings = { units: [], variables: [] };
+let varPickerEl = null;
+let varPickerTarget = null;
+let varPickerIndex = 0;
+let varPickerNames = [];
+
+const DEFAULT_UNIT_DESCRIPTIONS = {
+  dBm: '光功率，相对 1 mW',
+  dB: '相对量（消光比、回损、增益等）',
+  nm: '波长',
+  '°C': '温度（壳体/环境）',
+  V: '电压（供电/监测）',
+  mA: '电流（偏置、功耗）',
+  mW: '光功率（毫瓦）',
+  'µW': '光功率（微瓦）',
+  Gbps: '线速率 / 比特率',
+  ps: '时间或抖动（皮秒）',
+  UI: 'Unit Interval（归一化抖动）',
+  '%': '百分比',
+};
+
+const DEFAULT_VAR_DESCRIPTIONS = {
+  Hostname: '本机主机名；打开配置或展开时按本机刷新',
+  IP: '本机 IP；打开配置或展开时按本机刷新',
+};
+
+function normalizeSettingsUnit(u) {
+  if (typeof u === 'string') {
+    return {
+      symbol: u,
+      description: DEFAULT_UNIT_DESCRIPTIONS[u] || '',
+    };
+  }
+  const symbol = String((u && u.symbol) || '').trim();
+  let description = u && u.description != null ? String(u.description) : '';
+  if (!description && DEFAULT_UNIT_DESCRIPTIONS[symbol]) {
+    description = DEFAULT_UNIT_DESCRIPTIONS[symbol];
+  }
+  return { symbol: symbol, description: description };
+}
+
+function normalizeSettingsVar(v) {
+  const name = String((v && v.name) || '');
+  let description = v && v.description != null ? String(v.description) : '';
+  if (!description && DEFAULT_VAR_DESCRIPTIONS[name]) {
+    description = DEFAULT_VAR_DESCRIPTIONS[name];
+  }
+  return {
+    name: name,
+    value: v && v.value == null ? '' : String(v.value),
+    description: description,
+  };
+}
+
+function unitSymbols(list) {
+  return (list || []).map(function (u) {
+    return typeof u === 'string' ? u : (u && u.symbol) || '';
+  }).filter(Boolean);
+}
 
 async function fetchStatus() {
   const resp = await fetch('/api/status');
@@ -100,6 +159,832 @@ function formatBusyConflictMessage(data) {
   if (data && data.error) return String(data.error.message || data.error);
   return 'agent is busy';
 }
+
+let settingsDirty = false;
+let settingsBaseline = '';
+let settingsUndo = null;
+let settingsUndoTimer = null;
+
+function isSystemVarName(name) {
+  return name === 'Hostname' || name === 'IP';
+}
+
+function cloneSettingsData(data) {
+  return {
+    units: (data.units || []).map(function (u) {
+      return { symbol: u.symbol || '', description: u.description || '' };
+    }),
+    variables: (data.variables || []).map(function (v) {
+      return {
+        name: v.name || '',
+        value: v.value == null ? '' : String(v.value),
+        description: v.description || '',
+      };
+    }),
+  };
+}
+
+function settingsSnapshotKey(data) {
+  return JSON.stringify(cloneSettingsData(data));
+}
+
+function setSettingsSyncStatus(kind, text) {
+  const el = document.getElementById('settings-sync-status');
+  if (!el) return;
+  el.className = 'settings-sync-status ' + kind;
+  el.textContent = text;
+}
+
+function markSettingsDirty() {
+  settingsDirty = true;
+  setSettingsSyncStatus('is-dirty', '未保存');
+}
+
+function markSettingsSynced(extra) {
+  settingsDirty = false;
+  settingsBaseline = settingsSnapshotKey(agentSettings);
+  setSettingsSyncStatus('is-synced', extra || '已同步');
+}
+
+function updateSettingsCounts() {
+  const unitsCount = document.getElementById('settings-units-count');
+  const varsCount = document.getElementById('settings-vars-count');
+  if (unitsCount) unitsCount.textContent = String((agentSettings.units || []).length);
+  if (varsCount) varsCount.textContent = String((agentSettings.variables || []).length);
+}
+
+function showSettingsMsg(text, ok, undoAction) {
+  const msg = document.getElementById('settings-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+  msg.textContent = '';
+  msg.appendChild(document.createTextNode(text));
+  if (undoAction) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'settings-msg-undo';
+    btn.textContent = '撤销';
+    btn.addEventListener('click', function () {
+      undoAction();
+    });
+    msg.appendChild(btn);
+  }
+}
+
+function clearSettingsUndo() {
+  settingsUndo = null;
+  if (settingsUndoTimer) {
+    clearTimeout(settingsUndoTimer);
+    settingsUndoTimer = null;
+  }
+}
+
+function queueSettingsUndo(label, applyUndo) {
+  clearSettingsUndo();
+  settingsUndo = applyUndo;
+  showSettingsMsg(label, true, function () {
+    if (settingsUndo) settingsUndo();
+    clearSettingsUndo();
+    showSettingsMsg('已撤销', true);
+  });
+  settingsUndoTimer = setTimeout(function () {
+    clearSettingsUndo();
+  }, 8000);
+}
+
+async function fetchAgentSettings() {
+  const resp = await fetch('/api/settings');
+  const data = await resp.json().catch(function () { return {}; });
+  if (!resp.ok) {
+    const err = data.error && (data.error.message || data.error) || resp.status;
+    throw new Error(String(err));
+  }
+  agentSettings = {
+    units: Array.isArray(data.units) ? data.units.map(normalizeSettingsUnit).filter(function (u) { return u.symbol; }) : [],
+    variables: Array.isArray(data.variables) ? data.variables.map(normalizeSettingsVar) : [],
+  };
+  return agentSettings;
+}
+
+function bindSettingsDirty(el) {
+  if (!el) return;
+  el.addEventListener('input', markSettingsDirty);
+  el.addEventListener('change', markSettingsDirty);
+}
+
+function renderSettingsUnits() {
+  const tbody = document.getElementById('settings-units-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  updateSettingsCounts();
+  if (!agentSettings.units.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.className = 'settings-empty';
+    td.innerHTML = '<div>暂无单位</div>';
+    const actions = document.createElement('div');
+    actions.className = 'settings-empty-actions';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn-sm';
+    addBtn.textContent = '添加单位';
+    addBtn.addEventListener('click', addSettingsUnit);
+    const restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'btn-sm';
+    restoreBtn.textContent = '恢复光模块默认';
+    restoreBtn.addEventListener('click', restoreDefaultUnits);
+    actions.appendChild(addBtn);
+    actions.appendChild(restoreBtn);
+    td.appendChild(actions);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  agentSettings.units.forEach(function (unit, idx) {
+    const tr = document.createElement('tr');
+    const symTd = document.createElement('td');
+    const symInput = document.createElement('input');
+    symInput.type = 'text';
+    symInput.className = 'mono settings-unit-symbol';
+    symInput.maxLength = 32;
+    symInput.value = unit.symbol || '';
+    symInput.setAttribute('aria-label', '单位');
+    symInput.addEventListener('change', function () {
+      agentSettings.units[idx].symbol = symInput.value.trim();
+    });
+    bindSettingsDirty(symInput);
+    symTd.appendChild(symInput);
+
+    const descTd = document.createElement('td');
+    const descInput = document.createElement('input');
+    descInput.type = 'text';
+    descInput.className = 'settings-unit-desc';
+    descInput.maxLength = 200;
+    descInput.placeholder = '说明';
+    descInput.value = unit.description || '';
+    descInput.title = unit.description || '';
+    descInput.setAttribute('aria-label', '单位说明');
+    descInput.addEventListener('change', function () {
+      agentSettings.units[idx].description = descInput.value;
+      descInput.title = descInput.value;
+    });
+    bindSettingsDirty(descInput);
+    descTd.appendChild(descInput);
+
+    const rmTd = document.createElement('td');
+    rmTd.className = 'settings-col-actions';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn-sm';
+    rm.textContent = '删';
+    rm.addEventListener('click', function () {
+      deleteSettingsUnit(idx);
+    });
+    rmTd.appendChild(rm);
+
+    tr.appendChild(symTd);
+    tr.appendChild(descTd);
+    tr.appendChild(rmTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function appendSettingsSectionRow(tbody, label, colspan) {
+  const tr = document.createElement('tr');
+  tr.className = 'settings-section-row';
+  const td = document.createElement('td');
+  td.colSpan = colspan;
+  td.textContent = label;
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function renderSettingsVars() {
+  const tbody = document.getElementById('settings-vars-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  updateSettingsCounts();
+  if (!agentSettings.variables.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'settings-empty';
+    td.innerHTML = '<div>暂无变量</div>';
+    const actions = document.createElement('div');
+    actions.className = 'settings-empty-actions';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn-sm';
+    addBtn.textContent = '添加变量';
+    addBtn.addEventListener('click', addSettingsVar);
+    const seedBtn = document.createElement('button');
+    seedBtn.type = 'button';
+    seedBtn.className = 'btn-sm';
+    seedBtn.textContent = '添加 Hostname / IP';
+    seedBtn.addEventListener('click', seedSystemVariables);
+    actions.appendChild(addBtn);
+    actions.appendChild(seedBtn);
+    td.appendChild(actions);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  const systemIdx = [];
+  const customIdx = [];
+  agentSettings.variables.forEach(function (v, idx) {
+    if (isSystemVarName(v.name)) systemIdx.push(idx);
+    else customIdx.push(idx);
+  });
+
+  function renderVarRow(idx) {
+    const v = agentSettings.variables[idx];
+    const system = isSystemVarName(v.name);
+    const tr = document.createElement('tr');
+    if (system) tr.className = 'settings-row-system';
+
+    const nameTd = document.createElement('td');
+    if (system) {
+      const wrap = document.createElement('span');
+      wrap.className = 'mono settings-var-name';
+      wrap.textContent = v.name || '';
+      const tag = document.createElement('span');
+      tag.className = 'settings-system-tag';
+      tag.textContent = '系统';
+      nameTd.appendChild(wrap);
+      nameTd.appendChild(tag);
+      const hidden = document.createElement('input');
+      hidden.type = 'hidden';
+      hidden.className = 'settings-var-name';
+      hidden.value = v.name || '';
+      nameTd.appendChild(hidden);
+    } else {
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'mono settings-var-name';
+      nameInput.value = v.name || '';
+      nameInput.setAttribute('aria-label', '变量名');
+      nameInput.addEventListener('change', function () {
+        agentSettings.variables[idx].name = nameInput.value.trim();
+      });
+      bindSettingsDirty(nameInput);
+      nameTd.appendChild(nameInput);
+    }
+
+    const valTd = document.createElement('td');
+    const valInput = document.createElement('input');
+    valInput.type = 'text';
+    valInput.className = 'mono settings-var-value';
+    valInput.value = v.value == null ? '' : String(v.value);
+    valInput.setAttribute('aria-label', '变量值');
+    if (system) {
+      valInput.readOnly = true;
+      valInput.title = '系统变量，随本机自动刷新';
+    } else {
+      valInput.addEventListener('change', function () {
+        agentSettings.variables[idx].value = valInput.value;
+      });
+      bindSettingsDirty(valInput);
+    }
+    valTd.appendChild(valInput);
+
+    const descTd = document.createElement('td');
+    const descInput = document.createElement('input');
+    descInput.type = 'text';
+    descInput.className = 'settings-var-desc';
+    descInput.maxLength = 200;
+    descInput.placeholder = '说明';
+    descInput.value = v.description || '';
+    descInput.title = v.description || '';
+    descInput.setAttribute('aria-label', '变量说明');
+    descInput.addEventListener('change', function () {
+      agentSettings.variables[idx].description = descInput.value;
+      descInput.title = descInput.value;
+    });
+    bindSettingsDirty(descInput);
+    descTd.appendChild(descInput);
+
+    const rmTd = document.createElement('td');
+    rmTd.className = 'settings-col-actions';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn-sm';
+    rm.textContent = '删';
+    rm.addEventListener('click', function () {
+      deleteSettingsVar(idx);
+    });
+    rmTd.appendChild(rm);
+
+    tr.appendChild(nameTd);
+    tr.appendChild(valTd);
+    tr.appendChild(descTd);
+    tr.appendChild(rmTd);
+    tbody.appendChild(tr);
+  }
+
+  if (systemIdx.length) {
+    appendSettingsSectionRow(tbody, '系统', 4);
+    systemIdx.forEach(renderVarRow);
+  }
+  if (customIdx.length) {
+    appendSettingsSectionRow(tbody, '自定义', 4);
+    customIdx.forEach(renderVarRow);
+  } else if (systemIdx.length) {
+    appendSettingsSectionRow(tbody, '自定义', 4);
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'settings-empty';
+    td.textContent = '尚无自定义变量，可点右上角「+ 添加」';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+}
+
+function deleteSettingsUnit(idx) {
+  const removed = agentSettings.units[idx];
+  if (!removed) return;
+  if (!window.confirm('删除单位「' + (removed.symbol || '') + '」？')) return;
+  agentSettings.units.splice(idx, 1);
+  markSettingsDirty();
+  renderSettingsUnits();
+  queueSettingsUndo('已删除单位 ' + (removed.symbol || ''), function () {
+    agentSettings.units.splice(idx, 0, removed);
+    markSettingsDirty();
+    renderSettingsUnits();
+  });
+}
+
+function deleteSettingsVar(idx) {
+  const removed = agentSettings.variables[idx];
+  if (!removed) return;
+  const label = removed.name || '（未命名）';
+  const tip = isSystemVarName(removed.name)
+    ? '删除系统变量「' + label + '」？之后可用「添加 Hostname / IP」恢复。'
+    : '删除变量「' + label + '」？';
+  if (!window.confirm(tip)) return;
+  agentSettings.variables.splice(idx, 1);
+  markSettingsDirty();
+  renderSettingsVars();
+  queueSettingsUndo('已删除变量 ' + label, function () {
+    agentSettings.variables.splice(idx, 0, removed);
+    markSettingsDirty();
+    renderSettingsVars();
+  });
+}
+
+function defaultOpticalUnits() {
+  return Object.keys(DEFAULT_UNIT_DESCRIPTIONS).map(function (symbol) {
+    return { symbol: symbol, description: DEFAULT_UNIT_DESCRIPTIONS[symbol] };
+  });
+}
+
+function restoreDefaultUnits() {
+  if (!window.confirm('用光模块常用单位覆盖当前单位列表？自定义单位将被替换。')) return;
+  const prev = cloneSettingsData(agentSettings).units;
+  agentSettings.units = defaultOpticalUnits();
+  markSettingsDirty();
+  renderSettingsUnits();
+  queueSettingsUndo('已恢复默认单位', function () {
+    agentSettings.units = prev;
+    markSettingsDirty();
+    renderSettingsUnits();
+  });
+}
+
+function seedSystemVariables() {
+  const host = (lastAgentStatus && lastAgentStatus.hostname) || '';
+  const ip = (lastAgentStatus && lastAgentStatus.ip) || '';
+  ['Hostname', 'IP'].forEach(function (name) {
+    const exists = agentSettings.variables.some(function (v) { return v.name === name; });
+    if (exists) return;
+    agentSettings.variables.unshift({
+      name: name,
+      value: name === 'Hostname' ? host : ip,
+      description: DEFAULT_VAR_DESCRIPTIONS[name] || '',
+    });
+  });
+  markSettingsDirty();
+  renderSettingsVars();
+  showSettingsMsg('已添加系统变量 Hostname / IP', true);
+}
+
+async function loadAgentSettingsPage() {
+  try {
+    await fetchAgentSettings();
+    renderSettingsUnits();
+    renderSettingsVars();
+    markSettingsSynced('已同步');
+    showSettingsMsg(
+      '已加载：' + agentSettings.units.length + ' 个单位，' + agentSettings.variables.length + ' 个变量',
+      true
+    );
+  } catch (e) {
+    agentSettings = { units: [], variables: [] };
+    renderSettingsUnits();
+    renderSettingsVars();
+    settingsDirty = false;
+    setSettingsSyncStatus('is-error', '加载失败');
+    showSettingsMsg('加载失败: ' + e.message, false);
+  }
+}
+
+function addSettingsUnit() {
+  agentSettings.units.push({ symbol: '', description: '' });
+  markSettingsDirty();
+  renderSettingsUnits();
+  const inputs = document.querySelectorAll('#settings-units-body .settings-unit-symbol');
+  if (inputs.length) {
+    const last = inputs[inputs.length - 1];
+    last.focus();
+    const scroll = document.querySelector('#settings-units-card .settings-table-scroll');
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }
+}
+
+function addSettingsVar() {
+  agentSettings.variables.push({ name: '', value: '', description: '' });
+  markSettingsDirty();
+  renderSettingsVars();
+  const names = document.querySelectorAll('#settings-vars-body input.settings-var-name:not([type="hidden"])');
+  if (names.length) {
+    names[names.length - 1].focus();
+    const scroll = document.querySelector('#settings-vars-card .settings-table-scroll');
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }
+}
+
+function collectSettingsFromDom() {
+  const units = [];
+  document.querySelectorAll('#settings-units-body tr').forEach(function (tr) {
+    const symEl = tr.querySelector('.settings-unit-symbol');
+    const descEl = tr.querySelector('.settings-unit-desc');
+    if (!symEl) return;
+    const symbol = symEl.value.trim();
+    if (!symbol) return;
+    units.push({
+      symbol: symbol,
+      description: descEl ? descEl.value.trim() : '',
+    });
+  });
+  const variables = [];
+  document.querySelectorAll('#settings-vars-body tr').forEach(function (tr) {
+    if (tr.classList.contains('settings-section-row')) return;
+    const nameEl = tr.querySelector('.settings-var-name');
+    const valEl = tr.querySelector('.settings-var-value');
+    const descEl = tr.querySelector('.settings-var-desc');
+    if (!nameEl) return;
+    const name = nameEl.value.trim();
+    if (!name) return;
+    variables.push({
+      name: name,
+      value: valEl ? valEl.value : '',
+      description: descEl ? descEl.value.trim() : '',
+    });
+  });
+  return { units: units, variables: variables };
+}
+
+function validateSettingsPayload(payload) {
+  const nameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const seenUnits = {};
+  for (let i = 0; i < payload.units.length; i++) {
+    const symbol = payload.units[i].symbol;
+    if (symbol.length > 32) return '单位过长: ' + symbol;
+    if ((payload.units[i].description || '').length > 200) return '单位说明过长: ' + symbol;
+    if (seenUnits[symbol]) return '重复单位: ' + symbol;
+    seenUnits[symbol] = true;
+  }
+  const seen = {};
+  for (let i = 0; i < payload.variables.length; i++) {
+    const name = payload.variables[i].name;
+    if (!nameRe.test(name)) return '非法变量名: ' + name;
+    if ((payload.variables[i].description || '').length > 200) return '变量说明过长: ' + name;
+    if (seen[name]) return '重复变量: ' + name;
+    seen[name] = true;
+  }
+  return null;
+}
+
+async function saveAgentSettings() {
+  const payload = collectSettingsFromDom();
+  const err = validateSettingsPayload(payload);
+  if (err) {
+    setSettingsSyncStatus('is-error', '校验失败');
+    showSettingsMsg(err, false);
+    return;
+  }
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      const msg = data.error && (data.error.message || data.error) || resp.status;
+      setSettingsSyncStatus('is-error', '同步失败');
+      showSettingsMsg('保存失败: ' + msg, false);
+      return;
+    }
+    agentSettings = {
+      units: Array.isArray(data.units) ? data.units.map(normalizeSettingsUnit) : payload.units,
+      variables: Array.isArray(data.variables) ? data.variables.map(normalizeSettingsVar) : payload.variables,
+    };
+    clearSettingsUndo();
+    renderSettingsUnits();
+    renderSettingsVars();
+    markSettingsSynced('已同步');
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    showSettingsMsg(
+      '已保存到中心 · ' + agentSettings.units.length + ' 单位 / ' +
+        agentSettings.variables.length + ' 变量 · ' + hh + ':' + mm + ':' + ss,
+      true
+    );
+  } catch (e) {
+    setSettingsSyncStatus('is-error', '同步失败');
+    showSettingsMsg('保存失败: ' + e.message, false);
+  }
+}
+
+
+function hideVarPicker() {
+  if (varPickerEl) varPickerEl.hidden = true;
+  varPickerTarget = null;
+  varPickerIndex = 0;
+  varPickerNames = [];
+}
+
+function ensureVarPicker() {
+  if (varPickerEl) return varPickerEl;
+  varPickerEl = document.createElement('ul');
+  varPickerEl.className = 'var-picker';
+  varPickerEl.id = 'var-picker';
+  varPickerEl.hidden = true;
+  varPickerEl.setAttribute('role', 'listbox');
+  document.body.appendChild(varPickerEl);
+  return varPickerEl;
+}
+
+function insertAtCaret(el, text) {
+  const start = el.selectionStart != null ? el.selectionStart : el.value.length;
+  const end = el.selectionEnd != null ? el.selectionEnd : start;
+  const before = el.value.slice(0, start);
+  const after = el.value.slice(end);
+  el.value = before + text + after;
+  const pos = start + text.length;
+  if (el.setSelectionRange) el.setSelectionRange(pos, pos);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** Mirror-div caret coordinates relative to the viewport. */
+function getCaretViewportPoint(el, position) {
+  const rect = el.getBoundingClientRect();
+  if (position == null) position = el.selectionStart != null ? el.selectionStart : 0;
+  const style = window.getComputedStyle(el);
+  const isInput = el.tagName === 'INPUT';
+
+  if (isInput) {
+    const mirror = document.createElement('div');
+    mirror.style.cssText = [
+      'position:absolute',
+      'visibility:hidden',
+      'white-space:pre',
+      'top:0',
+      'left:0',
+      'pointer-events:none',
+    ].join(';');
+    [
+      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing',
+      'textTransform', 'wordSpacing', 'textIndent', 'paddingLeft', 'borderLeftWidth',
+    ].forEach(function (prop) {
+      mirror.style[prop] = style[prop];
+    });
+    const text = (el.value || '').slice(0, position).replace(/ /g, '\u00a0');
+    mirror.textContent = text;
+    const marker = document.createElement('span');
+    marker.textContent = '|';
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const xIn = markerRect.left - mirrorRect.left;
+    document.body.removeChild(mirror);
+    const scrollLeft = el.scrollLeft || 0;
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+    const paddingTop = parseFloat(style.paddingTop) || 0;
+    const borderTop = parseFloat(style.borderTopWidth) || 0;
+    return {
+      left: rect.left + borderLeft + paddingLeft + xIn - scrollLeft,
+      top: rect.top + borderTop + paddingTop,
+      height: lineHeight,
+    };
+  }
+
+  const div = document.createElement('div');
+  const props = [
+    'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+    'borderStyle', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
+    'fontSizeAdjust', 'lineHeight', 'fontFamily', 'textAlign', 'textTransform',
+    'textIndent', 'textDecoration', 'letterSpacing', 'wordSpacing',
+    'tabSize', 'MozTabSize', 'whiteSpace', 'wordWrap', 'wordBreak',
+  ];
+  div.style.position = 'absolute';
+  div.style.visibility = 'hidden';
+  div.style.whiteSpace = 'pre-wrap';
+  div.style.wordWrap = 'break-word';
+  div.style.top = '0';
+  div.style.left = '-9999px';
+  props.forEach(function (prop) {
+    div.style[prop] = style[prop];
+  });
+  div.style.overflow = 'hidden';
+  div.style.width = el.clientWidth + 'px';
+  const value = el.value || '';
+  div.textContent = value.slice(0, position);
+  const span = document.createElement('span');
+  span.textContent = value.slice(position) || '.';
+  div.appendChild(span);
+  document.body.appendChild(div);
+  const coordinates = {
+    left: rect.left - el.scrollLeft + span.offsetLeft,
+    top: rect.top - el.scrollTop + span.offsetTop,
+    height: parseFloat(style.lineHeight) || span.offsetHeight || parseFloat(style.fontSize) * 1.2,
+  };
+  document.body.removeChild(div);
+  return coordinates;
+}
+
+function positionVarPicker(el) {
+  const picker = ensureVarPicker();
+  const caret = el.selectionStart != null ? el.selectionStart : (el.value || '').length;
+  const point = getCaretViewportPoint(el, caret);
+  picker.style.visibility = 'hidden';
+  picker.hidden = false;
+  const pw = picker.offsetWidth || 240;
+  const ph = picker.offsetHeight || 160;
+  let left = window.scrollX + point.left;
+  let top = window.scrollY + point.top + point.height + 4;
+  const maxLeft = window.scrollX + window.innerWidth - pw - 8;
+  const maxTop = window.scrollY + window.innerHeight - ph - 8;
+  if (left > maxLeft) left = Math.max(window.scrollX + 8, maxLeft);
+  if (left < window.scrollX + 8) left = window.scrollX + 8;
+  if (top > maxTop) {
+    top = window.scrollY + point.top - ph - 4;
+  }
+  if (top < window.scrollY + 8) top = window.scrollY + 8;
+  picker.style.left = left + 'px';
+  picker.style.top = top + 'px';
+  picker.style.visibility = '';
+}
+
+function applyVarPickerSelection() {
+  if (!varPickerEl) return;
+  const buttons = varPickerEl.querySelectorAll('button');
+  buttons.forEach(function (btn, i) {
+    const selected = i === varPickerIndex;
+    btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    if (selected) {
+      btn.scrollIntoView({ block: 'nearest' });
+    }
+  });
+}
+
+function acceptVarPickerItem(el, name) {
+  if (!el || !name) return;
+  const val = el.value || '';
+  const caret = el.selectionStart != null ? el.selectionStart : val.length;
+  let start = caret;
+  while (start > 0 && /[A-Za-z0-9_]/.test(val.charAt(start - 1))) start -= 1;
+  if (start > 0 && val.charAt(start - 1) === '/') start -= 1;
+  el.value = val.slice(0, start) + '/' + name + val.slice(caret);
+  const pos = start + 1 + name.length;
+  if (el.setSelectionRange) el.setSelectionRange(pos, pos);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  hideVarPicker();
+  el.focus();
+}
+
+function showVarPicker(el, filterPrefix) {
+  const picker = ensureVarPicker();
+  const vars = (agentSettings.variables || [])
+    .filter(function (v) { return v && v.name; })
+    .filter(function (v) {
+      return !filterPrefix || v.name.toLowerCase().indexOf(filterPrefix.toLowerCase()) === 0;
+    });
+  picker.innerHTML = '';
+  varPickerNames = vars.map(function (v) { return v.name; });
+  if (!vars.length) {
+    hideVarPicker();
+    return;
+  }
+  if (varPickerIndex >= vars.length) varPickerIndex = 0;
+  vars.forEach(function (v, i) {
+    const name = v.name;
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('aria-selected', i === varPickerIndex ? 'true' : 'false');
+    btn.textContent = v.description
+      ? ('/' + name + ' — ' + v.description)
+      : ('/' + name);
+    btn.addEventListener('mousedown', function (ev) {
+      ev.preventDefault();
+      acceptVarPickerItem(el, name);
+    });
+    li.appendChild(btn);
+    picker.appendChild(li);
+  });
+  varPickerTarget = el;
+  positionVarPicker(el);
+  applyVarPickerSelection();
+}
+
+function isVarPickerOpenFor(el) {
+  return varPickerEl && !varPickerEl.hidden && varPickerTarget === el && varPickerNames.length > 0;
+}
+
+function attachVarPicker(el) {
+  if (!el || el.dataset.varPicker === '1') return;
+  el.dataset.varPicker = '1';
+  el.addEventListener('input', function () {
+    const caret = el.selectionStart != null ? el.selectionStart : el.value.length;
+    const before = el.value.slice(0, caret);
+    const m = before.match(/\/([A-Za-z_][A-Za-z0-9_]*)?$/);
+    if (m) {
+      if (!isVarPickerOpenFor(el)) varPickerIndex = 0;
+      showVarPicker(el, m[1] || '');
+    } else {
+      if (varPickerTarget === el) hideVarPicker();
+    }
+  });
+  el.addEventListener('keydown', function (ev) {
+    if (!isVarPickerOpenFor(el)) {
+      if (ev.key === 'Escape') hideVarPicker();
+      return;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      varPickerIndex = (varPickerIndex + 1) % varPickerNames.length;
+      applyVarPickerSelection();
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      varPickerIndex = (varPickerIndex - 1 + varPickerNames.length) % varPickerNames.length;
+      applyVarPickerSelection();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault();
+      acceptVarPickerItem(el, varPickerNames[varPickerIndex]);
+      return;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      hideVarPicker();
+    }
+  });
+  el.addEventListener('keyup', function () {
+    if (isVarPickerOpenFor(el)) positionVarPicker(el);
+  });
+  el.addEventListener('click', function () {
+    if (isVarPickerOpenFor(el)) positionVarPicker(el);
+  });
+  el.addEventListener('blur', function () {
+    setTimeout(function () {
+      if (varPickerTarget === el) hideVarPicker();
+    }, 150);
+  });
+}
+
+function attachVarPickersIn(root) {
+  if (!root) return;
+  root.querySelectorAll('input.lv-value, textarea.lv-value, input.seq-input-edit, textarea.seq-input-edit, .spec-min, .spec-max, #gen-delay-ms, #api-url, #api-headers, #api-body, #api-headers-kv-body input').forEach(attachVarPicker);
+}
+
+async function ensureAgentSettingsLoaded() {
+  if (agentSettings && (agentSettings.units.length || agentSettings.variables.length)) return;
+  try {
+    await fetchAgentSettings();
+  } catch (e) {
+    /* keep empty */
+  }
+}
+
 
 function formatUptime(secs) {
   const h = Math.floor(secs / 3600);
@@ -319,6 +1204,7 @@ function renderInputsTable(inputs, emptyText) {
       '<td>' + valueCell + '</td>';
     tbody.appendChild(row);
   }
+  attachVarPickersIn(tbody);
 }
 
 function collectInputsFromTable() {
@@ -863,10 +1749,16 @@ function showPage(page) {
   const general = document.getElementById('page-general');
   const apiPage = document.getElementById('page-api');
   const sequence = document.getElementById('page-sequence');
+  const settings = document.getElementById('page-settings');
+  const leavingSettings = settings && !settings.hidden && page !== 'settings';
+  if (leavingSettings && settingsDirty) {
+    if (!window.confirm('配置有未保存更改，确定离开？')) return;
+  }
   workbench.hidden = page !== 'workbench';
   if (general) general.hidden = page !== 'general';
   if (apiPage) apiPage.hidden = page !== 'api';
   sequence.hidden = page !== 'sequence';
+  if (settings) settings.hidden = page !== 'settings';
   document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
     btn.classList.toggle('active', btn.getAttribute('data-page') === page);
   });
@@ -878,6 +1770,13 @@ function showPage(page) {
     fetchGeneralTemplates();
   } else if (page === 'api') {
     fetchRestTemplates();
+  } else if (page === 'settings') {
+    if (settingsDirty) {
+      renderSettingsUnits();
+      renderSettingsVars();
+    } else {
+      loadAgentSettingsPage();
+    }
   }
 }
 
@@ -1042,19 +1941,63 @@ function renderSpecModalRows(limits, outputNames) {
     outCell.appendChild(select);
     outCell.appendChild(nameInput);
     const minInput = document.createElement('input');
-    minInput.type = 'number';
-    minInput.step = 'any';
+    minInput.type = 'text';
     minInput.className = 'spec-min mono';
+    minInput.placeholder = 'min 或 /Var';
     minInput.value = lim.min == null ? '' : String(lim.min);
+    attachVarPicker(minInput);
     const maxInput = document.createElement('input');
-    maxInput.type = 'number';
-    maxInput.step = 'any';
+    maxInput.type = 'text';
     maxInput.className = 'spec-max mono';
+    maxInput.placeholder = 'max 或 /Var';
     maxInput.value = lim.max == null ? '' : String(lim.max);
+    attachVarPicker(maxInput);
+    const unitWrap = document.createElement('div');
+    const unitSelect = document.createElement('select');
+    unitSelect.className = 'spec-unit-select';
+    const blankUnit = document.createElement('option');
+    blankUnit.value = '';
+    blankUnit.textContent = '（无）';
+    unitSelect.appendChild(blankUnit);
+    const units = (agentSettings.units || []).map(normalizeSettingsUnit).filter(function (u) { return u.symbol; });
+    const currentUnit = lim.unit || '';
+    if (currentUnit && unitSymbols(units).indexOf(currentUnit) < 0) {
+      units.unshift({ symbol: currentUnit, description: '' });
+    }
+    units.forEach(function (u) {
+      const opt = document.createElement('option');
+      opt.value = u.symbol;
+      opt.textContent = u.description ? (u.symbol + ' — ' + u.description) : u.symbol;
+      if (u.symbol === currentUnit) opt.selected = true;
+      unitSelect.appendChild(opt);
+    });
+    const customUnitOpt = document.createElement('option');
+    customUnitOpt.value = '__custom__';
+    customUnitOpt.textContent = '自定义…';
+    unitSelect.appendChild(customUnitOpt);
     const unitInput = document.createElement('input');
     unitInput.type = 'text';
     unitInput.className = 'spec-unit mono';
-    unitInput.value = lim.unit || '';
+    unitInput.placeholder = '单位';
+    unitInput.hidden = true;
+    if (currentUnit && unitSymbols(agentSettings.units || []).indexOf(currentUnit) < 0) {
+      unitSelect.value = '__custom__';
+      unitInput.hidden = false;
+      unitInput.value = currentUnit;
+    } else if (currentUnit) {
+      unitSelect.value = currentUnit;
+    }
+    unitSelect.addEventListener('change', function () {
+      if (unitSelect.value === '__custom__') {
+        unitInput.hidden = false;
+        unitInput.focus();
+      } else {
+        unitInput.hidden = true;
+        unitInput.value = unitSelect.value;
+      }
+    });
+    unitWrap.appendChild(unitSelect);
+    unitWrap.appendChild(unitInput);
     const rm = document.createElement('button');
     rm.type = 'button';
     rm.textContent = '删';
@@ -1065,10 +2008,19 @@ function renderSpecModalRows(limits, outputNames) {
     tr.appendChild(outCell);
     const tdMin = document.createElement('td'); tdMin.appendChild(minInput); tr.appendChild(tdMin);
     const tdMax = document.createElement('td'); tdMax.appendChild(maxInput); tr.appendChild(tdMax);
-    const tdUnit = document.createElement('td'); tdUnit.appendChild(unitInput); tr.appendChild(tdUnit);
+    const tdUnit = document.createElement('td'); tdUnit.appendChild(unitWrap); tr.appendChild(tdUnit);
     const tdRm = document.createElement('td'); tdRm.appendChild(rm); tr.appendChild(tdRm);
     tbody.appendChild(tr);
   }
+}
+
+function parseSpecBound(raw) {
+  const t = String(raw || '').trim();
+  if (t === '') return null;
+  if (t.indexOf('/') >= 0) return t;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return t;
+  return n;
 }
 
 function collectSpecModalLimits() {
@@ -1084,10 +2036,15 @@ function collectSpecModalLimits() {
     if (!name) continue;
     const minRaw = tr.querySelector('.spec-min').value.trim();
     const maxRaw = tr.querySelector('.spec-max').value.trim();
-    const unit = tr.querySelector('.spec-unit').value.trim();
+    const unitSelect = tr.querySelector('.spec-unit-select');
+    const unitCustom = tr.querySelector('.spec-unit');
+    let unit = '';
+    if (unitSelect && unitSelect.value === '__custom__') unit = (unitCustom && unitCustom.value || '').trim();
+    else if (unitSelect) unit = unitSelect.value.trim();
+    else if (unitCustom) unit = unitCustom.value.trim();
     const lim = { output: name, min: null, max: null };
-    if (minRaw !== '') lim.min = Number(minRaw);
-    if (maxRaw !== '') lim.max = Number(maxRaw);
+    lim.min = parseSpecBound(minRaw);
+    lim.max = parseSpecBound(maxRaw);
     if (unit) lim.unit = unit;
     out.push(lim);
   }
@@ -1105,8 +2062,10 @@ function openSpecEditor(index) {
   hint.textContent = names.length
     ? ('可选输出: ' + names.join(', '))
     : '该步骤尚未注册输出参数；可手动填写输出名，或重新注册模板后再设置 Spec。';
-  renderSpecModalRows(item.limits || [], names);
-  document.getElementById('spec-modal').hidden = false;
+  ensureAgentSettingsLoaded().then(function () {
+    renderSpecModalRows(item.limits || [], names);
+    document.getElementById('spec-modal').hidden = false;
+  });
 }
 
 function closeSpecModal() {
@@ -1622,6 +2581,7 @@ function openSeqInputsEditor(index) {
     }
   }
   modal.hidden = false;
+  attachVarPickersIn(body);
 }
 
 function collectSeqInputsModalValues() {
@@ -1763,19 +2723,6 @@ function handleSequenceResponse(data) {
   if (data.sn) {
     const snEl = document.getElementById('seq-sn');
     if (snEl) snEl.value = data.sn;
-  }
-  if (data.pause && data.pause.before_position != null) {
-    const idx = seqSelected.findIndex(function (item, i) {
-      const pos = item.position != null ? item.position : i;
-      return pos === data.pause.before_position;
-    });
-    if (idx >= 0) seqExpandedIndexes[idx] = true;
-  } else if (data.failed_at != null) {
-    const idx = seqSelected.findIndex(function (item, i) {
-      const pos = item.position != null ? item.position : i;
-      return pos === data.failed_at;
-    });
-    if (idx >= 0) seqExpandedIndexes[idx] = true;
   }
   renderSeqResults(data);
   renderSeqSelected();
@@ -1971,8 +2918,13 @@ function showGenCenterMsg(text, ok) {
 }
 
 async function runGeneralDelay() {
-  const ms = Number(document.getElementById('gen-delay-ms').value);
-  if (!Number.isFinite(ms) || ms < 0) {
+  const raw = String(document.getElementById('gen-delay-ms').value || '').trim();
+  if (!raw) {
+    showGenDelayMsg('请输入有效的延迟毫秒数', false);
+    return;
+  }
+  const delayPayload = raw.indexOf('/') >= 0 ? raw : Number(raw);
+  if (typeof delayPayload === 'number' && (!Number.isFinite(delayPayload) || delayPayload < 0)) {
     showGenDelayMsg('请输入有效的延迟毫秒数', false);
     return;
   }
@@ -1984,7 +2936,7 @@ async function runGeneralDelay() {
     const resp = await fetch('/api/general/delay/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ delay_ms: Math.round(ms) }),
+      body: JSON.stringify({ delay_ms: typeof delayPayload === 'number' ? Math.round(delayPayload) : delayPayload }),
     });
     const data = await resp.json();
     outEl.textContent = JSON.stringify(data, null, 2);
@@ -1993,7 +2945,7 @@ async function runGeneralDelay() {
       showGenDelayMsg('试跑失败: ' + err, false);
       return;
     }
-    showGenDelayMsg('试跑完成 (' + Math.round(ms) + ' ms)', true);
+    showGenDelayMsg('试跑完成', true);
   } catch (e) {
     outEl.textContent = e.message;
     showGenDelayMsg('试跑失败: ' + e.message, false);
@@ -2769,4 +3721,23 @@ const seqInputsCancelBtn = document.getElementById('seq-inputs-cancel-btn');
 const seqInputsSaveBtn = document.getElementById('seq-inputs-save-btn');
 if (seqInputsCancelBtn) seqInputsCancelBtn.addEventListener('click', closeSeqInputsModal);
 if (seqInputsSaveBtn) seqInputsSaveBtn.addEventListener('click', saveSeqInputsModal);
+
+const settingsSaveBtn = document.getElementById('settings-save-btn');
+const settingsUnitAddBtn = document.getElementById('settings-unit-add-btn');
+const settingsVarAddBtn = document.getElementById('settings-var-add-btn');
+const settingsRestoreUnitsBtn = document.getElementById('settings-restore-units-btn');
+if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', saveAgentSettings);
+if (settingsUnitAddBtn) settingsUnitAddBtn.addEventListener('click', addSettingsUnit);
+if (settingsVarAddBtn) settingsVarAddBtn.addEventListener('click', addSettingsVar);
+if (settingsRestoreUnitsBtn) settingsRestoreUnitsBtn.addEventListener('click', restoreDefaultUnits);
+window.addEventListener('beforeunload', function (ev) {
+  if (!settingsDirty) return;
+  ev.preventDefault();
+  ev.returnValue = '';
+});
+['gen-delay-ms', 'api-url', 'api-headers', 'api-body'].forEach(function (id) {
+  const el = document.getElementById(id);
+  if (el) attachVarPicker(el);
+});
+ensureAgentSettingsLoaded();
 setInterval(fetchStatus, POLL_MS);

@@ -659,6 +659,10 @@ pub fn router(state: AppState) -> Router {
             post(proxy_labview_inspect),
         )
         .route("/api/agents/{id}/labview/run", post(proxy_labview_run))
+        .route(
+            "/api/agents/{id}/settings",
+            get(get_agent_settings).put(put_agent_settings),
+        )
         .route("/api/screenshots/{id}", get(get_screenshot))
         .route("/api/screenshots/{id}/image", get(get_screenshot_image))
         .with_state(state)
@@ -738,6 +742,185 @@ async fn get_agent(State(s): State<AppState>, Path(id): Path<String>) -> impl In
             .into_response(),
         Err(e) => {
             tracing::error!("get agent: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentSettingsView {
+    #[serde(default, deserialize_with = "deserialize_units_flex")]
+    pub units: Vec<crate::store::AgentUnit>,
+    pub variables: Vec<crate::store::AgentVariable>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+fn deserialize_units_flex<'de, D>(
+    deserializer: D,
+) -> Result<Vec<crate::store::AgentUnit>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
+    let raw = serde_json::to_string(&value).unwrap_or_else(|_| "[]".into());
+    Ok(common::parse_units_json(&raw))
+}
+
+fn validate_agent_settings(
+    units: &[crate::store::AgentUnit],
+    variables: &[crate::store::AgentVariable],
+) -> Option<String> {
+    let mut seen_units = std::collections::HashSet::new();
+    for u in units {
+        let t = u.symbol.trim();
+        if t.is_empty() {
+            return Some("unit must not be empty".into());
+        }
+        if t.len() > 32 {
+            return Some("unit too long (max 32)".into());
+        }
+        if u.description.len() > 200 {
+            return Some(format!("unit description too long for {t} (max 200)"));
+        }
+        if !seen_units.insert(t.to_string()) {
+            return Some(format!("duplicate unit: {t}"));
+        }
+    }
+    if units.len() > 200 {
+        return Some("too many units (max 200)".into());
+    }
+    let mut seen_names = std::collections::HashSet::new();
+    for v in variables {
+        let name = v.name.trim();
+        if name.is_empty() {
+            return Some("variable name must not be empty".into());
+        }
+        if name.len() > 64 {
+            return Some("variable name too long (max 64)".into());
+        }
+        if v.description.len() > 200 {
+            return Some(format!("variable description too long for {name} (max 200)"));
+        }
+        if !name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| {
+                if i == 0 {
+                    c.is_ascii_alphabetic() || c == '_'
+                } else {
+                    c.is_ascii_alphanumeric() || c == '_'
+                }
+            })
+        {
+            return Some(format!("invalid variable name: {name}"));
+        }
+        if !seen_names.insert(name.to_string()) {
+            return Some(format!("duplicate variable: {name}"));
+        }
+    }
+    if variables.len() > 500 {
+        return Some("too many variables (max 500)".into());
+    }
+    None
+}
+
+async fn get_agent_settings(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for settings: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+    match s.store.get_agent_settings(&id).await {
+        Ok(settings) => (
+            StatusCode::OK,
+            Json(AgentSettingsView {
+                units: settings.units,
+                variables: settings.variables,
+                updated_at: settings.updated_at,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get agent settings: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn put_agent_settings(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AgentSettingsView>,
+) -> impl IntoResponse {
+    match s.store.get_agent(&id).await {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for settings put: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+    let units: Vec<crate::store::AgentUnit> = body
+        .units
+        .into_iter()
+        .map(|u| crate::store::AgentUnit {
+            symbol: u.symbol.trim().to_string(),
+            description: u.description.trim().to_string(),
+        })
+        .filter(|u| !u.symbol.is_empty())
+        .collect();
+    let variables: Vec<crate::store::AgentVariable> = body
+        .variables
+        .into_iter()
+        .map(|v| crate::store::AgentVariable {
+            name: v.name.trim().to_string(),
+            value: v.value,
+            description: v.description.trim().to_string(),
+        })
+        .filter(|v| !v.name.is_empty())
+        .collect();
+    if let Some(msg) = validate_agent_settings(&units, &variables) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody { error: msg }),
+        )
+            .into_response();
+    }
+    match s.store.upsert_agent_settings(&id, &units, &variables).await {
+        Ok(settings) => (
+            StatusCode::OK,
+            Json(AgentSettingsView {
+                units: settings.units,
+                variables: settings.variables,
+                updated_at: settings.updated_at,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("upsert agent settings: {e}");
             db_error().into_response()
         }
     }

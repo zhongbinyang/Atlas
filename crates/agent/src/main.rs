@@ -2,6 +2,7 @@ mod advertise;
 mod api;
 mod capture;
 mod config;
+mod expand;
 mod files;
 mod general;
 mod labview;
@@ -13,6 +14,7 @@ mod metrics;
 mod register;
 mod rest;
 mod sequence_session;
+mod settings_defaults;
 mod task_slot;
 mod web;
 

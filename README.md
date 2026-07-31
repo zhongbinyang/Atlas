@@ -89,7 +89,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 1. **Agent「序列」页**：左「**中心全部功能**」（可搜索名称/ID/机台，按 LabVIEW/通用筛选）→ 右「**执行顺序**」（同一模板可重复加入；支持拖拽与上下移动排序）。
 2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；步骤可引用 `vi_template_id` 或 `general_template_id`；每步可覆盖 **入参**（`inputs_json`）；增删改序 / 改元数据后自动 `PUT` 保存。
 3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`breakpoint`（执行**前**暂停）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec 上下限；API 字段名 `limits`，库表 `limits_json`）、`inputs`（步骤级入参覆盖）。
-4. **主表与详情**：主表列收窄为 `# / 启用 / 断点 / 名称 / 类型 / 结果 / 操作`；点「**详情**」展开编辑入参 / Spec / Fail 策略，并查看实测与原始返回 JSON。失败或断点暂停时自动展开对应步骤。
+4. **主表与详情**：主表列收窄为 `# / 启用 / 断点 / 名称 / 类型 / 结果 / 操作`；点「**详情**」展开编辑入参 / Spec / Fail 策略，并查看实测与原始返回 JSON。失败或断点暂停时**不**自动展开步骤（需手动点「详情」）。
 5. **按序执行**：`POST /api/labview/run-sequence` 可选 body `{ "sn", "work_order", "sequence_template_id" }`；Agent 串行执行已启用步骤，每步后按 limits 判定 Pass/Fail；某步 outputs 含 `SN`/`sn` 时更新本次运行的序列号（body 未填 SN 时亦可解析）。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 shell 任务共用 busy 槽，忙碌时返回 409。
 6. **断点续跑**：步骤设 `breakpoint` 时响应含 `pause`；`POST /api/labview/run-sequence/continue` 继续、`/abort` 中止（无活跃会话时 409）。WebUI **吸底运行栏** 提供 SN/工单、保存为模板、开始/继续/中止与总体结果。
 7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
@@ -100,7 +100,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 
 | 位置 | 路由 / 分区 | 说明 |
 |------|-------------|------|
-| Agent WebUI（`:26631`） | VI / **通用** / **序列** | VI 工作台；通用功能（试跑/注册）；序列混排 VI+通用，模板保存/加载 |
+| Agent WebUI（`:26631`） | VI / **通用** / **API** / **序列** / **配置** | VI 工作台；通用；REST；序列；本机台单位与变量 |
 | ATLAS 中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
 | ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览 + **截图** / **历史** / **文件** |
 | ATLAS 中心 WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**修改** / **删除** |

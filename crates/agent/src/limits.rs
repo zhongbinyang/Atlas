@@ -1,11 +1,16 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
+
+use crate::expand::expand_limit_number;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LimitRule {
     pub output: String,
-    pub min: Option<f64>,
-    pub max: Option<f64>,
+    #[serde(default)]
+    pub min: Option<Value>,
+    #[serde(default)]
+    pub max: Option<Value>,
     pub unit: Option<String>,
 }
 
@@ -18,12 +23,20 @@ pub enum StepJudge {
 }
 
 pub fn judge_limits(limits: &[LimitRule], outputs: &Value) -> StepJudge {
+    judge_limits_with_vars(limits, outputs, &HashMap::new())
+}
+
+pub fn judge_limits_with_vars(
+    limits: &[LimitRule],
+    outputs: &Value,
+    vars: &HashMap<String, String>,
+) -> StepJudge {
     if limits.is_empty() {
         return StepJudge::Ok;
     }
 
     for rule in limits {
-        match check_limit(rule, outputs) {
+        match check_limit(rule, outputs, vars) {
             StepJudge::Pass => {}
             other => return other,
         }
@@ -32,13 +45,26 @@ pub fn judge_limits(limits: &[LimitRule], outputs: &Value) -> StepJudge {
     StepJudge::Pass
 }
 
-fn check_limit(rule: &LimitRule, outputs: &Value) -> StepJudge {
+fn check_limit(
+    rule: &LimitRule,
+    outputs: &Value,
+    vars: &HashMap<String, String>,
+) -> StepJudge {
     let value = match lookup_number(outputs, &rule.output) {
         Ok(v) => v,
         Err(message) => return StepJudge::Error { message },
     };
 
-    if let Some(min) = rule.min {
+    let min = match expand_limit_number(rule.min.as_ref().unwrap_or(&Value::Null), vars) {
+        Ok(v) => v,
+        Err(message) => return StepJudge::Error { message },
+    };
+    let max = match expand_limit_number(rule.max.as_ref().unwrap_or(&Value::Null), vars) {
+        Ok(v) => v,
+        Err(message) => return StepJudge::Error { message },
+    };
+
+    if let Some(min) = min {
         if value < min {
             return StepJudge::Fail {
                 message: format!(
@@ -49,7 +75,7 @@ fn check_limit(rule: &LimitRule, outputs: &Value) -> StepJudge {
         }
     }
 
-    if let Some(max) = rule.max {
+    if let Some(max) = max {
         if value > max {
             return StepJudge::Fail {
                 message: format!(
@@ -141,8 +167,8 @@ mod tests {
     fn inclusive_pass() {
         let limits = vec![LimitRule {
             output: "Power_dBm".into(),
-            min: Some(-5.0),
-            max: Some(3.0),
+            min: Some(json!(-5.0)),
+            max: Some(json!(3.0)),
             unit: Some("dBm".into()),
         }];
         assert!(matches!(
@@ -159,8 +185,8 @@ mod tests {
     fn out_of_range_fail() {
         let limits = vec![LimitRule {
             output: "Power_dBm".into(),
-            min: Some(-5.0),
-            max: Some(3.0),
+            min: Some(json!(-5.0)),
+            max: Some(json!(3.0)),
             unit: None,
         }];
         assert!(matches!(
@@ -173,7 +199,7 @@ mod tests {
     fn missing_value_error() {
         let limits = vec![LimitRule {
             output: "Power_dBm".into(),
-            min: Some(-5.0),
+            min: Some(json!(-5.0)),
             max: None,
             unit: None,
         }];
@@ -188,7 +214,7 @@ mod tests {
         let limits = vec![LimitRule {
             output: "x".into(),
             min: None,
-            max: Some(10.0),
+            max: Some(json!(10.0)),
             unit: None,
         }];
         assert!(matches!(
@@ -213,8 +239,8 @@ mod tests {
     #[test]
     fn multi_limit_all_must_pass() {
         let limits = vec![
-            LimitRule { output: "a".into(), min: Some(0.0), max: Some(1.0), unit: None },
-            LimitRule { output: "b".into(), min: Some(0.0), max: Some(1.0), unit: None },
+            LimitRule { output: "a".into(), min: Some(json!(0.0)), max: Some(json!(1.0)), unit: None },
+            LimitRule { output: "b".into(), min: Some(json!(0.0)), max: Some(json!(1.0)), unit: None },
         ];
         assert!(matches!(
             judge_limits(&limits, &json!({"a": 0.5, "b": 2.0})),
@@ -246,8 +272,8 @@ mod tests {
         });
         let limits = vec![LimitRule {
             output: "sum".into(),
-            min: Some(0.0),
-            max: Some(100.0),
+            min: Some(json!(0.0)),
+            max: Some(json!(100.0)),
             unit: None,
         }];
         assert!(matches!(judge_limits(&limits, &body), StepJudge::Pass));

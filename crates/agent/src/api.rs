@@ -206,6 +206,7 @@ pub fn router(state: AppState) -> Router {
             "/api/labview/run-sequence/abort",
             post(labview_run_sequence_abort),
         )
+        .route("/api/settings", get(agent_settings_get).put(agent_settings_put))
         .route("/api/general/delay/run", post(general_delay_run))
         .route(
             "/api/general/delay/register-template",
@@ -301,7 +302,7 @@ async fn labview_run(
         let (status, Json(body)) = labview_error_response(&e);
         return (status, Json(body)).into_response();
     }
-    let input_map = match inputs_to_map(req.inputs) {
+    let mut input_map = match inputs_to_map(req.inputs) {
         Ok(m) => m,
         Err(msg) => {
             return (
@@ -311,6 +312,25 @@ async fn labview_run(
                 .into_response();
         }
     };
+    let vars = load_settings_vars(&s).await;
+    let expanded = match crate::expand::expand_json_value(&Value::Object(input_map), &vars) {
+        Ok(Value::Object(m)) => m,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "expanded inputs must be object" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    input_map = expanded;
     let input_json = match serde_json::to_string(&Value::Object(input_map)) {
         Ok(s) => s,
         Err(e) => {
@@ -828,6 +848,66 @@ async fn resolve_agent_id_for_proxy(
     }
 }
 
+async fn load_settings_vars(s: &AppState) -> std::collections::HashMap<String, String> {
+    let Ok(agent_id) = crate::register::resolve_agent_id(
+        &s.http_client,
+        &s.center_url,
+        &s.hostname,
+        &s.ip,
+        s.port,
+    )
+    .await
+    else {
+        return crate::settings_defaults::variables_map_for_expand(
+            &crate::register::AgentSettingsPayload::default(),
+            &s.hostname,
+            &s.ip,
+        );
+    };
+    match crate::register::get_agent_settings(&s.http_client, &s.center_url, &agent_id).await {
+        Ok(settings) => {
+            crate::settings_defaults::variables_map_for_expand(&settings, &s.hostname, &s.ip)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load agent settings for expand");
+            crate::settings_defaults::variables_map_for_expand(
+                &crate::register::AgentSettingsPayload::default(),
+                &s.hostname,
+                &s.ip,
+            )
+        }
+    }
+}
+
+async fn agent_settings_get(State(s): State<AppState>) -> impl IntoResponse {
+    let agent_id = match resolve_agent_id_for_proxy(&s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::get_agent_settings(&s.http_client, &s.center_url, &agent_id).await {
+        Ok(body) => {
+            let body = crate::settings_defaults::enrich_settings(body, &s.hostname, &s.ip);
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn agent_settings_put(
+    State(s): State<AppState>,
+    Json(body): Json<crate::register::AgentSettingsPayload>,
+) -> impl IntoResponse {
+    let agent_id = match resolve_agent_id_for_proxy(&s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::put_agent_settings(&s.http_client, &s.center_url, &agent_id, &body).await
+    {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
 async fn labview_run_queue_get(State(s): State<AppState>) -> impl IntoResponse {
     match resolve_agent_id_for_proxy(&s).await {
         Ok(agent_id) => match crate::register::get_vi_run_queue(
@@ -953,7 +1033,7 @@ async fn sequence_template_load_to_agent(
 
 #[derive(Deserialize)]
 struct DelayRunRequest {
-    delay_ms: u64,
+    delay_ms: Value,
 }
 
 #[derive(Deserialize)]
@@ -962,15 +1042,43 @@ struct DelayRegisterRequest {
     delay_ms: u64,
 }
 
+fn resolve_delay_ms(raw: &Value, vars: &std::collections::HashMap<String, String>) -> Result<u64, String> {
+    match raw {
+        Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_f64().map(|f| f as u64))
+            .ok_or_else(|| "delay_ms must be a non-negative integer".into()),
+        Value::String(s) => {
+            let expanded = crate::expand::expand_str(s, vars).map_err(|e| e.to_string())?;
+            expanded
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| format!("delay_ms is not a number after expand: {expanded}"))
+        }
+        _ => Err("delay_ms must be number or string".into()),
+    }
+}
+
 async fn general_delay_run(
     State(s): State<AppState>,
     Json(req): Json<DelayRunRequest>,
 ) -> impl IntoResponse {
+    let vars = load_settings_vars(&s).await;
+    let delay_ms = match resolve_delay_ms(&req.delay_ms, &vars) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+                .into_response();
+        }
+    };
     if let Err("busy") = s.slot.try_acquire("delay").await {
         let snap = build_busy_snapshot(&s).await;
         return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
     }
-    let result = crate::general::run_delay_ms(req.delay_ms).await;
+    let result = crate::general::run_delay_ms(delay_ms).await;
     s.slot.release().await;
     (StatusCode::OK, Json(result)).into_response()
 }
@@ -1148,6 +1256,17 @@ async fn general_rest_run(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": e })),
+            )
+                .into_response();
+        }
+    };
+    let vars = load_settings_vars(&s).await;
+    let inputs = match crate::expand::expand_json_value(&inputs, &vars) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e.to_string() })),
             )
                 .into_response();
         }
@@ -1369,12 +1488,14 @@ async fn labview_run_sequence(
     let sequence_template_id = body
         .as_ref()
         .and_then(|Json(req)| req.sequence_template_id);
-    let run_opts = body
+    let mut run_opts = body
         .map(|Json(req)| SequenceRunOpts {
             sn: normalize_run_sequence_opt(req.sn.clone()),
             work_order: normalize_run_sequence_opt(req.work_order.clone()),
+            vars: Default::default(),
         })
         .unwrap_or_default();
+    run_opts.vars = load_settings_vars(&s).await;
 
     if let Err("busy") = s.slot.try_acquire("sequence").await {
         let snap = build_busy_snapshot(&s).await;
@@ -1503,6 +1624,7 @@ async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoRe
         SequenceRunOpts {
             sn: session.sn.clone(),
             work_order: session.work_order.clone(),
+            vars: load_settings_vars(&s).await,
         },
         session.steps_so_far,
         true,

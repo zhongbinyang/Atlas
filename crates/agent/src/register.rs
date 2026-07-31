@@ -62,6 +62,69 @@ pub async fn resolve_agent_id(
         .ok_or_else(|| "agent not found on center".into())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct AgentSettingsPayload {
+    #[serde(default, deserialize_with = "deserialize_units_flex")]
+    pub units: Vec<common::AgentUnit>,
+    #[serde(default)]
+    pub variables: Vec<common::AgentVariable>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+fn deserialize_units_flex<'de, D>(deserializer: D) -> Result<Vec<common::AgentUnit>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
+    let raw = serde_json::to_string(&value).unwrap_or_else(|_| "[]".into());
+    Ok(common::parse_units_json(&raw))
+}
+
+pub async fn get_agent_settings(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+) -> Result<AgentSettingsPayload, String> {
+    let url = format!(
+        "{}/api/agents/{}/settings",
+        center_url.trim_end_matches('/'),
+        agent_id
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("get settings failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+pub async fn put_agent_settings(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    body: &AgentSettingsPayload,
+) -> Result<AgentSettingsPayload, String> {
+    let url = format!(
+        "{}/api/agents/{}/settings",
+        center_url.trim_end_matches('/'),
+        agent_id
+    );
+    let resp = client
+        .put(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("put settings failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
 pub async fn patch_vi_template(
     client: &reqwest::Client,
     center_url: &str,

@@ -8,7 +8,7 @@ use crate::labview::{
     LabviewError, LabviewParam,
 };
 use crate::limits::{
-    extract_sn_from_outputs, judge_limits, parse_limits_json, LimitRule, StepJudge,
+    extract_sn_from_outputs, judge_limits_with_vars, parse_limits_json, LimitRule, StepJudge,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +70,8 @@ pub struct SequenceResponse {
 pub struct SequenceRunOpts {
     pub sn: Option<String>,
     pub work_order: Option<String>,
+    /// Variable map for `/Name` expansion (empty = no expansion).
+    pub vars: std::collections::HashMap<String, String>,
 }
 
 fn parse_limits_from_item(item: &Value) -> Result<Vec<LimitRule>, String> {
@@ -290,6 +292,7 @@ where
 {
     let mut stopped = false;
     let mut failed_at = None;
+    let vars = opts.vars.clone();
     let mut sn = opts.sn;
     let work_order = opts.work_order;
 
@@ -332,7 +335,7 @@ where
                     sn = Some(extracted);
                 }
 
-                let judge = judge_limits(&item.limits, &result);
+                let judge = judge_limits_with_vars(&item.limits, &result, &vars);
                 let mut status = judge_to_status(&judge);
                 // Builtin steps (e.g. REST expect_status) may return ok:false without limits.
                 if status_ok(&status) && result.get("ok") == Some(&Value::Bool(false)) {
@@ -414,6 +417,7 @@ where
         SequenceRunOpts {
             sn: None,
             work_order: None,
+            vars: Default::default(),
         },
         run_one,
     )
@@ -432,6 +436,7 @@ pub async fn run_sequence(
     let cli = cli.to_path_buf();
     let getinfo = getinfo.to_path_buf();
     let items = items.to_vec();
+    let vars = opts.vars.clone();
     run_sequence_from_with_opts(
         &items,
         start_index,
@@ -442,7 +447,8 @@ pub async fn run_sequence(
             let cli = cli.clone();
             let getinfo = getinfo.clone();
             let item = item.clone();
-            async move { run_one_step(&cli, &getinfo, &item).await }
+            let vars = vars.clone();
+            async move { run_one_step(&cli, &getinfo, &item, &vars).await }
         },
     )
     .await
@@ -452,19 +458,22 @@ async fn run_one_step(
     cli: &Path,
     getinfo: &Path,
     item: &QueueItemForRun,
+    vars: &std::collections::HashMap<String, String>,
 ) -> Result<Value, String> {
+    let inputs = crate::expand::expand_json_value(&item.inputs, vars).map_err(|e| e.to_string())?;
+
     if crate::general::is_delay_template(Some(item.kind.as_str()), &item.vi_path) {
-        let delay_ms = crate::general::delay_ms_from_inputs(&item.inputs)?;
+        let delay_ms = crate::general::delay_ms_from_inputs(&inputs)?;
         return Ok(crate::general::run_delay_ms(delay_ms).await);
     }
     if crate::rest::is_rest_template(Some(item.kind.as_str()), &item.vi_path) {
-        return crate::rest::run_request_from_inputs(&item.inputs).await;
+        return crate::rest::run_request_from_inputs(&inputs).await;
     }
 
     let vi = std::path::PathBuf::from(normalize_fs_path(&item.vi_path));
     ensure_vi(&vi).map_err(|e| error_message(&e))?;
 
-    let input_map = match &item.inputs {
+    let input_map = match &inputs {
         Value::Array(arr) => {
             let params: Vec<LabviewParam> = serde_json::from_value(Value::Array(arr.clone()))
                 .map_err(|e| format!("invalid inputs array: {e}"))?;
@@ -513,8 +522,8 @@ mod tests {
     fn sample_limit() -> LimitRule {
         LimitRule {
             output: "Power_dBm".into(),
-            min: Some(-5.0),
-            max: Some(3.0),
+            min: Some(serde_json::json!(-5.0)),
+            max: Some(serde_json::json!(3.0)),
             unit: None,
         }
     }
@@ -589,10 +598,7 @@ mod tests {
         let items = vec![sample_item(0, "a")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts {
-                sn: None,
-                work_order: None,
-            },
+            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), },
             |_item| async move { Ok(serde_json::json!({ "SN": "DUT1" })) },
         )
         .await;
@@ -606,10 +612,7 @@ mod tests {
         let items = vec![sample_item(0, "a"), sample_item(1, "b")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts {
-                sn: None,
-                work_order: None,
-            },
+            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), },
             |item| {
                 let name = item.name.clone();
                 async move { Ok(serde_json::json!({ "name": name })) }
@@ -752,10 +755,7 @@ mod tests {
         let resp2 = run_sequence_from_with_opts(
             &items,
             1,
-            SequenceRunOpts {
-                sn: resp1.sn.clone(),
-                work_order: resp1.work_order.clone(),
-            },
+            SequenceRunOpts { sn: resp1.sn.clone(), work_order: resp1.work_order.clone(), vars: Default::default(), },
             resp1.steps,
             true,
             |_item| {

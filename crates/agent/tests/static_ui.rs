@@ -120,6 +120,35 @@ fn machine_info_is_collapsed_in_topbar_before_register() {
 }
 
 #[test]
+fn settings_page_exposes_units_and_variables() {
+    assert!(
+        INDEX.contains("data-page=\"settings\"") && INDEX.contains("id=\"page-settings\""),
+        "配置 must be a top-level tab"
+    );
+    assert!(
+        INDEX.contains("id=\"settings-units-body\"")
+            && INDEX.contains("id=\"settings-vars-body\"")
+            && INDEX.contains("settings-col-desc")
+            && INDEX.contains("id=\"settings-save-btn\"")
+            && INDEX.contains("settings-grid")
+            && INDEX.contains("settings-toolbar")
+            && INDEX.contains("settings-help"),
+        "settings page needs dual-pane layout, toolbar, help, tables and save"
+    );
+    assert!(
+        APP.contains("loadAgentSettingsPage")
+            && APP.contains("attachVarPicker")
+            && APP.contains("getCaretViewportPoint")
+            && APP.contains("ArrowDown")
+            && APP.contains("settingsDirty")
+            && APP.contains("isSystemVarName")
+            && APP.contains("spec-unit-select")
+            && APP.contains("/api/settings"),
+        "settings UI must support dirty state, system vars, Spec unit + / picker"
+    );
+}
+
+#[test]
 fn api_page_exposes_rest_client_controls() {
     assert!(
         INDEX.contains("data-page=\"api\"") && INDEX.contains("id=\"page-api\""),

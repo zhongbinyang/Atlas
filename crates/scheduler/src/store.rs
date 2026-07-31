@@ -16,6 +16,37 @@ pub struct Agent {
     pub created_at: String,
 }
 
+pub use common::{AgentUnit, AgentVariable};
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentSettings {
+    pub units: Vec<AgentUnit>,
+    pub variables: Vec<AgentVariable>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentSettingsRow {
+    #[allow(dead_code)]
+    agent_id: String,
+    units_json: String,
+    variables_json: String,
+    updated_at: String,
+}
+
+impl AgentSettingsRow {
+    fn into_settings(self) -> AgentSettings {
+        let units = common::parse_units_json(&self.units_json);
+        let variables: Vec<AgentVariable> =
+            serde_json::from_str(&self.variables_json).unwrap_or_default();
+        AgentSettings {
+            units,
+            variables,
+            updated_at: Some(self.updated_at),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskTemplate {
     pub id: String,
@@ -335,6 +366,54 @@ impl Store {
 
     pub async fn mark_agent_offline(&self, id: &str) -> Result<(), sqlx::Error> {
         self.update_agent_status(id, "offline").await
+    }
+
+    pub async fn get_agent_settings(&self, agent_id: &str) -> Result<AgentSettings, sqlx::Error> {
+        let row = sqlx::query_as::<_, AgentSettingsRow>(
+            r#"
+            SELECT agent_id, units_json, variables_json, updated_at
+            FROM agent_settings
+            WHERE agent_id = $1
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .map(|r| r.into_settings())
+            .unwrap_or_else(|| AgentSettings {
+                units: common::default_agent_units(),
+                variables: common::default_agent_variables(),
+                updated_at: None,
+            }))
+    }
+
+    pub async fn upsert_agent_settings(
+        &self,
+        agent_id: &str,
+        units: &[AgentUnit],
+        variables: &[AgentVariable],
+    ) -> Result<AgentSettings, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let units_json = serde_json::to_string(units).unwrap_or_else(|_| "[]".into());
+        let variables_json = serde_json::to_string(variables).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            r#"
+            INSERT INTO agent_settings (agent_id, units_json, variables_json, updated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (agent_id) DO UPDATE SET
+              units_json = EXCLUDED.units_json,
+              variables_json = EXCLUDED.variables_json,
+              updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(agent_id)
+        .bind(&units_json)
+        .bind(&variables_json)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_agent_settings(agent_id).await
     }
 
     pub async fn create_template(
