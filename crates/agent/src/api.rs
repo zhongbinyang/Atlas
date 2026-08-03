@@ -19,7 +19,8 @@ use crate::labview::{
     LabviewError, LabviewParam,
 };
 use crate::channel_run::{
-    channel_specs_from_list, run_multi_channel, ChannelRunRequest, MultiChannelSequenceResponse,
+    channel_specs_from_list, channels_unavailable_fallback, run_multi_channel, ChannelRunRequest,
+    MultiChannelSequenceResponse,
 };
 use crate::labview_sequence::queue_items_for_run;
 use crate::metrics::MetricsSnapshot;
@@ -44,8 +45,43 @@ pub struct AppState {
     pub labview_getinfo: PathBuf,
     pub sequence_progress: Arc<SequenceProgressSlot>,
     pub resource_locks: Arc<ResourceLockManager>,
-    /// Active mid-run cancel sender; set while a multi-channel sequence is in flight.
-    pub sequence_cancel: Arc<tokio::sync::Mutex<Option<watch::Sender<bool>>>>,
+    /// Active mid-run cancel sender keyed by the slot generation of that run.
+    pub sequence_cancel: Arc<tokio::sync::Mutex<Option<ActiveSequenceCancel>>>,
+}
+
+/// Cancel handle for one multi-channel sequence session (generation-scoped).
+#[derive(Clone)]
+pub struct ActiveSequenceCancel {
+    pub generation: u64,
+    pub tx: watch::Sender<bool>,
+}
+
+/// Install cancel for `generation`, replacing any prior handle.
+async fn install_sequence_cancel(s: &AppState, generation: u64) -> watch::Receiver<bool> {
+    let (tx, rx) = watch::channel(false);
+    *s.sequence_cancel.lock().await = Some(ActiveSequenceCancel { generation, tx });
+    rx
+}
+
+/// Clear cancel only if it still belongs to `generation`.
+async fn clear_sequence_cancel_if(s: &AppState, generation: u64) {
+    let mut g = s.sequence_cancel.lock().await;
+    if g.as_ref().map(|c| c.generation) == Some(generation) {
+        *g = None;
+    }
+}
+
+/// Signal cancel for `generation` if it is still the active session.
+/// Returns true if a cancel signal was sent.
+async fn signal_sequence_cancel_if(s: &AppState, generation: u64) -> bool {
+    let g = s.sequence_cancel.lock().await;
+    if let Some(c) = g.as_ref() {
+        if c.generation == generation {
+            let _ = c.tx.send(true);
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Serialize, Deserialize)]
@@ -425,12 +461,15 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 }
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
-    let was_busy = s.slot.is_busy().await;
-    if let Some(tx) = s.sequence_cancel.lock().await.take() {
-        let _ = tx.send(true);
+    // Invalidate the active generation first so a finishing run cannot release a newer hold.
+    let released_gen = s.slot.force_release().await;
+    let was_busy = released_gen.is_some();
+    if let Some(gen) = released_gen {
+        // Cancel only the force-released generation (do not touch a newer run's cancel).
+        let _ = signal_sequence_cancel_if(&s, gen).await;
+        clear_sequence_cancel_if(&s, gen).await;
     }
     s.sequence_progress.clear().await;
-    s.slot.release().await;
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -1070,12 +1109,16 @@ async fn general_delay_run(
                 .into_response();
         }
     };
-    if let Err("busy") = s.slot.try_acquire("delay").await {
-        let snap = build_busy_snapshot(&s).await;
-        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
-    }
+    let slot_gen = match s.slot.try_acquire("delay").await {
+        Ok(g) => g,
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+        }
+        Err(_) => unreachable!(),
+    };
     let result = crate::general::run_delay_ms(delay_ms).await;
-    s.slot.release().await;
+    let _ = s.slot.release(slot_gen).await;
     (StatusCode::OK, Json(result)).into_response()
 }
 
@@ -1169,12 +1212,16 @@ struct VersionRegisterRequest {
 }
 
 async fn general_version_run(State(s): State<AppState>) -> impl IntoResponse {
-    if let Err("busy") = s.slot.try_acquire("version").await {
-        let snap = build_busy_snapshot(&s).await;
-        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
-    }
+    let slot_gen = match s.slot.try_acquire("version").await {
+        Ok(g) => g,
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+        }
+        Err(_) => unreachable!(),
+    };
     let result = crate::general::run_read_version();
-    s.slot.release().await;
+    let _ = s.slot.release(slot_gen).await;
     (StatusCode::OK, Json(result)).into_response()
 }
 
@@ -1375,12 +1422,16 @@ async fn general_rest_run(
         }
     };
 
-    if let Err("busy") = s.slot.try_acquire("rest").await {
-        let snap = build_busy_snapshot(&s).await;
-        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
-    }
+    let slot_gen = match s.slot.try_acquire("rest").await {
+        Ok(g) => g,
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+        }
+        Err(_) => unreachable!(),
+    };
     let result = crate::rest::run_request_from_inputs(&inputs).await;
-    s.slot.release().await;
+    let _ = s.slot.release(slot_gen).await;
     match result {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
         Err(e) => (
@@ -1606,15 +1657,19 @@ async fn labview_run_sequence(
     let channel_indexes = req.channel_indexes.clone();
     let base_vars = load_settings_vars(&s).await;
 
-    if let Err("busy") = s.slot.try_acquire("sequence").await {
-        let snap = build_busy_snapshot(&s).await;
-        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
-    }
+    let slot_gen = match s.slot.try_acquire("sequence").await {
+        Ok(g) => g,
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+        }
+        Err(_) => unreachable!(),
+    };
 
     let agent_id = match resolve_agent_id_for_proxy(&s).await {
         Ok(id) => id,
         Err(resp) => {
-            s.slot.release().await;
+            let _ = s.slot.release(slot_gen).await;
             return resp;
         }
     };
@@ -1628,7 +1683,7 @@ async fn labview_run_sequence(
     {
         Ok(v) => v,
         Err(e) => {
-            s.slot.release().await;
+            let _ = s.slot.release(slot_gen).await;
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorBody { error: e }),
@@ -1638,7 +1693,7 @@ async fn labview_run_sequence(
     };
 
     if !status.is_success() {
-        s.slot.release().await;
+        let _ = s.slot.release(slot_gen).await;
         let axum_status =
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         return (axum_status, Json(queue_body)).into_response();
@@ -1647,7 +1702,7 @@ async fn labview_run_sequence(
     let items = match queue_items_for_run(&queue_body) {
         Ok(v) => v,
         Err(msg) => {
-            s.slot.release().await;
+            let _ = s.slot.release(slot_gen).await;
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody { error: msg }),
@@ -1657,7 +1712,7 @@ async fn labview_run_sequence(
     };
 
     if items.is_empty() {
-        s.slot.release().await;
+        let _ = s.slot.release(slot_gen).await;
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
@@ -1668,6 +1723,7 @@ async fn labview_run_sequence(
     }
 
     // Load enabled channels (empty table → synthetic CH0 inside orchestrator).
+    // If channel_indexes was requested, load failure is hard (no silent CH0).
     let channels = match crate::register::get_agent_channels(
         &s.http_client,
         &s.center_url,
@@ -1682,7 +1738,7 @@ async fn labview_run_sequence(
             ) {
                 Ok(v) => {
                     if channel_indexes.is_some() && v.is_empty() {
-                        s.slot.release().await;
+                        let _ = s.slot.release(slot_gen).await;
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(ErrorBody {
@@ -1694,7 +1750,7 @@ async fn labview_run_sequence(
                     v
                 }
                 Err(msg) => {
-                    s.slot.release().await;
+                    let _ = s.slot.release(slot_gen).await;
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(ErrorBody { error: msg }),
@@ -1704,22 +1760,43 @@ async fn labview_run_sequence(
             }
         }
         Ok((ch_status, ch_body)) => {
-            // Soft-fail: treat missing channels endpoint as single synthetic channel.
-            tracing::warn!(
-                status = %ch_status,
-                body = %ch_body,
-                "failed to load channels; falling back to synthetic CH0"
-            );
-            Vec::new()
+            let reason = format!("status={ch_status} body={ch_body}");
+            match channels_unavailable_fallback(channel_indexes.as_deref(), &reason) {
+                Ok(v) => {
+                    tracing::warn!(
+                        status = %ch_status,
+                        body = %ch_body,
+                        "failed to load channels; falling back to synthetic CH0"
+                    );
+                    v
+                }
+                Err(msg) => {
+                    let _ = s.slot.release(slot_gen).await;
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorBody { error: msg }),
+                    )
+                        .into_response();
+                }
+            }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load channels; falling back to synthetic CH0");
-            Vec::new()
-        }
+        Err(e) => match channels_unavailable_fallback(channel_indexes.as_deref(), &e) {
+            Ok(v) => {
+                tracing::warn!(error = %e, "failed to load channels; falling back to synthetic CH0");
+                v
+            }
+            Err(msg) => {
+                let _ = s.slot.release(slot_gen).await;
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorBody { error: msg }),
+                )
+                    .into_response();
+            }
+        },
     };
 
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    *s.sequence_cancel.lock().await = Some(cancel_tx);
+    let cancel_rx = install_sequence_cancel(&s, slot_gen).await;
 
     let run_req = ChannelRunRequest {
         items: items.clone(),
@@ -1735,8 +1812,9 @@ async fn labview_run_sequence(
 
     let resp = run_multi_channel(&s.labview_cli, &s.labview_getinfo, run_req).await;
 
-    *s.sequence_cancel.lock().await = None;
-    s.slot.release().await;
+    // Only tear down cancel/slot if this run still owns the generation.
+    clear_sequence_cancel_if(&s, slot_gen).await;
+    let _ = s.slot.release(slot_gen).await;
     log_multi_channel_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
@@ -1758,7 +1836,7 @@ async fn labview_run_sequence_continue_gone() -> impl IntoResponse {
 async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
     let tx = {
         let guard = s.sequence_cancel.lock().await;
-        guard.clone()
+        guard.as_ref().map(|c| c.tx.clone())
     };
     match tx {
         Some(tx) => {
@@ -2490,5 +2568,141 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "no active sequence session");
+    }
+
+    #[tokio::test]
+    async fn stale_run_teardown_does_not_clear_newer_cancel_or_slot() {
+        let state = test_state();
+        let gen_a = state.slot.try_acquire("sequence").await.unwrap();
+        let rx_a = install_sequence_cancel(&state, gen_a).await;
+        assert!(!*rx_a.borrow());
+
+        // Force-release invalidates A's generation and cancels A only.
+        let app = router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/slot/force-release")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(*rx_a.borrow(), "force-release must cancel generation A");
+        assert!(!state.slot.is_busy().await);
+        assert!(state.sequence_cancel.lock().await.is_none());
+
+        // Newer run B installs its own cancel + slot hold.
+        let gen_b = state.slot.try_acquire("sequence").await.unwrap();
+        assert_ne!(gen_a, gen_b);
+        let rx_b = install_sequence_cancel(&state, gen_b).await;
+
+        // Stale finish of A must not wipe B.
+        clear_sequence_cancel_if(&state, gen_a).await;
+        assert!(!state.slot.release(gen_a).await);
+        assert!(state.slot.is_busy().await);
+        assert!(!*rx_b.borrow());
+        assert_eq!(
+            state
+                .sequence_cancel
+                .lock()
+                .await
+                .as_ref()
+                .map(|c| c.generation),
+            Some(gen_b)
+        );
+
+        // B can still abort and tear down itself.
+        assert!(signal_sequence_cancel_if(&state, gen_b).await);
+        assert!(*rx_b.borrow());
+        clear_sequence_cancel_if(&state, gen_b).await;
+        assert!(state.slot.release(gen_b).await);
+        assert!(state.sequence_cancel.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_with_channel_indexes_errors_when_channels_unavailable() {
+        let mock_server = wiremock::MockServer::start().await;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "agent-uuid-1",
+                "name": "test-host",
+                "ip": "127.0.0.1",
+                "port": 8080,
+                "status": "online",
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "busy": false,
+                "last_seen_at": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/run-queue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "id": "q0",
+                    "vi_template_id": "t0",
+                    "position": 0,
+                    "name": "step",
+                    "vi_path": "C:\\x\\Add.vi",
+                    "inputs": [],
+                    "show_front_panel": false,
+                    "timeout_secs": null
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/channels"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "boom"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Settings fetch used by load_settings_vars — return empty.
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "variables": [],
+                "units": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let app = router(state.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "channel_indexes": [0]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            err.error.contains("channel_indexes"),
+            "unexpected error: {}",
+            err.error
+        );
+        assert!(
+            !state.slot.is_busy().await,
+            "slot must be released after hard-fail"
+        );
     }
 }

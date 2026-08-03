@@ -234,6 +234,22 @@ where
     }
 }
 
+/// When Center channels cannot be loaded:
+/// - if `channel_indexes` was set → hard error (do not invent CH0)
+/// - otherwise → empty list (orchestrator synthesizes CH0)
+pub fn channels_unavailable_fallback(
+    channel_indexes: Option<&[usize]>,
+    reason: &str,
+) -> Result<Vec<ChannelSpec>, String> {
+    if channel_indexes.is_some() {
+        Err(format!(
+            "failed to load channels (required when channel_indexes is set): {reason}"
+        ))
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 /// Parse Center/Agent channels list JSON into enabled [`ChannelSpec`]s,
 /// optionally filtered by `channel_indexes`.
 pub fn channel_specs_from_list(
@@ -303,6 +319,19 @@ mod tests {
     fn empty_channels_list_parses_to_empty_specs() {
         let specs = channel_specs_from_list(&json!({"channels": []}), None).unwrap();
         assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn channels_unavailable_soft_fallback_without_indexes() {
+        let specs = channels_unavailable_fallback(None, "center down").unwrap();
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn channels_unavailable_hard_fails_when_indexes_requested() {
+        let err = channels_unavailable_fallback(Some(&[0, 2]), "center down").unwrap_err();
+        assert!(err.contains("channel_indexes"));
+        assert!(err.contains("center down"));
     }
 
     #[test]
