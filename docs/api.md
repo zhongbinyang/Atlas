@@ -268,9 +268,9 @@ sequenceDiagram
 
 ---
 
-## 0.10 序列：执行 / 进度 / 断点
+## 0.10 序列：执行 / 进度
 
-执行在 **Agent 本机**；队列快照来自中心 DB；断点会话与 busy 槽在 Agent 内存。
+执行在 **Agent 本机**；队列快照来自中心 DB；busy 槽在 Agent 内存。序列一次性跑完，不再支持断点暂停 / continue。
 
 ```mermaid
 sequenceDiagram
@@ -288,25 +288,16 @@ sequenceDiagram
 
   loop each enabled step
     AA->>AA: expand inputs limits
-    alt breakpoint before step
-      AA-->>AW: pause keep Slot Session
-    else run step
-      AA->>Step: LabVIEW CLI or delay or version or REST
-      Step-->>AA: outputs judge Spec
-    end
+    AA->>Step: LabVIEW CLI or delay or version or REST
+    Step-->>AA: outputs judge Spec
   end
 
   AW->>AA: GET /api/sequence/run/progress
   AA-->>AW: per step progress
 
-  opt paused
-    AW->>AA: POST /api/sequence/run/continue
-    AA->>Step: resume from next_index
-  end
-
   opt abort or force release
     AW->>AA: POST /api/sequence/run/abort
-    AA->>AA: clear Session release Slot
+    AA->>AA: release Slot
   end
 ```
 
@@ -446,7 +437,7 @@ Query：`agent_id?` · `kind?`
 | `collapsed` | 仅组头：UI 是否折叠组内步骤 |
 | `inputs` | 步骤入参覆盖；组头忽略 |
 | `enabled` | 默认 `true`；组头禁用则组内步骤执行时视为禁用 |
-| `breakpoint` | 仅步骤：执行前暂停 |
+| `breakpoint` | 已废弃：PUT 可传但忽略并落库为 `false` |
 | `fail_policy` | 仅步骤：`stop`（默认）/ `continue` |
 | `limits` | 仅步骤：Spec 数组，默认 `[]` |
 | `note` | 备注 |
@@ -548,8 +539,8 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | PUT | `/api/sequence/run-queue` | **Agent WebUI** | → 中心 run-queue PUT |
 | POST | `/api/sequence/run` | **Agent WebUI** | Slot + 读队列/设置 + 本机逐步执行 |
 | GET | `/api/sequence/run/progress` | **Agent WebUI** | 本机 progress |
-| POST | `/api/sequence/run/continue` | **Agent WebUI** | Session 续跑 |
-| POST | `/api/sequence/run/abort` | **Agent WebUI** | 中止并释放 Slot |
+| POST | `/api/sequence/run/continue` | — | **410 Gone**（断点已移除） |
+| POST | `/api/sequence/run/abort` | **Agent WebUI** | 中止（保留路由） |
 | GET | `/api/sequence-templates` | **Agent WebUI** | → 中心列表 |
 | POST | `/api/sequence-templates` | **Agent WebUI** | → 中心创建（带 agent_id） |
 | POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-agent |
@@ -587,8 +578,8 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | `cpu_percent` · `memory_percent` | 资源占用 |
 | `busy` · `uptime_secs` | 是否忙碌 / 运行秒数 |
 | `busy_reason` · `busy_message` | 如 `sequence` · `delay` · `rest` |
-| `can_continue` · `can_abort` · `can_force_release` | 断点 / 强制释放 |
-| `pause_before_position` · `pause_step_name` | 断点位置 |
+| `can_continue` · `can_abort` · `can_force_release` | `can_continue` 恒为 false；`can_force_release` 忙碌时可强制空闲 |
+| `pause_before_position` · `pause_step_name` | 已废弃（恒为空） |
 | `log_dir` | 日志根目录 |
 
 **POST** `/api/slot/force-release` · 使用方：**Agent WebUI** → `{ "ok", "released", "message" }`  
@@ -639,10 +630,10 @@ Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分�
 { "sn": "SN001", "work_order": "WO-1", "sequence_template_id": 12 }
 ```
 
-响应：`overall` · `stopped` · `failed_at?` · `steps[]` · `sn?` · `work_order?` · `pause?`
+响应：`overall` · `stopped` · `failed_at?` · `steps[]` · `sn?` · `work_order?`（不再返回 `pause`）
 
 **GET** `/api/sequence/run/progress` · 使用方：**Agent WebUI**  
-**POST** `/api/sequence/run/continue` · 使用方：**Agent WebUI**  
+**POST** `/api/sequence/run/continue` · **410 Gone**（断点已移除）  
 **POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI**
 
 ## 2.7 序列模板

@@ -128,7 +128,19 @@ fn machine_info_is_collapsed_in_topbar_before_register() {
             && APP.contains("forceReleaseSlot")
             && APP.contains("syncSequenceBusyFromStatus")
             && APP.contains("formatBusyConflictMessage"),
-        "busy recovery UI must restore pause state and allow force-idle"
+        "busy recovery UI must allow force-idle"
+    );
+    assert!(
+        !INDEX.contains("id=\"seq-continue-btn\"")
+            && !INDEX.contains(">断点</th>")
+            && !APP.contains("continueSequence")
+            && !APP.contains("seqPaused")
+            && !APP.contains("/api/sequence/run/continue"),
+        "sequence UI must not expose breakpoint continue controls"
+    );
+    assert!(
+        INDEX.contains("id=\"seq-abort-btn\"") && APP.contains("abortSequence"),
+        "sequence UI must keep abort control"
     );
 }
 

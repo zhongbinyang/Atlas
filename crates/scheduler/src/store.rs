@@ -1340,7 +1340,7 @@ impl Store {
             .bind(item.general_template_id)
             .bind(&item.inputs_json)
             .bind(item.enabled)
-            .bind(item.breakpoint)
+            .bind(false) // breakpoints removed; column kept for migration
             .bind(&item.fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
@@ -1433,7 +1433,7 @@ impl Store {
                 general_template_id: step.general_template_id,
                 inputs_json: Some(step.inputs_json),
                 enabled: step.enabled,
-                breakpoint: step.breakpoint,
+                breakpoint: false,
                 fail_policy: step.fail_policy,
                 limits_json: step.limits_json,
                 note: step.note,
@@ -1934,7 +1934,7 @@ impl Store {
             .bind(position as i64)
             .bind(&now)
             .bind(item.enabled)
-            .bind(item.breakpoint)
+            .bind(false) // breakpoints removed; column kept for migration
             .bind(fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
@@ -2961,7 +2961,7 @@ mod tests {
             general_template_id: None,
             inputs_json: Some(r#"[{"name":"Channel","className":"I32","value":2}]"#.into()),
             enabled: false,
-            breakpoint: true,
+            breakpoint: true, // accepted but ignored / forced false
             fail_policy: "continue".into(),
             limits_json: r#"[{"output":"Power_dBm","min":-5.0,"max":3.0,"unit":"dBm"}]"#.into(),
             note: "ch1".into(),
@@ -2971,7 +2971,7 @@ mod tests {
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].enabled);
-        assert!(listed[0].breakpoint);
+        assert!(!listed[0].breakpoint);
         assert_eq!(listed[0].fail_policy, "continue");
         assert!(listed[0].inputs_json.contains("\"Channel\""));
         assert!(listed[0].limits_json.contains("Power_dBm"));

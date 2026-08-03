@@ -196,7 +196,7 @@ fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTem
         general_template_id: step.general_template_id,
         inputs: parse_json_text(&step.inputs_json, "inputs_json")?,
         enabled: step.enabled,
-        breakpoint: step.breakpoint,
+        breakpoint: false, // breakpoints removed; field kept for wire compat
         fail_policy: step.fail_policy,
         limits: parse_json_text(&step.limits_json, "limits_json")?,
         note: step.note,
@@ -387,7 +387,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         show_front_panel: item.show_front_panel,
         timeout_secs: item.timeout_secs,
         enabled: item.enabled,
-        breakpoint: item.breakpoint,
+        breakpoint: false, // breakpoints removed; field kept for wire compat
         fail_policy: item.fail_policy,
         limits,
         note: item.note,
@@ -2103,7 +2103,8 @@ async fn put_vi_run_queue(
             general_template_id,
             inputs_json,
             enabled: item.enabled,
-            breakpoint: item.breakpoint,
+            // Breakpoints removed: accept field but persist false.
+            breakpoint: false,
             fail_policy: item.fail_policy,
             limits_json,
             note: item.note,
@@ -2677,7 +2678,8 @@ mod tests {
         let meta_item = &put_meta_list.items[0];
         assert_eq!(meta_item.vi_template_id, Some(tpl_a.id));
         assert!(!meta_item.enabled);
-        assert!(meta_item.breakpoint);
+        // Breakpoints removed: PUT accepts the field but persists/returns false.
+        assert!(!meta_item.breakpoint);
         assert_eq!(meta_item.fail_policy, "continue");
         assert_eq!(
             meta_item.limits,
@@ -2702,7 +2704,7 @@ mod tests {
         let get_meta_item = &get_meta_list.items[0];
         assert_eq!(get_meta_item.vi_template_id, Some(tpl_a.id));
         assert!(!get_meta_item.enabled);
-        assert!(get_meta_item.breakpoint);
+        assert!(!get_meta_item.breakpoint);
         assert_eq!(get_meta_item.fail_policy, "continue");
         assert_eq!(
             get_meta_item.limits,

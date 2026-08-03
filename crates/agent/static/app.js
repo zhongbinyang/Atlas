@@ -71,9 +71,7 @@ async function fetchStatus() {
   document.getElementById('metric-cpu').textContent = data.cpu_percent.toFixed(1) + '%';
   document.getElementById('metric-memory').textContent = data.memory_percent.toFixed(1) + '%';
   const busyEl = document.getElementById('metric-busy');
-  const busyText = data.busy
-    ? ('● 执行中' + (data.busy_reason === 'sequence_paused' ? '（断点）' : ''))
-    : '● 空闲';
+  const busyText = data.busy ? '● 执行中' : '● 空闲';
   const busyClass = data.busy ? 'is-busy' : 'is-idle';
   busyEl.textContent = busyText;
   busyEl.className = busyClass;
@@ -109,24 +107,12 @@ function updateMachineBusyActions(data) {
 function syncSequenceBusyFromStatus(data) {
   const sequencePage = document.getElementById('page-sequence');
   const onSeqPage = sequencePage && !sequencePage.hidden;
-  if (data.can_continue) {
-    if (!seqPaused) {
-      seqPaused = true;
-      seqRunning = false;
-      setSeqControlsDisabled(false);
-      if (onSeqPage) {
-        showSeqMsg(data.busy_message || '序列在断点处暂停，可继续或中止', true);
-      }
-    }
-    return;
-  }
-  if (!data.busy && seqPaused) {
-    seqPaused = false;
+  if (!data.busy && seqRunning) {
     seqRunning = false;
     setSeqControlsDisabled(false);
     return;
   }
-  if (data.busy && data.busy_reason === 'sequence' && !seqPaused && !seqRunning && onSeqPage) {
+  if (data.busy && data.busy_reason === 'sequence' && !seqRunning && onSeqPage) {
     seqRunning = true;
     setSeqControlsDisabled(true);
     showSeqMsg(data.busy_message || '序列正在执行中…', true);
@@ -145,7 +131,6 @@ async function forceReleaseSlot() {
       showSeqMsg('强制释放失败: ' + err, false);
       return;
     }
-    seqPaused = false;
     seqRunning = false;
     setSeqControlsDisabled(false);
     showSeqMsg(data.message || '已强制释放占用', true);
@@ -2608,7 +2593,6 @@ syncLvWorkbench();
 let seqRegistered = [];
 let seqSelected = [];
 let seqRunning = false;
-let seqPaused = false;
 let seqStepResults = {};
 let seqProgressPollTimer = null;
 let seqDragIndex = null;
@@ -2672,33 +2656,31 @@ function showSeqMsg(text, ok) {
 }
 
 function setSeqControlsDisabled(disabled) {
-  seqRunning = disabled && !seqPaused;
+  seqRunning = disabled;
   const runBtn = document.getElementById('seq-run-btn');
-  const contBtn = document.getElementById('seq-continue-btn');
   const abortBtn = document.getElementById('seq-abort-btn');
   const snEl = document.getElementById('seq-sn');
   const woEl = document.getElementById('seq-work-order');
-  if (runBtn) runBtn.disabled = disabled || seqPaused || !seqSelected.length;
-  if (contBtn) contBtn.disabled = !seqPaused;
-  if (abortBtn) abortBtn.disabled = !seqPaused;
-  if (snEl) snEl.disabled = disabled || seqPaused;
-  if (woEl) woEl.disabled = disabled || seqPaused;
+  if (runBtn) runBtn.disabled = disabled || !seqSelected.length;
+  if (abortBtn) abortBtn.disabled = true;
+  if (snEl) snEl.disabled = disabled;
+  if (woEl) woEl.disabled = disabled;
   const insertGroupBtn = document.getElementById('seq-insert-group');
-  if (insertGroupBtn) insertGroupBtn.disabled = disabled || seqPaused;
+  if (insertGroupBtn) insertGroupBtn.disabled = disabled;
   updateGroupSelectedBtn();
-  if (disabled || seqPaused) {
+  if (disabled) {
     const groupSelectedBtn = document.getElementById('seq-group-selected');
     if (groupSelectedBtn) groupSelectedBtn.disabled = true;
   }
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
     if (btn.classList.contains('seq-detail-toggle')) return;
-    btn.disabled = disabled || seqPaused;
+    btn.disabled = disabled;
   });
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
-    el.disabled = disabled || seqPaused;
+    el.disabled = disabled;
   });
   document.querySelectorAll('#seq-selected-body tr.seq-row[data-index]').forEach(function (row) {
-    row.draggable = !disabled && !seqPaused;
+    row.draggable = !disabled;
   });
 }
 
@@ -3201,7 +3183,7 @@ function closeSpecModal() {
 }
 
 async function editLimitsAt(index) {
-  if (seqRunning || seqPaused) return;
+  if (seqRunning) return;
   openSpecEditor(index);
 }
 
@@ -3317,7 +3299,7 @@ function renderSeqRegistered() {
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.textContent = '添加';
-    addBtn.disabled = seqRunning || seqPaused;
+    addBtn.disabled = seqRunning;
     addBtn.addEventListener('click', function () {
       addToQueue(t);
     });
@@ -3407,7 +3389,7 @@ function renderSequenceTemplates() {
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
     loadBtn.textContent = '加载到当前队列';
-    loadBtn.disabled = seqRunning || seqPaused;
+    loadBtn.disabled = seqRunning;
     loadBtn.addEventListener('click', function () { loadSequenceTemplateToQueue(t); });
     actions.appendChild(loadBtn);
     row.appendChild(actions);
@@ -3514,7 +3496,7 @@ function updateGroupSelectedBtn() {
     const i = parseInt(k, 10);
     if (seqCheckedIndexes[k] && !isSeqGroupItem(seqSelected[i])) n += 1;
   });
-  btn.disabled = seqRunning || seqPaused || n < 1;
+  btn.disabled = seqRunning || n < 1;
 }
 
 function setSeqFocus(index) {
@@ -3574,7 +3556,7 @@ function groupSelectedSteps(items, indexes) {
 }
 
 async function insertSeqGroup() {
-  if (seqRunning || seqPaused) return;
+  if (seqRunning) return;
   const newGroup = makeSeqGroupItem(nextGroupDefaultName());
   let at = seqSelected.length;
   if (seqFocusIndex != null && seqFocusIndex >= 0 && seqFocusIndex < seqSelected.length) {
@@ -3592,7 +3574,7 @@ async function insertSeqGroup() {
 }
 
 async function groupCheckedIntoFolder() {
-  if (seqRunning || seqPaused) return;
+  if (seqRunning) return;
   const indexes = Object.keys(seqCheckedIndexes)
     .map(function (k) { return parseInt(k, 10); })
     .filter(function (i) { return seqCheckedIndexes[i] && !isSeqGroupItem(seqSelected[i]); });
@@ -3712,7 +3694,7 @@ function renderSeqSelected() {
   seqCheckedIndexes = nextChecked;
 
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
     setSeqControlsDisabled(false);
     seqFocusIndex = null;
     updateSeqInsertBadge();
@@ -3732,7 +3714,7 @@ function renderSeqSelected() {
       const members = groupMemberCount(i);
       const row = document.createElement('tr');
       row.setAttribute('data-index', String(i));
-      row.draggable = !seqRunning && !seqPaused;
+      row.draggable = !seqRunning;
       row.className =
         'seq-row seq-group-row' +
         (item.enabled === false ? ' seq-group-disabled' : '') +
@@ -3747,7 +3729,7 @@ function renderSeqSelected() {
       collapseBtn.className = 'btn-sm seq-group-collapse';
       collapseBtn.textContent = item.collapsed ? '▶' : '▼';
       collapseBtn.title = item.collapsed ? '展开分组' : '折叠分组';
-      collapseBtn.disabled = seqRunning || seqPaused;
+      collapseBtn.disabled = seqRunning;
       collapseBtn.addEventListener('click', async function (ev) {
         ev.stopPropagation();
         item.collapsed = !item.collapsed;
@@ -3765,15 +3747,13 @@ function renderSeqSelected() {
       enabledCb.type = 'checkbox';
       enabledCb.checked = item.enabled !== false;
       enabledCb.title = '启用整组';
-      enabledCb.disabled = seqRunning || seqPaused;
+      enabledCb.disabled = seqRunning;
       enabledCb.addEventListener('change', async function () {
         item.enabled = enabledCb.checked;
         await saveQueue();
       });
       enTd.appendChild(enabledCb);
       row.appendChild(enTd);
-
-      row.appendChild(document.createElement('td')); // 断点空
 
       const nameTd = document.createElement('td');
       const folderMark = document.createElement('span');
@@ -3784,7 +3764,7 @@ function renderSeqSelected() {
       nameInput.type = 'text';
       nameInput.className = 'seq-group-title';
       nameInput.value = item.name || '分组';
-      nameInput.disabled = seqRunning || seqPaused;
+      nameInput.disabled = seqRunning;
       nameInput.setAttribute('aria-label', '分组名称');
       nameInput.addEventListener('change', async function () {
         item.name = nameInput.value.trim() || '分组';
@@ -3813,19 +3793,19 @@ function renderSeqSelected() {
       upBtn.type = 'button';
       upBtn.textContent = '↑';
       upBtn.title = '上移整组';
-      upBtn.disabled = seqRunning || seqPaused || i === 0;
+      upBtn.disabled = seqRunning || i === 0;
       upBtn.addEventListener('click', function () { moveQueueItem(i, -1); });
       const downBtn = document.createElement('button');
       downBtn.type = 'button';
       downBtn.textContent = '↓';
       downBtn.title = '下移整组';
-      downBtn.disabled = seqRunning || seqPaused || endOfGroup(i) >= seqSelected.length;
+      downBtn.disabled = seqRunning || endOfGroup(i) >= seqSelected.length;
       downBtn.addEventListener('click', function () { moveQueueItem(i, 1); });
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.textContent = '解散分组';
       removeBtn.title = '删除分组，保留组内步骤到根级';
-      removeBtn.disabled = seqRunning || seqPaused;
+      removeBtn.disabled = seqRunning;
       removeBtn.addEventListener('click', function () { removeFromQueue(i); });
       actions.appendChild(upBtn);
       actions.appendChild(document.createTextNode(' '));
@@ -3865,7 +3845,7 @@ function renderSeqSelected() {
     const inGroup = owningGroupHeaderIndex(i) >= 0 && !isSeqGroupItem(item);
     const row = document.createElement('tr');
     row.setAttribute('data-index', String(i));
-    row.draggable = !seqRunning && !seqPaused;
+    row.draggable = !seqRunning;
     row.className =
       'seq-row' +
       (inGroup ? ' seq-outline-child' : '') +
@@ -3880,7 +3860,6 @@ function renderSeqSelected() {
     const name = escapeHtml(item.name || templateId || '—');
     const kindDisplay = kindLabel(item.kind || 'labview');
     const enabled = item.enabled !== false;
-    const breakpoint = !!item.breakpoint;
     const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
     const limits = Array.isArray(item.limits) ? item.limits : [];
     const expanded = !!seqExpandedIndexes[i];
@@ -3888,7 +3867,6 @@ function renderSeqSelected() {
 
     row.innerHTML =
       '<td class="mono"></td>' +
-      '<td class="seq-check-cell"></td>' +
       '<td class="seq-check-cell"></td>' +
       '<td>' + name + '</td>' +
       '<td class="mono">' + kindDisplay + '</td>' +
@@ -3905,7 +3883,7 @@ function renderSeqSelected() {
     pick.className = 'seq-pick';
     pick.title = '勾选后可「编成一组」';
     pick.checked = !!seqCheckedIndexes[i];
-    pick.disabled = seqRunning || seqPaused;
+    pick.disabled = seqRunning;
     pick.addEventListener('click', function (ev) { ev.stopPropagation(); });
     pick.addEventListener('change', function () {
       if (pick.checked) seqCheckedIndexes[i] = true;
@@ -3921,23 +3899,12 @@ function renderSeqSelected() {
     enabledCb.type = 'checkbox';
     enabledCb.checked = enabled;
     enabledCb.title = flag.groupEnabled ? '启用' : '所属分组已禁用';
-    enabledCb.disabled = seqRunning || seqPaused;
+    enabledCb.disabled = seqRunning;
     enabledCb.addEventListener('change', async function () {
       item.enabled = enabledCb.checked;
       await saveQueue();
     });
     row.querySelector('.seq-check-cell').appendChild(enabledCb);
-
-    const bpCb = document.createElement('input');
-    bpCb.type = 'checkbox';
-    bpCb.checked = breakpoint;
-    bpCb.title = '断点';
-    bpCb.disabled = seqRunning || seqPaused;
-    bpCb.addEventListener('change', async function () {
-      item.breakpoint = bpCb.checked;
-      await saveQueue();
-    });
-    row.querySelectorAll('.seq-check-cell')[1].appendChild(bpCb);
 
     const actions = document.createElement('td');
     actions.className = 'seq-row-actions';
@@ -3953,18 +3920,18 @@ function renderSeqSelected() {
     upBtn.type = 'button';
     upBtn.textContent = '↑';
     upBtn.title = '上移';
-    upBtn.disabled = seqRunning || seqPaused || i === 0;
+    upBtn.disabled = seqRunning || i === 0;
     upBtn.addEventListener('click', function () { moveQueueItem(i, -1); });
     const downBtn = document.createElement('button');
     downBtn.type = 'button';
     downBtn.textContent = '↓';
     downBtn.title = '下移';
-    downBtn.disabled = seqRunning || seqPaused || i === seqSelected.length - 1;
+    downBtn.disabled = seqRunning || i === seqSelected.length - 1;
     downBtn.addEventListener('click', function () { moveQueueItem(i, 1); });
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.textContent = '移除';
-    removeBtn.disabled = seqRunning || seqPaused;
+    removeBtn.disabled = seqRunning;
     removeBtn.addEventListener('click', function () { removeFromQueue(i); });
     actions.appendChild(detailBtn);
     actions.appendChild(document.createTextNode(' '));
@@ -4012,7 +3979,7 @@ function renderSeqSelected() {
     specBtn.className = 'seq-spec-btn';
     specBtn.textContent = formatSpecSummary(limits);
     specBtn.title = '点击编辑 Spec';
-    specBtn.disabled = seqRunning || seqPaused;
+    specBtn.disabled = seqRunning;
     specBtn.addEventListener('click', function () { editLimitsAt(i); });
     detailActions.appendChild(specBtn);
 
@@ -4022,7 +3989,7 @@ function renderSeqSelected() {
     const failSel = document.createElement('select');
     failSel.innerHTML = '<option value="stop">停止</option><option value="continue">继续</option>';
     failSel.value = failPolicy;
-    failSel.disabled = seqRunning || seqPaused;
+    failSel.disabled = seqRunning;
     failSel.addEventListener('change', async function () {
       item.fail_policy = failSel.value === 'continue' ? 'continue' : 'stop';
       await saveQueue();
@@ -4076,7 +4043,7 @@ function renderSeqInputsCell(host, item, index) {
   editBtn.className = 'btn-sm seq-inputs-edit-btn';
   editBtn.textContent = '编辑入参';
   editBtn.title = formatInputsPretty(item.inputs);
-  editBtn.disabled = seqRunning || seqPaused;
+  editBtn.disabled = seqRunning;
   editBtn.addEventListener('click', function (ev) {
     ev.stopPropagation();
     openSeqInputsEditor(index);
@@ -4110,7 +4077,7 @@ async function saveQueue() {
             ? item.inputs
             : [],
         enabled: item.enabled !== false,
-        breakpoint: !!item.breakpoint,
+        breakpoint: false,
         fail_policy: item.fail_policy === 'continue' ? 'continue' : 'stop',
         limits: Array.isArray(item.limits) ? item.limits : [],
         note: item.note || '',
@@ -4329,7 +4296,7 @@ async function moveQueueItem(index, delta) {
 }
 
 function onSeqDragStart(e) {
-  if (seqRunning || seqPaused) {
+  if (seqRunning) {
     e.preventDefault();
     return;
   }
@@ -4378,7 +4345,7 @@ function onSeqDragLeave(e) {
 
 async function onSeqDrop(e) {
   e.preventDefault();
-  if (seqDragIndex == null || seqRunning || seqPaused) {
+  if (seqDragIndex == null || seqRunning) {
     clearSeqDropUi();
     return;
   }
@@ -4448,13 +4415,6 @@ function handleSequenceResponse(data) {
   }
   renderSeqResults(data);
   renderSeqSelected();
-  if (data.pause) {
-    seqPaused = true;
-    showSeqMsg('断点暂停: ' + (data.pause.message || 'breakpoint'), true);
-    setSeqControlsDisabled(false);
-    return 'paused';
-  }
-  seqPaused = false;
   if (data.overall === 'aborted') {
     showSeqMsg('已中止', false);
     return 'aborted';
@@ -4523,8 +4483,7 @@ async function loadSequenceTemplateToQueue(tpl) {
 }
 
 async function runSequence() {
-  if ((seqRunning && !seqPaused) || !seqSelected.length) return;
-  seqPaused = false;
+  if (seqRunning || !seqSelected.length) return;
   setSeqControlsDisabled(true);
   clearSequenceResultsUi();
   document.getElementById('seq-results').innerHTML = '';
@@ -4546,12 +4505,6 @@ async function runSequence() {
     if (!resp.ok) {
       if (resp.status === 409) {
         const tip = formatBusyConflictMessage(data);
-        if (data.can_continue) {
-          seqPaused = true;
-          setSeqControlsDisabled(false);
-          showSeqMsg(tip + ' — 请点「继续」或「中止」', true);
-          return;
-        }
         const hint = data.can_force_release ? ' — 可在「机台信息」中强制空闲' : '';
         showSeqMsg(tip + hint, false);
         return;
@@ -4565,48 +4518,14 @@ async function runSequence() {
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
     stopSequenceProgressPoll();
-    if (!seqPaused) {
-      setSeqControlsDisabled(false);
-    }
+    setSeqControlsDisabled(false);
     renderSeqRegistered();
   }
 }
 
-async function continueSequence() {
-  if (!seqPaused) return;
-  const contBtn = document.getElementById('seq-continue-btn');
-  const abortBtn = document.getElementById('seq-abort-btn');
-  if (contBtn) contBtn.disabled = true;
-  if (abortBtn) abortBtn.disabled = true;
-  setSeqControlsDisabled(true);
-  showSeqMsg('继续执行…', true);
-  startSequenceProgressPoll();
-  try {
-    const resp = await fetch('/api/sequence/run/continue', { method: 'POST' });
-    const data = await resp.json();
-    if (!resp.ok) {
-      const err = data.error && (data.error.message || data.error) || resp.status;
-      showSeqMsg('继续失败: ' + err, false);
-      seqPaused = false;
-      return;
-    }
-    handleSequenceResponse(data);
-  } catch (e) {
-    showSeqMsg('继续失败: ' + e.message, false);
-    seqPaused = false;
-  } finally {
-    stopSequenceProgressPoll();
-    if (!seqPaused) {
-      setSeqControlsDisabled(false);
-    }
-  }
-}
-
 async function abortSequence() {
-  if (!seqPaused) return;
-  const contBtn = document.getElementById('seq-continue-btn');
+  if (!seqRunning) return;
   const abortBtn = document.getElementById('seq-abort-btn');
-  if (contBtn) contBtn.disabled = true;
   if (abortBtn) abortBtn.disabled = true;
   showSeqMsg('中止中…', true);
   try {
@@ -4618,10 +4537,8 @@ async function abortSequence() {
       return;
     }
     handleSequenceResponse(data);
-    seqPaused = false;
   } catch (e) {
     showSeqMsg('中止失败: ' + e.message, false);
-    seqPaused = false;
   } finally {
     setSeqControlsDisabled(false);
   }
@@ -5448,9 +5365,7 @@ const forceReleaseBtn = document.getElementById('force-release-btn');
 if (forceReleaseBtn) forceReleaseBtn.addEventListener('click', forceReleaseSlot);
 const seqSaveTemplateBtn = document.getElementById('seq-save-template-btn');
 if (seqSaveTemplateBtn) seqSaveTemplateBtn.addEventListener('click', saveCurrentQueueAsSequenceTemplate);
-const seqContinueBtn = document.getElementById('seq-continue-btn');
 const seqAbortBtn = document.getElementById('seq-abort-btn');
-if (seqContinueBtn) seqContinueBtn.addEventListener('click', continueSequence);
 if (seqAbortBtn) seqAbortBtn.addEventListener('click', abortSequence);
 const seqRegisteredSearch = document.getElementById('seq-registered-search');
 const seqRegisteredFilter = document.getElementById('seq-registered-filter');

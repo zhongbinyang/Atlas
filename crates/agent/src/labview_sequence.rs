@@ -25,6 +25,7 @@ pub struct QueueItemForRun {
     pub show_front_panel: bool,
     pub timeout_secs: Option<u64>,
     pub enabled: bool,
+    /// Accepted for wire/DB compat; always ignored (breakpoints removed).
     pub breakpoint: bool,
     pub fail_policy: String,
     pub limits: Vec<LimitRule>,
@@ -49,12 +50,6 @@ pub struct SequenceStepResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequencePause {
-    pub before_position: usize,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceResponse {
     pub stopped: bool,
     pub failed_at: Option<usize>,
@@ -64,8 +59,6 @@ pub struct SequenceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_order: Option<String>,
     pub overall: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pause: Option<SequencePause>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -255,10 +248,9 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let enabled = step_enabled && group_enabled;
-        let breakpoint = item
-            .get("breakpoint")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        // Breakpoints removed: accept the field but never pause.
+        let _ = item.get("breakpoint");
+        let breakpoint = false;
         let fail_policy = normalize_fail_policy(
             item.get("fail_policy")
                 .and_then(|v| v.as_str())
@@ -294,7 +286,7 @@ where
     F: FnMut(&QueueItemForRun) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
 {
-    run_sequence_from_with_opts(items, 0, opts, Vec::new(), false, run_one).await
+    run_sequence_from_with_opts(items, 0, opts, Vec::new(), run_one).await
 }
 
 pub async fn run_sequence_from_with_opts<F, Fut>(
@@ -302,7 +294,6 @@ pub async fn run_sequence_from_with_opts<F, Fut>(
     start_index: usize,
     opts: SequenceRunOpts,
     mut steps: Vec<SequenceStepResult>,
-    resume_breakpoint: bool,
     mut run_one: F,
 ) -> SequenceResponse
 where
@@ -350,24 +341,7 @@ where
             continue;
         }
 
-        if item.breakpoint && !(i == start_index && resume_breakpoint) {
-            let overall = compute_overall(&steps);
-            if let Some(p) = &progress {
-                p.finish(steps.clone()).await;
-            }
-            return SequenceResponse {
-                stopped: false,
-                failed_at: None,
-                steps,
-                sn,
-                work_order,
-                overall,
-                pause: Some(SequencePause {
-                    before_position: item.position,
-                    message: "breakpoint".into(),
-                }),
-            };
-        }
+        let _ = item.breakpoint;
 
         publish_current(&progress, item.position, &item.name).await;
 
@@ -451,7 +425,6 @@ where
         sn,
         work_order,
         overall,
-        pause: None,
     }
 }
 
@@ -477,10 +450,7 @@ pub async fn run_sequence(
     cli: &Path,
     getinfo: &Path,
     items: &[QueueItemForRun],
-    start_index: usize,
     opts: SequenceRunOpts,
-    prior_steps: Vec<SequenceStepResult>,
-    resume_breakpoint: bool,
 ) -> SequenceResponse {
     let cli = cli.to_path_buf();
     let getinfo = getinfo.to_path_buf();
@@ -488,10 +458,9 @@ pub async fn run_sequence(
     let vars = opts.vars.clone();
     run_sequence_from_with_opts(
         &items,
-        start_index,
+        0,
         opts,
-        prior_steps,
-        resume_breakpoint,
+        Vec::new(),
         |item| {
             let cli = cli.clone();
             let getinfo = getinfo.clone();
@@ -778,7 +747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pauses_before_breakpoint_step() {
+    async fn breakpoint_flag_is_ignored_and_run_continues() {
         let mut bp = sample_item(1, "breakpoint");
         bp.breakpoint = true;
         let items = vec![sample_item(0, "first"), bp, sample_item(2, "third")];
@@ -789,47 +758,10 @@ mod tests {
         })
         .await;
 
-        assert_eq!(call, 1);
-        assert_eq!(resp.steps.len(), 1);
+        assert_eq!(call, 3);
+        assert_eq!(resp.steps.len(), 3);
         assert_eq!(resp.overall, "pass");
         assert!(!resp.stopped);
-        let pause = resp.pause.expect("pause");
-        assert_eq!(pause.before_position, 1);
-        assert_eq!(pause.message, "breakpoint");
-    }
-
-    #[tokio::test]
-    async fn continue_executes_breakpoint_step() {
-        let mut bp = sample_item(1, "breakpoint");
-        bp.breakpoint = true;
-        let items = vec![sample_item(0, "first"), bp, sample_item(2, "third")];
-        let mut call = 0usize;
-        let resp1 = run_sequence_with(&items, |_item| {
-            call += 1;
-            async move { Ok(serde_json::json!({})) }
-        })
-        .await;
-
-        assert!(resp1.pause.is_some());
-        assert_eq!(call, 1);
-
-        let resp2 = run_sequence_from_with_opts(
-            &items,
-            1,
-            SequenceRunOpts { sn: resp1.sn.clone(), work_order: resp1.work_order.clone(), vars: Default::default(), progress: None, },
-            resp1.steps,
-            true,
-            |_item| {
-                call += 1;
-                async move { Ok(serde_json::json!({})) }
-            },
-        )
-        .await;
-
-        assert!(resp2.pause.is_none());
-        assert_eq!(call, 3);
-        assert_eq!(resp2.steps.len(), 3);
-        assert_eq!(resp2.overall, "pass");
     }
 
     #[test]
@@ -868,7 +800,7 @@ mod tests {
         });
         let items = queue_items_for_run(&body).unwrap();
         assert!(!items[0].enabled);
-        assert!(items[0].breakpoint);
+        assert!(!items[0].breakpoint);
         assert_eq!(items[0].fail_policy, "continue");
         assert_eq!(items[0].limits.len(), 1);
         assert_eq!(items[0].limits[0].output, "Power_dBm");

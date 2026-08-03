@@ -40,7 +40,7 @@ pub struct AgentStatusResponse {
     pub memory_percent: f32,
     pub busy: bool,
     pub uptime_secs: u64,
-    /// idle | sequence | sequence_paused | delay | rest | shell_task | unknown
+    /// idle | sequence | delay | rest | shell_task | unknown
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

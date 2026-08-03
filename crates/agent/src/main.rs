@@ -18,7 +18,7 @@ mod web;
 use api::AppState;
 use config::AgentConfig;
 use metrics::{MetricsSampler, MetricsSnapshot};
-use sequence_session::{SequenceProgressSlot, SequenceSessionSlot};
+use sequence_session::SequenceProgressSlot;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -58,7 +58,6 @@ async fn main() {
         log_dir: cfg.log_dir.clone(),
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
-        sequence_session: SequenceSessionSlot::new(),
         sequence_progress: SequenceProgressSlot::new(),
     };
 

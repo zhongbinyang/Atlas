@@ -19,12 +19,10 @@ use crate::labview::{
     LabviewError, LabviewParam,
 };
 use crate::labview_sequence::{
-    queue_items_for_run, run_sequence, SequencePause, SequenceResponse, SequenceRunOpts,
+    queue_items_for_run, run_sequence, SequenceResponse, SequenceRunOpts,
 };
 use crate::metrics::MetricsSnapshot;
-use crate::sequence_session::{
-    SequenceProgressSlot, SequenceSession, SequenceSessionSlot,
-};
+use crate::sequence_session::SequenceProgressSlot;
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
 
@@ -41,7 +39,6 @@ pub struct AppState {
     pub log_dir: PathBuf,
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
-    pub sequence_session: Arc<SequenceSessionSlot>,
     pub sequence_progress: Arc<SequenceProgressSlot>,
 }
 
@@ -140,7 +137,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/sequence/run/continue",
-            post(labview_run_sequence_continue),
+            post(labview_run_sequence_continue_gone),
         )
         .route(
             "/api/sequence/run/abort",
@@ -334,29 +331,6 @@ async fn labview_run(
 async fn build_busy_snapshot(s: &AppState) -> BusySnapshot {
     let busy = s.slot.is_busy().await;
     let owner = s.slot.owner().await;
-    let session = s.sequence_session.get().await;
-
-    if let Some(session) = session {
-        let step = session.items.get(session.next_index);
-        let step_name = step.map(|i| i.name.clone());
-        let before_position = step.map(|i| i.position).unwrap_or(session.next_index);
-        let message = match step_name.as_deref() {
-            Some(name) if !name.is_empty() => {
-                format!("序列在断点处暂停（步骤 #{before_position}: {name}）")
-            }
-            _ => format!("序列在断点处暂停（步骤 #{before_position}）"),
-        };
-        return BusySnapshot {
-            busy: true,
-            busy_reason: Some("sequence_paused".into()),
-            busy_message: Some(message),
-            can_continue: true,
-            can_abort: true,
-            can_force_release: true,
-            pause_before_position: Some(before_position),
-            pause_step_name: step_name,
-        };
-    }
 
     if !busy {
         return BusySnapshot {
@@ -437,8 +411,7 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 }
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
-    let was_busy = s.slot.is_busy().await || s.sequence_session.get().await.is_some();
-    s.sequence_session.clear().await;
+    let was_busy = s.slot.is_busy().await;
     s.sequence_progress.clear().await;
     s.slot.release().await;
     (
@@ -1492,21 +1465,6 @@ async fn general_rest_templates(State(s): State<AppState>) -> impl IntoResponse 
     }
 }
 
-fn pause_index(
-    items: &[crate::labview_sequence::QueueItemForRun],
-    pause: &SequencePause,
-) -> Result<usize, String> {
-    items
-        .iter()
-        .position(|i| i.position == pause.before_position)
-        .ok_or_else(|| {
-            format!(
-                "pause position {} not found in run queue",
-                pause.before_position
-            )
-        })
-}
-
 async fn log_sequence_run(
     s: &AppState,
     sequence_template_id: Option<i64>,
@@ -1535,7 +1493,7 @@ async fn log_sequence_run(
             })
         })
         .collect();
-    let mut payload = serde_json::json!({
+    let payload = serde_json::json!({
         "sequence_template_id": sequence_template_id,
         "overall": resp.overall,
         "stopped": resp.stopped,
@@ -1546,12 +1504,6 @@ async fn log_sequence_run(
         "finished_at": crate::logging::format_finished_at_local(finished_at),
         "hostname": s.hostname,
     });
-    if let Some(pause) = &resp.pause {
-        payload["pause"] = serde_json::json!({
-            "before_position": pause.before_position,
-            "message": pause.message,
-        });
-    }
     match crate::logging::write_sequence_run_log(
         &s.log_dir,
         &payload,
@@ -1662,46 +1614,8 @@ async fn labview_run_sequence(
     s.sequence_progress.begin().await;
     run_opts.progress = Some(s.sequence_progress.clone());
 
-    let resp = run_sequence(
-        &s.labview_cli,
-        &s.labview_getinfo,
-        &items,
-        0,
-        run_opts,
-        Vec::new(),
-        false,
-    )
-    .await;
+    let resp = run_sequence(&s.labview_cli, &s.labview_getinfo, &items, run_opts).await;
 
-    if let Some(ref pause) = resp.pause {
-        let next_index = match pause_index(&items, pause) {
-            Ok(idx) => idx,
-            Err(msg) => {
-                s.sequence_session.clear().await;
-                s.sequence_progress.clear().await;
-                s.slot.release().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorBody { error: msg }),
-                )
-                    .into_response();
-            }
-        };
-        s.sequence_session
-            .set(SequenceSession {
-                items,
-                next_index,
-                steps_so_far: resp.steps.clone(),
-                sn: resp.sn.clone(),
-                work_order: resp.work_order.clone(),
-                sequence_template_id,
-                abort: false,
-            })
-            .await;
-        return (StatusCode::OK, Json(resp)).into_response();
-    }
-
-    s.sequence_session.clear().await;
     s.slot.release().await;
     log_sequence_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
@@ -1712,105 +1626,24 @@ async fn labview_run_sequence_progress(State(s): State<AppState>) -> impl IntoRe
     (StatusCode::OK, Json(snap))
 }
 
-async fn labview_run_sequence_continue(State(s): State<AppState>) -> impl IntoResponse {
-    let session = match s.sequence_session.take().await {
-        Some(v) => v,
-        None => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    error: "no active sequence session".into(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    s.sequence_progress
-        .begin_from(session.steps_so_far.clone())
-        .await;
-
-    let resp = run_sequence(
-        &s.labview_cli,
-        &s.labview_getinfo,
-        &session.items,
-        session.next_index,
-        SequenceRunOpts {
-            sn: session.sn.clone(),
-            work_order: session.work_order.clone(),
-            vars: load_settings_vars(&s).await,
-            progress: Some(s.sequence_progress.clone()),
-        },
-        session.steps_so_far,
-        true,
+async fn labview_run_sequence_continue_gone() -> impl IntoResponse {
+    (
+        StatusCode::GONE,
+        Json(ErrorBody {
+            error: "sequence breakpoints were removed".into(),
+        }),
     )
-    .await;
-
-    if let Some(ref pause) = resp.pause {
-        let next_index = match pause_index(&session.items, pause) {
-            Ok(idx) => idx,
-            Err(msg) => {
-                s.sequence_session.clear().await;
-                s.sequence_progress.clear().await;
-                s.slot.release().await;
-                return (
-                    StatusCode::CONFLICT,
-                    Json(ErrorBody { error: msg }),
-                )
-                    .into_response();
-            }
-        };
-        s.sequence_session
-            .set(SequenceSession {
-                items: session.items,
-                next_index,
-                steps_so_far: resp.steps.clone(),
-                sn: resp.sn.clone(),
-                work_order: resp.work_order.clone(),
-                sequence_template_id: session.sequence_template_id,
-                abort: false,
-            })
-            .await;
-        return (StatusCode::OK, Json(resp)).into_response();
-    }
-
-    s.sequence_session.clear().await;
-    s.slot.release().await;
-    log_sequence_run(&s, session.sequence_template_id, &session.items, &resp).await;
-    (StatusCode::OK, Json(resp)).into_response()
 }
 
 async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
-    let session = match s.sequence_session.take().await {
-        Some(v) => v,
-        None => {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    error: "no active sequence session".into(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    s.sequence_session.clear().await;
-    s.sequence_progress
-        .finish(session.steps_so_far.clone())
-        .await;
-    s.slot.release().await;
-
-    let resp = SequenceResponse {
-        overall: "aborted".into(),
-        stopped: true,
-        failed_at: None,
-        steps: session.steps_so_far,
-        sn: session.sn,
-        work_order: session.work_order,
-        pause: None,
-    };
-    log_sequence_run(&s, session.sequence_template_id, &session.items, &resp).await;
-    (StatusCode::OK, Json(resp)).into_response()
+    // Mid-run abort is rewired in a later multi-channel task; keep the route.
+    let _ = s;
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorBody {
+            error: "no active sequence session".into(),
+        }),
+    )
 }
 
 async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
@@ -1848,7 +1681,6 @@ mod tests {
             log_dir: std::env::temp_dir().join("atlas-agent-test-logs"),
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
-            sequence_session: SequenceSessionSlot::new(),
             sequence_progress: SequenceProgressSlot::new(),
         }
     }
@@ -1938,58 +1770,6 @@ mod tests {
         assert!(!body.busy);
         assert!(body.busy_reason.is_none());
         assert_eq!(body.can_force_release, Some(false));
-    }
-
-    #[tokio::test]
-    async fn status_reports_sequence_paused_session() {
-        let state = test_state();
-        state
-            .sequence_session
-            .set(SequenceSession {
-                items: vec![crate::labview_sequence::QueueItemForRun {
-                    position: 2,
-                    queue_item_id: "q1".into(),
-                    template_id: "t1".into(),
-                    name: "BP Step".into(),
-                    kind: "vi".into(),
-                    vi_path: r"C:\x.vi".into(),
-                    inputs: serde_json::json!({}),
-                    show_front_panel: false,
-                    timeout_secs: None,
-                    enabled: true,
-                    breakpoint: true,
-                    fail_policy: "stop".into(),
-                    limits: vec![],
-                }],
-                next_index: 0,
-                steps_so_far: vec![],
-                sn: None,
-                work_order: None,
-                sequence_template_id: None,
-                abort: false,
-            })
-            .await;
-        let app = router(state);
-
-        let req = Request::builder()
-            .uri("/api/status")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let body: AgentStatusResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(body.busy);
-        assert_eq!(body.busy_reason.as_deref(), Some("sequence_paused"));
-        assert_eq!(body.can_continue, Some(true));
-        assert_eq!(body.can_abort, Some(true));
-        assert_eq!(body.pause_before_position, Some(2));
-        assert_eq!(body.pause_step_name.as_deref(), Some("BP Step"));
-        assert!(body
-            .busy_message
-            .as_deref()
-            .unwrap_or("")
-            .contains("BP Step"));
     }
 
     #[tokio::test]
@@ -2545,7 +2325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn labview_run_sequence_continue_without_session_409() {
+    async fn labview_run_sequence_continue_is_gone() {
         let app = router(test_state());
         let req = Request::builder()
             .method("POST")
@@ -2553,10 +2333,10 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::GONE);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(err.error, "no active sequence session");
+        assert_eq!(err.error, "sequence breakpoints were removed");
     }
 
     #[tokio::test]
