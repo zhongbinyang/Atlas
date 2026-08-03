@@ -8,6 +8,12 @@ pub struct ResourceLockManager {
     inner: Mutex<Inner>,
 }
 
+impl std::fmt::Debug for ResourceLockManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResourceLockManager")
+    }
+}
+
 struct Inner {
     next_waiter_id: u64,
     resources: HashMap<String, ResourceState>,

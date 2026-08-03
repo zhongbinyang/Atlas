@@ -633,6 +633,7 @@ Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分�
 响应：`overall` · `stopped` · `failed_at?` · `steps[]` · `sn?` · `work_order?`（不再返回 `pause`）
 
 **GET** `/api/sequence/run/progress` · 使用方：**Agent WebUI**  
+在步骤持有 `resources[]` 时，Agent 会先 acquire 再执行该步；等待锁期间 progress 仍显示该步为当前步（`current_position` / `current_name`），**不会**单独下发 `waiting_resource` 状态（步骤结果仍为未写入，直到 acquire 成功或超时/取消后记 `status=error`）。  
 **POST** `/api/sequence/run/continue` · **410 Gone**（断点已移除）  
 **POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI**
 

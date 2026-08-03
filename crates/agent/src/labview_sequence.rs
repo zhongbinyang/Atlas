@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::labview::{
     build_run_args, ensure_vi, error_message, inputs_to_cli_object, normalize_fs_path, run_cli,
@@ -11,6 +12,7 @@ use crate::labview::{
 use crate::limits::{
     extract_sn_from_outputs, judge_limits_with_vars, parse_limits_json, LimitRule, StepJudge,
 };
+use crate::resource_lock::{ResourceLockError, ResourceLockManager};
 use crate::sequence_session::SequenceProgressSlot;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,7 +66,7 @@ pub struct SequenceResponse {
     pub overall: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SequenceRunOpts {
     pub sn: Option<String>,
     pub work_order: Option<String>,
@@ -72,6 +74,60 @@ pub struct SequenceRunOpts {
     pub vars: std::collections::HashMap<String, String>,
     /// Optional live progress publisher for UI polling.
     pub progress: Option<Arc<SequenceProgressSlot>>,
+    /// Shared resource lock manager (None = no locking).
+    pub resource_locks: Option<Arc<ResourceLockManager>>,
+    /// Owner label for acquired locks (e.g. `"ch-0"`).
+    pub resource_owner: String,
+    /// Per-step acquire timeout (default 300s).
+    pub resource_timeout: Duration,
+    /// Optional cancel signal checked while waiting for locks.
+    pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl Default for SequenceRunOpts {
+    fn default() -> Self {
+        Self {
+            sn: None,
+            work_order: None,
+            vars: Default::default(),
+            progress: None,
+            resource_locks: None,
+            resource_owner: "ch-0".into(),
+            resource_timeout: Duration::from_secs(300),
+            cancel: None,
+        }
+    }
+}
+
+/// Acquire `resources` (if any / if locks configured), run `f`, then release on drop.
+/// Empty resources or `locks == None` skips locking.
+pub async fn with_step_resources<F, Fut, T>(
+    locks: Option<&Arc<ResourceLockManager>>,
+    resources: &[String],
+    owner: &str,
+    timeout: Duration,
+    cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    f: F,
+) -> Result<T, ResourceLockError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    if resources.is_empty() || locks.is_none() {
+        return Ok(f().await);
+    }
+    let locks = locks.expect("checked is_some");
+    let _guard = locks.acquire(resources, owner, timeout, cancel).await?;
+    Ok(f().await)
+}
+
+fn resource_lock_error_message(err: &ResourceLockError) -> String {
+    match err {
+        ResourceLockError::Timeout { resource } => {
+            format!("resource lock timeout waiting for '{resource}'")
+        }
+        ResourceLockError::Cancelled => "resource lock cancelled".into(),
+    }
 }
 
 fn parse_limits_from_item(item: &Value) -> Result<Vec<LimitRule>, String> {
@@ -416,8 +472,40 @@ where
 
         publish_current(&progress, item.position, &item.name).await;
 
-        match run_one(item).await {
-            Ok(result) => {
+        // Progress stays at current step name while waiting for locks (no waiting_resource hint yet).
+        let step_outcome = with_step_resources(
+            opts.resource_locks.as_ref(),
+            &item.resources,
+            &opts.resource_owner,
+            opts.resource_timeout,
+            opts.cancel.clone(),
+            || run_one(item),
+        )
+        .await;
+
+        match step_outcome {
+            Err(lock_err) => {
+                steps.push(SequenceStepResult {
+                    position: item.position,
+                    queue_item_id: item.queue_item_id.clone(),
+                    template_id: item.template_id.clone(),
+                    name: item.name.clone(),
+                    ok: false,
+                    status: "error".into(),
+                    measured: None,
+                    limits: limits_value(&item.limits),
+                    result: None,
+                    error: Some(resource_lock_error_message(&lock_err)),
+                });
+                publish_steps(&progress, &steps).await;
+
+                if should_stop_on_status("error", &item.fail_policy) {
+                    stopped = true;
+                    failed_at = Some(i);
+                    break;
+                }
+            }
+            Ok(Ok(result)) => {
                 if let Some(extracted) = extract_sn_from_outputs(&result) {
                     sn = Some(extracted);
                 }
@@ -459,7 +547,7 @@ where
                     break;
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 steps.push(SequenceStepResult {
                     position: item.position,
                     queue_item_id: item.queue_item_id.clone(),
@@ -504,17 +592,7 @@ where
     F: FnMut(&QueueItemForRun) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
 {
-    run_sequence_with_opts(
-        items,
-        SequenceRunOpts {
-            sn: None,
-            work_order: None,
-            vars: Default::default(),
-            progress: None,
-        },
-        run_one,
-    )
-    .await
+    run_sequence_with_opts(items, SequenceRunOpts::default(), run_one).await
 }
 
 pub async fn run_sequence(
@@ -599,6 +677,9 @@ async fn run_one_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource_lock::ResourceLockManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn sample_item(position: usize, name: &str) -> QueueItemForRun {
         QueueItemForRun {
@@ -628,6 +709,127 @@ mod tests {
             expect: None,
             unit: None,
         }
+    }
+
+    #[tokio::test]
+    async fn with_step_resources_serializes_concurrent_holders() {
+        let locks = ResourceLockManager::new();
+        let resources = vec!["station.dca".to_string()];
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+
+        let run = |owner: &'static str| {
+            let locks = locks.clone();
+            let resources = resources.clone();
+            let concurrent = concurrent.clone();
+            let max_seen = max_seen.clone();
+            async move {
+                with_step_resources(
+                    Some(&locks),
+                    &resources,
+                    owner,
+                    Duration::from_secs(5),
+                    None,
+                    || {
+                        let concurrent = concurrent.clone();
+                        let max_seen = max_seen.clone();
+                        async move {
+                            let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_seen.fetch_max(now, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(80)).await;
+                            concurrent.fetch_sub(1, Ordering::SeqCst);
+                            1usize
+                        }
+                    },
+                )
+                .await
+            }
+        };
+
+        let (a, b) = tokio::join!(run("ch-1"), run("ch-2"));
+        assert_eq!(a.unwrap(), 1);
+        assert_eq!(b.unwrap(), 1);
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn with_step_resources_empty_skips_lock() {
+        let locks = ResourceLockManager::new();
+        let held = locks
+            .acquire(
+                &["station.dca".into()],
+                "holder",
+                Duration::from_secs(1),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Empty resources must not wait on the held lock.
+        let out = tokio::time::timeout(
+            Duration::from_millis(200),
+            with_step_resources(
+                Some(&locks),
+                &[],
+                "ch-0",
+                Duration::from_secs(5),
+                None,
+                || async { 42usize },
+            ),
+        )
+        .await
+        .expect("empty resources should not block")
+        .unwrap();
+        assert_eq!(out, 42);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn lock_timeout_marks_step_error_and_stops() {
+        let locks = ResourceLockManager::new();
+        let _holder = locks
+            .acquire(
+                &["station.dca".into()],
+                "holder",
+                Duration::from_secs(5),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut item = sample_item(0, "needs-lock");
+        item.resources = vec!["station.dca".into()];
+        item.fail_policy = "stop".into();
+        let items = vec![item, sample_item(1, "next")];
+
+        let mut call = 0usize;
+        let resp = run_sequence_with_opts(
+            &items,
+            SequenceRunOpts {
+                resource_locks: Some(locks.clone()),
+                resource_owner: "ch-0".into(),
+                resource_timeout: Duration::from_millis(40),
+                ..Default::default()
+            },
+            |_item| {
+                call += 1;
+                async move { Ok(serde_json::json!({})) }
+            },
+        )
+        .await;
+
+        assert_eq!(call, 0);
+        assert!(resp.stopped);
+        assert_eq!(resp.failed_at, Some(0));
+        assert_eq!(resp.steps.len(), 1);
+        assert_eq!(resp.steps[0].status, "error");
+        assert!(!resp.steps[0].ok);
+        let err = resp.steps[0].error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("station.dca"),
+            "error should mention resource, got: {err}"
+        );
+        assert_eq!(resp.overall, "error");
     }
 
     #[tokio::test]
@@ -700,7 +902,7 @@ mod tests {
         let items = vec![sample_item(0, "a")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), progress: None, },
+            SequenceRunOpts::default(),
             |_item| async move { Ok(serde_json::json!({ "SN": "DUT1" })) },
         )
         .await;
@@ -714,7 +916,7 @@ mod tests {
         let items = vec![sample_item(0, "a"), sample_item(1, "b")];
         let resp = run_sequence_with_opts(
             &items,
-            SequenceRunOpts { sn: None, work_order: None, vars: Default::default(), progress: None, },
+            SequenceRunOpts::default(),
             |item| {
                 let name = item.name.clone();
                 async move { Ok(serde_json::json!({ "name": name })) }

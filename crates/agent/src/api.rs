@@ -1577,8 +1577,7 @@ async fn labview_run_sequence(
         .map(|Json(req)| SequenceRunOpts {
             sn: normalize_run_sequence_opt(req.sn.clone()),
             work_order: normalize_run_sequence_opt(req.work_order.clone()),
-            vars: Default::default(),
-            progress: None,
+            ..Default::default()
         })
         .unwrap_or_default();
     run_opts.vars = load_settings_vars(&s).await;
