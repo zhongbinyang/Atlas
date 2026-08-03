@@ -169,6 +169,147 @@ function isSystemVarName(name) {
   return name === 'Hostname' || name === 'IP';
 }
 
+var DEVICE_CFG_ADDRESS_KEYS = {
+  IP_Add: true,
+  Com_Add: true,
+  Intru_Com_Add: true,
+  COM: true,
+  EVB_SN: true,
+  Port: true,
+};
+
+function sanitizeDeviceCfgIdent(raw) {
+  var s = String(raw || '')
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!s) return '';
+  if (!/^[A-Za-z_]/.test(s)) s = 'V_' + s;
+  if (s.length > 64) s = s.slice(0, 64).replace(/_+$/g, '');
+  return s;
+}
+
+function normalizeDeviceCfgValue(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (
+    (s.charAt(0) === '"' && s.charAt(s.length - 1) === '"') ||
+    (s.charAt(0) === "'" && s.charAt(s.length - 1) === "'")
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  // Legacy quirk: trailing extra quote e.g. "192.168.6.13""
+  if (s.charAt(s.length - 1) === '"' && s.indexOf('"') === s.length - 1) {
+    s = s.slice(0, -1).trim();
+  }
+  return s;
+}
+
+function parseDeviceCfgIni(text) {
+  var entries = [];
+  var section = '';
+  var lines = String(text || '').split(/\r?\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line) continue;
+    if (line.charAt(0) === '#' || line.charAt(0) === ';' || line.indexOf('//') === 0) continue;
+    if (line.indexOf('/*') === 0) continue;
+    var sec = line.match(/^\[([^\]]+)\]$/);
+    if (sec) {
+      section = sec[1].trim();
+      continue;
+    }
+    var eq = line.indexOf('=');
+    if (eq < 0) continue;
+    var key = line.slice(0, eq).trim();
+    var value = line.slice(eq + 1).trim();
+    if (!key || key.charAt(0) === '#') continue;
+    entries.push({ section: section, key: key, value: value });
+  }
+  return entries;
+}
+
+function buildDeviceCfgImportPreview(text, existingVariables) {
+  var existing = {};
+  (existingVariables || []).forEach(function (v) {
+    if (v && v.name) existing[v.name] = true;
+  });
+  var usedNames = {};
+  var rows = [];
+  var skipped = 0;
+  var added = 0;
+  var updated = 0;
+  var entries = parseDeviceCfgIni(text);
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (!DEVICE_CFG_ADDRESS_KEYS[e.key]) {
+      skipped += 1;
+      continue;
+    }
+    var value = normalizeDeviceCfgValue(e.value);
+    if (!value) {
+      skipped += 1;
+      continue;
+    }
+    var base = sanitizeDeviceCfgIdent(e.section + '_' + e.key);
+    if (!base || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(base)) {
+      skipped += 1;
+      continue;
+    }
+    var name = base;
+    var n = 2;
+    while (usedNames[name] && usedNames[name] !== e.section + '\0' + e.key) {
+      var suffix = '_' + n;
+      name = (base.slice(0, Math.max(1, 64 - suffix.length)) + suffix).replace(/_+$/g, '');
+      n += 1;
+    }
+    usedNames[name] = e.section + '\0' + e.key;
+    var status = existing[name] ? 'update' : 'add';
+    if (status === 'add') added += 1;
+    else updated += 1;
+    rows.push({
+      name: name,
+      value: value,
+      description: '从 Device_CFG [' + e.section + '] ' + e.key + ' 导入',
+      section: e.section,
+      key: e.key,
+      status: status,
+    });
+  }
+  return {
+    rows: rows,
+    summary: { added: added, updated: updated, skipped: skipped },
+  };
+}
+
+function mergeDeviceCfgPreviewIntoVariables(existingVariables, previewRows) {
+  var byName = {};
+  var out = (existingVariables || []).map(function (v) {
+    var copy = {
+      name: v.name || '',
+      value: v.value == null ? '' : String(v.value),
+      description: v.description || '',
+    };
+    byName[copy.name] = copy;
+    return copy;
+  });
+  (previewRows || []).forEach(function (row) {
+    if (!row || (row.status !== 'add' && row.status !== 'update')) return;
+    if (byName[row.name]) {
+      byName[row.name].value = row.value;
+      byName[row.name].description = row.description || byName[row.name].description;
+    } else {
+      var nv = {
+        name: row.name,
+        value: row.value,
+        description: row.description || '',
+      };
+      byName[row.name] = nv;
+      out.push(nv);
+    }
+  });
+  return out;
+}
+
 function cloneSettingsData(data) {
   return {
     units: (data.units || []).map(function (u) {

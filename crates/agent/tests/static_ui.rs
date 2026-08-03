@@ -146,6 +146,14 @@ fn settings_page_exposes_units_and_variables() {
             && APP.contains("/api/settings"),
         "settings UI must support dirty state, system vars, Spec unit + / picker"
     );
+    assert!(
+        APP.contains("DEVICE_CFG_ADDRESS_KEYS")
+            && APP.contains("parseDeviceCfgIni")
+            && APP.contains("buildDeviceCfgImportPreview")
+            && APP.contains("mergeDeviceCfgPreviewIntoVariables")
+            && APP.contains("sanitizeDeviceCfgIdent"),
+        "settings must expose Device_CFG.ini parse/preview/merge helpers"
+    );
 }
 
 #[test]
