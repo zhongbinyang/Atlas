@@ -1,8 +1,10 @@
-//! Builtin general (non-LabVIEW) steps, starting with delay.
+//! Builtin general (non-LabVIEW) steps: delay, version, …
 
 pub const KIND_LABVIEW: &str = "labview";
 pub const KIND_DELAY: &str = "delay";
+pub const KIND_VERSION: &str = "version";
 pub const DELAY_VI_PATH: &str = "__builtin__/delay";
+pub const VERSION_VI_PATH: &str = "__builtin__/version";
 
 use serde_json::Value;
 use std::time::Duration;
@@ -84,6 +86,35 @@ pub async fn run_delay_ms(delay_ms: u64) -> Value {
     })
 }
 
+/// Agent package version from Cargo.toml (`CARGO_PKG_VERSION`).
+pub fn agent_package_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub fn version_inputs() -> Value {
+    serde_json::json!({})
+}
+
+pub fn version_outputs() -> Value {
+    serde_json::json!({
+        "ok": true,
+        "kind": KIND_VERSION,
+        "version": agent_package_version()
+    })
+}
+
+pub fn is_version_template(kind: Option<&str>, vi_path: &str) -> bool {
+    kind == Some(KIND_VERSION) || vi_path == VERSION_VI_PATH
+}
+
+pub fn run_read_version() -> Value {
+    serde_json::json!({
+        "ok": true,
+        "kind": KIND_VERSION,
+        "version": agent_package_version()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +144,25 @@ mod tests {
         assert!(is_delay_template(Some(KIND_DELAY), "x"));
         assert!(is_delay_template(None, DELAY_VI_PATH));
         assert!(!is_delay_template(Some(KIND_LABVIEW), r"C:\a.vi"));
+    }
+
+    #[test]
+    fn version_outputs_match_runtime() {
+        let outs = version_outputs();
+        let run = run_read_version();
+        assert_eq!(outs.get("kind").and_then(|v| v.as_str()), Some(KIND_VERSION));
+        assert_eq!(
+            outs.get("version").and_then(|v| v.as_str()),
+            Some(agent_package_version())
+        );
+        assert_eq!(outs, run);
+        assert!(!agent_package_version().is_empty());
+    }
+
+    #[test]
+    fn detects_version() {
+        assert!(is_version_template(Some(KIND_VERSION), "x"));
+        assert!(is_version_template(None, VERSION_VI_PATH));
+        assert!(!is_version_template(Some(KIND_DELAY), "x"));
     }
 }

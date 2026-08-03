@@ -232,6 +232,25 @@
             <pre id="gen-delay-out" class="mono lv-pre" hidden></pre>
             <p id="gen-delay-msg" class="msg" hidden></p>
           </section>
+
+          <!-- Version 编辑卡 -->
+          <section class="gen-card" id="general-version-section">
+            <h3 class="gen-card-title">读取版本号 (Version)</h3>
+            <p class="muted-hint">读取本 Agent 程序版本（编译时 Cargo 版本），可试跑或注册到中心后加入序列。</p>
+            <div class="lv-toolbar">
+              <label class="lv-path-label">
+                <span class="label">名称</span>
+                <input id="gen-version-name" type="text" class="lv-path-input" placeholder="显示名称（必填）" value="读取 Agent 版本" required>
+              </label>
+              <p class="muted-hint" id="gen-version-current">当前版本：点击试跑读取</p>
+            </div>
+            <div class="lv-actions">
+              <button id="gen-version-run-btn" type="button">试跑</button>
+              <button id="gen-version-register-btn" type="button" class="btn-primary">注册到中心</button>
+            </div>
+            <pre id="gen-version-out" class="mono lv-pre" hidden></pre>
+            <p id="gen-version-msg" class="msg" hidden></p>
+          </section>
           <!-- 后续通用函数卡在此扩展 -->
         </div>
 
@@ -501,6 +520,11 @@
           <h3>执行顺序</h3>
           <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略，并查看实测与原始返回</p>
           <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
+          <div class="seq-queue-toolbar">
+            <button type="button" id="seq-insert-group" class="btn-sm">新建分组</button>
+            <button type="button" id="seq-group-selected" class="btn-sm" disabled title="将勾选的步骤编成一组">编成一组</button>
+            <span id="seq-insert-badge" class="seq-insert-badge" aria-live="polite">将加入：队尾（根级）</span>
+          </div>
           <div class="table-scroll seq-queue-scroll">
             <table class="seq-selected-table">
               <thead>

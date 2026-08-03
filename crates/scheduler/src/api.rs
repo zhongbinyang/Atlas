@@ -92,6 +92,10 @@ pub struct SequenceTemplateStepView {
     pub fail_policy: String,
     pub limits: serde_json::Value,
     pub note: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +180,15 @@ impl TryFrom<GeneralTemplateEnriched> for GeneralTemplateView {
 }
 
 fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTemplateStepView, String> {
+    let name = if step.template_source == "group" {
+        if step.title.trim().is_empty() {
+            "分组".to_string()
+        } else {
+            step.title.clone()
+        }
+    } else {
+        String::new()
+    };
     Ok(SequenceTemplateStepView {
         position: step.position,
         template_source: step.template_source,
@@ -187,6 +200,8 @@ fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTem
         fail_policy: step.fail_policy,
         limits: parse_json_text(&step.limits_json, "limits_json")?,
         note: step.note,
+        name,
+        collapsed: step.collapsed,
     })
 }
 
@@ -313,6 +328,8 @@ pub struct ViRunQueueItemView {
     pub fail_policy: String,
     pub limits: serde_json::Value,
     pub note: String,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -342,6 +359,11 @@ pub struct ReplaceViRunQueueItem {
     pub limits: serde_json::Value,
     #[serde(default)]
     pub note: String,
+    /// Group title (`template_source=group`); ignored for steps.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
@@ -369,6 +391,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         fail_policy: item.fail_policy,
         limits,
         note: item.note,
+        collapsed: item.collapsed,
     })
 }
 
@@ -1441,7 +1464,8 @@ async fn put_vi_run_queue(
         } else {
             item.template_source.trim().to_string()
         };
-        let (vi_template_id, general_template_id) = match source.as_str() {
+        let (vi_template_id, general_template_id, title) = match source.as_str() {
+            "group" => (None, None, item.name),
             "general" => {
                 if item.general_template_id.is_none() {
                     return (
@@ -1452,7 +1476,7 @@ async fn put_vi_run_queue(
                     )
                         .into_response();
                 }
-                (None, item.general_template_id)
+                (None, item.general_template_id, String::new())
             }
             _ => {
                 if item.vi_template_id.is_none() {
@@ -1464,7 +1488,7 @@ async fn put_vi_run_queue(
                     )
                         .into_response();
                 }
-                (item.vi_template_id, None)
+                (item.vi_template_id, None, String::new())
             }
         };
         let limits_json = match serde_json::to_string(&item.limits) {
@@ -1504,6 +1528,8 @@ async fn put_vi_run_queue(
             fail_policy: item.fail_policy,
             limits_json,
             note: item.note,
+            title,
+            collapsed: item.collapsed,
         });
     }
 

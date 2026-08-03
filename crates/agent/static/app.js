@@ -1968,6 +1968,9 @@ let seqPaused = false;
 let seqStepResults = {};
 let seqProgressPollTimer = null;
 let seqDragIndex = null;
+let seqFocusIndex = null;
+let seqCheckedIndexes = {};
+let seqDropPlacement = null;
 let seqInputsEditIndex = -1;
 let seqTemplates = [];
 let seqActiveTemplateId = null;
@@ -2036,6 +2039,13 @@ function setSeqControlsDisabled(disabled) {
   if (abortBtn) abortBtn.disabled = !seqPaused;
   if (snEl) snEl.disabled = disabled || seqPaused;
   if (woEl) woEl.disabled = disabled || seqPaused;
+  const insertGroupBtn = document.getElementById('seq-insert-group');
+  if (insertGroupBtn) insertGroupBtn.disabled = disabled || seqPaused;
+  updateGroupSelectedBtn();
+  if (disabled || seqPaused) {
+    const groupSelectedBtn = document.getElementById('seq-group-selected');
+    if (groupSelectedBtn) groupSelectedBtn.disabled = true;
+  }
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
     if (btn.classList.contains('seq-detail-toggle')) return;
     btn.disabled = disabled || seqPaused;
@@ -2776,25 +2786,449 @@ function toggleSeqDetail(index) {
   renderSeqSelected();
 }
 
+function isSeqGroupItem(item) {
+  return !!(item && item.template_source === 'group');
+}
+
+function makeSeqGroupItem(name) {
+  return {
+    template_source: 'group',
+    name: name || nextGroupDefaultName(),
+    enabled: true,
+    collapsed: false,
+    vi_template_id: null,
+    general_template_id: null,
+    inputs: [],
+    breakpoint: false,
+    fail_policy: 'stop',
+    limits: [],
+    note: '',
+  };
+}
+
+/** Exclusive end index of the block starting at groupHeaderIndex (header + members). */
+function endOfGroup(groupHeaderIndex) {
+  for (let j = groupHeaderIndex + 1; j < seqSelected.length; j++) {
+    if (isSeqGroupItem(seqSelected[j])) return j;
+  }
+  return seqSelected.length;
+}
+
+function groupMemberCount(groupHeaderIndex) {
+  return Math.max(0, endOfGroup(groupHeaderIndex) - groupHeaderIndex - 1);
+}
+
+/** Group header index owning stepIndex, or -1 if ungrouped / invalid. */
+function owningGroupHeaderIndex(stepIndex) {
+  if (stepIndex < 0 || stepIndex >= seqSelected.length) return -1;
+  if (isSeqGroupItem(seqSelected[stepIndex])) return stepIndex;
+  for (let j = stepIndex; j >= 0; j--) {
+    if (isSeqGroupItem(seqSelected[j])) return j;
+  }
+  return -1;
+}
+
+/** Where to insert a new step: end of focused group, else after focus, else tail. */
+function insertIndexForNewStep() {
+  if (seqFocusIndex == null || seqFocusIndex < 0 || seqFocusIndex >= seqSelected.length) {
+    return seqSelected.length;
+  }
+  const focus = seqFocusIndex;
+  if (isSeqGroupItem(seqSelected[focus])) {
+    return endOfGroup(focus);
+  }
+  const gh = owningGroupHeaderIndex(focus);
+  if (gh >= 0) return endOfGroup(gh);
+  return focus + 1;
+}
+
+function updateSeqInsertBadge() {
+  const el = document.getElementById('seq-insert-badge');
+  if (!el) return;
+  if (seqFocusIndex == null || seqFocusIndex < 0 || seqFocusIndex >= seqSelected.length) {
+    el.textContent = '将加入：队尾（根级）';
+    return;
+  }
+  const focus = seqFocusIndex;
+  if (isSeqGroupItem(seqSelected[focus])) {
+    el.textContent = '将加入：分组「' + (seqSelected[focus].name || '分组') + '」';
+    return;
+  }
+  const gh = owningGroupHeaderIndex(focus);
+  if (gh >= 0) {
+    el.textContent = '将加入：分组「' + (seqSelected[gh].name || '分组') + '」';
+    return;
+  }
+  el.textContent = '将加入：选中步骤之后（根级）';
+}
+
+function updateGroupSelectedBtn() {
+  const btn = document.getElementById('seq-group-selected');
+  if (!btn) return;
+  let n = 0;
+  Object.keys(seqCheckedIndexes).forEach(function (k) {
+    const i = parseInt(k, 10);
+    if (seqCheckedIndexes[k] && !isSeqGroupItem(seqSelected[i])) n += 1;
+  });
+  btn.disabled = seqRunning || seqPaused || n < 1;
+}
+
+function setSeqFocus(index) {
+  seqFocusIndex = index;
+  document.querySelectorAll('#seq-selected-body tr.seq-row').forEach(function (r) {
+    const i = parseInt(r.getAttribute('data-index'), 10);
+    r.classList.toggle('seq-row-focused', i === index);
+  });
+  updateSeqInsertBadge();
+}
+
+function seqGroupUiFlags(items) {
+  let groupEnabled = true;
+  let collapsed = false;
+  return items.map(function (item) {
+    if (isSeqGroupItem(item)) {
+      groupEnabled = item.enabled !== false;
+      collapsed = !!item.collapsed;
+      return { isGroup: true, groupEnabled: true, hidden: false };
+    }
+    return { isGroup: false, groupEnabled: groupEnabled, hidden: collapsed };
+  });
+}
+
+function nextGroupDefaultName() {
+  let n = 1;
+  for (let i = 0; i < seqSelected.length; i++) {
+    if (!isSeqGroupItem(seqSelected[i])) continue;
+    const m = String(seqSelected[i].name || '').match(/^分组\s*(\d+)$/);
+    if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+  }
+  return '分组 ' + n;
+}
+
+/** Pure: wrap selected step indexes into a new group header block. */
+function groupSelectedSteps(items, indexes) {
+  const sorted = (indexes || [])
+    .map(function (i) { return parseInt(i, 10); })
+    .filter(function (i) {
+      return i >= 0 && i < items.length && !isSeqGroupItem(items[i]);
+    })
+    .sort(function (a, b) { return a - b; });
+  if (!sorted.length) return items.slice();
+  const pickSet = {};
+  sorted.forEach(function (i) { pickSet[i] = true; });
+  const picked = sorted.map(function (i) { return items[i]; });
+  const rest = [];
+  for (let i = 0; i < items.length; i++) {
+    if (!pickSet[i]) rest.push(items[i]);
+  }
+  let insertAt = 0;
+  for (let i = 0; i < sorted[0]; i++) {
+    if (!pickSet[i]) insertAt += 1;
+  }
+  const header = makeSeqGroupItem(nextGroupDefaultName());
+  return rest.slice(0, insertAt).concat([header], picked, rest.slice(insertAt));
+}
+
+async function insertSeqGroup() {
+  if (seqRunning || seqPaused) return;
+  const newGroup = makeSeqGroupItem(nextGroupDefaultName());
+  let at = seqSelected.length;
+  if (seqFocusIndex != null && seqFocusIndex >= 0 && seqFocusIndex < seqSelected.length) {
+    const gh = owningGroupHeaderIndex(seqFocusIndex);
+    if (gh >= 0) {
+      at = endOfGroup(gh);
+    } else {
+      at = seqFocusIndex + 1;
+    }
+  }
+  seqSelected.splice(at, 0, newGroup);
+  seqFocusIndex = at;
+  renderSeqSelected();
+  await saveQueue();
+}
+
+async function groupCheckedIntoFolder() {
+  if (seqRunning || seqPaused) return;
+  const indexes = Object.keys(seqCheckedIndexes)
+    .map(function (k) { return parseInt(k, 10); })
+    .filter(function (i) { return seqCheckedIndexes[i] && !isSeqGroupItem(seqSelected[i]); });
+  if (!indexes.length) return;
+  seqSelected = groupSelectedSteps(seqSelected, indexes);
+  seqCheckedIndexes = {};
+  // Focus the new group header (first selected index mapped after regroup).
+  const minOld = Math.min.apply(null, indexes);
+  let insertAt = 0;
+  for (let i = 0; i < minOld; i++) {
+    if (indexes.indexOf(i) < 0) insertAt += 1;
+  }
+  // After regroup, header sits at insertAt among remaining-non-picked + ...
+  // groupSelectedSteps inserts header at `insertAt` in `rest`.
+  seqFocusIndex = insertAt;
+  renderSeqSelected();
+  await saveQueue();
+  showSeqMsg('已编成一组', true);
+}
+
+function clearSeqDropUi() {
+  document.querySelectorAll(
+    '#seq-selected-body tr.seq-drop-before, #seq-selected-body tr.seq-drop-after, #seq-selected-body tr.seq-drop-after-block, #seq-selected-body tr.seq-drop-into, #seq-selected-body tr.seq-drag-over'
+  ).forEach(function (el) {
+    el.classList.remove('seq-drop-before', 'seq-drop-after', 'seq-drop-after-block', 'seq-drop-into', 'seq-drag-over');
+  });
+  seqDropPlacement = null;
+}
+
+function computeSeqDropPlacement(e, row) {
+  const index = parseInt(row.getAttribute('data-index'), 10);
+  if (Number.isNaN(index)) return null;
+  const forced = row.getAttribute('data-drop-mode');
+  if (forced === 'into') return { mode: 'into', index: index };
+  const rect = row.getBoundingClientRect();
+  const ratio = (e.clientY - rect.top) / Math.max(rect.height, 1);
+  if (isSeqGroupItem(seqSelected[index])) {
+    if (ratio < 0.28) return { mode: 'before', index: index };
+    if (ratio > 0.72) return { mode: 'after-block', index: index };
+    return { mode: 'into', index: index };
+  }
+  if (ratio < 0.5) return { mode: 'before', index: index };
+  return { mode: 'after', index: index };
+}
+
+function applySeqDropPlacementVisual(placement) {
+  clearSeqDropUi();
+  if (!placement) return;
+  seqDropPlacement = placement;
+  const row = document.querySelector(
+    '#seq-selected-body tr.seq-row[data-index="' + placement.index + '"], #seq-selected-body tr.seq-group-empty-row[data-index="' + placement.index + '"]'
+  );
+  if (!row) return;
+  if (placement.mode === 'before') row.classList.add('seq-drop-before');
+  else if (placement.mode === 'after') row.classList.add('seq-drop-after');
+  else if (placement.mode === 'after-block') row.classList.add('seq-drop-after-block');
+  else if (placement.mode === 'into') row.classList.add('seq-drop-into');
+}
+
+/** Root-level insert index for moving a whole group block. */
+function rootInsertIndexFromPlacement(placement) {
+  if (!placement || placement.mode === 'into') return null;
+  const idx = placement.index;
+  if (placement.mode === 'before') {
+    if (isSeqGroupItem(seqSelected[idx])) return idx;
+    const gh = owningGroupHeaderIndex(idx);
+    return gh >= 0 ? gh : idx;
+  }
+  if (placement.mode === 'after') {
+    if (isSeqGroupItem(seqSelected[idx])) return endOfGroup(idx);
+    const gh = owningGroupHeaderIndex(idx);
+    return gh >= 0 ? endOfGroup(gh) : idx + 1;
+  }
+  if (placement.mode === 'after-block') return endOfGroup(idx);
+  return null;
+}
+
+/** Insert index for moving a single step (may enter/leave groups). */
+function stepInsertIndexFromPlacement(placement) {
+  if (!placement) return null;
+  const idx = placement.index;
+  if (placement.mode === 'into') {
+    if (!isSeqGroupItem(seqSelected[idx])) return null;
+    return endOfGroup(idx);
+  }
+  if (placement.mode === 'before') return idx;
+  if (placement.mode === 'after') return idx + 1;
+  if (placement.mode === 'after-block') return endOfGroup(idx);
+  return null;
+}
+
+function relocateQueueSlice(start, endExclusive, insertAt) {
+  if (insertAt == null || start < 0 || endExclusive <= start) return null;
+  if (insertAt >= start && insertAt <= endExclusive) return start;
+  const block = seqSelected.splice(start, endExclusive - start);
+  let at = insertAt;
+  if (start < insertAt) at = insertAt - block.length;
+  seqSelected.splice(at, 0, ...block);
+  return at;
+}
+
 function renderSeqSelected() {
   const tbody = document.getElementById('seq-selected-body');
   tbody.innerHTML = '';
   const keep = {};
   for (let i = 0; i < seqSelected.length; i++) {
-    if (seqExpandedIndexes[i]) keep[i] = true;
+    if (seqExpandedIndexes[i] && !isSeqGroupItem(seqSelected[i])) keep[i] = true;
   }
   seqExpandedIndexes = keep;
+  const nextChecked = {};
+  Object.keys(seqCheckedIndexes).forEach(function (k) {
+    const i = parseInt(k, 10);
+    if (seqCheckedIndexes[k] && i >= 0 && i < seqSelected.length && !isSeqGroupItem(seqSelected[i])) {
+      nextChecked[i] = true;
+    }
+  });
+  seqCheckedIndexes = nextChecked;
+
   if (!seqSelected.length) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
     setSeqControlsDisabled(false);
+    seqFocusIndex = null;
+    updateSeqInsertBadge();
+    updateGroupSelectedBtn();
     return;
   }
+  if (seqFocusIndex != null && (seqFocusIndex < 0 || seqFocusIndex >= seqSelected.length)) {
+    seqFocusIndex = null;
+  }
+  const flags = seqGroupUiFlags(seqSelected);
   for (let i = 0; i < seqSelected.length; i++) {
     const item = seqSelected[i];
+    const flag = flags[i];
+    if (flag.hidden) continue;
+
+    if (flag.isGroup) {
+      const members = groupMemberCount(i);
+      const row = document.createElement('tr');
+      row.setAttribute('data-index', String(i));
+      row.draggable = !seqRunning && !seqPaused;
+      row.className =
+        'seq-row seq-group-row' +
+        (item.enabled === false ? ' seq-group-disabled' : '') +
+        (seqFocusIndex === i ? ' seq-row-focused' : '');
+
+      const numTd = document.createElement('td');
+      numTd.className = 'mono';
+      const indexWrap = document.createElement('span');
+      indexWrap.className = 'seq-outline-index';
+      const collapseBtn = document.createElement('button');
+      collapseBtn.type = 'button';
+      collapseBtn.className = 'btn-sm seq-group-collapse';
+      collapseBtn.textContent = item.collapsed ? '▶' : '▼';
+      collapseBtn.title = item.collapsed ? '展开分组' : '折叠分组';
+      collapseBtn.disabled = seqRunning || seqPaused;
+      collapseBtn.addEventListener('click', async function (ev) {
+        ev.stopPropagation();
+        item.collapsed = !item.collapsed;
+        renderSeqSelected();
+        await saveQueue();
+      });
+      indexWrap.appendChild(collapseBtn);
+      indexWrap.appendChild(document.createTextNode(String(i + 1)));
+      numTd.appendChild(indexWrap);
+      row.appendChild(numTd);
+
+      const enTd = document.createElement('td');
+      enTd.className = 'seq-check-cell';
+      const enabledCb = document.createElement('input');
+      enabledCb.type = 'checkbox';
+      enabledCb.checked = item.enabled !== false;
+      enabledCb.title = '启用整组';
+      enabledCb.disabled = seqRunning || seqPaused;
+      enabledCb.addEventListener('change', async function () {
+        item.enabled = enabledCb.checked;
+        await saveQueue();
+      });
+      enTd.appendChild(enabledCb);
+      row.appendChild(enTd);
+
+      row.appendChild(document.createElement('td')); // 断点空
+
+      const nameTd = document.createElement('td');
+      const folderMark = document.createElement('span');
+      folderMark.className = 'seq-folder-mark';
+      folderMark.textContent = '组 ';
+      nameTd.appendChild(folderMark);
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'seq-group-title';
+      nameInput.value = item.name || '分组';
+      nameInput.disabled = seqRunning || seqPaused;
+      nameInput.setAttribute('aria-label', '分组名称');
+      nameInput.addEventListener('change', async function () {
+        item.name = nameInput.value.trim() || '分组';
+        await saveQueue();
+      });
+      nameTd.appendChild(nameInput);
+      const meta = document.createElement('span');
+      meta.className = 'seq-group-meta';
+      meta.textContent = members ? members + ' 项' : '空';
+      nameTd.appendChild(meta);
+      row.appendChild(nameTd);
+
+      const kindTd = document.createElement('td');
+      kindTd.textContent = '分组';
+      row.appendChild(kindTd);
+
+      for (let c = 0; c < 5; c++) {
+        const td = document.createElement('td');
+        td.textContent = '—';
+        row.appendChild(td);
+      }
+
+      const actions = document.createElement('td');
+      actions.className = 'seq-row-actions';
+      const upBtn = document.createElement('button');
+      upBtn.type = 'button';
+      upBtn.textContent = '↑';
+      upBtn.title = '上移整组';
+      upBtn.disabled = seqRunning || seqPaused || i === 0;
+      upBtn.addEventListener('click', function () { moveQueueItem(i, -1); });
+      const downBtn = document.createElement('button');
+      downBtn.type = 'button';
+      downBtn.textContent = '↓';
+      downBtn.title = '下移整组';
+      downBtn.disabled = seqRunning || seqPaused || endOfGroup(i) >= seqSelected.length;
+      downBtn.addEventListener('click', function () { moveQueueItem(i, 1); });
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.textContent = '解散分组';
+      removeBtn.title = '删除分组，保留组内步骤到根级';
+      removeBtn.disabled = seqRunning || seqPaused;
+      removeBtn.addEventListener('click', function () { removeFromQueue(i); });
+      actions.appendChild(upBtn);
+      actions.appendChild(document.createTextNode(' '));
+      actions.appendChild(downBtn);
+      actions.appendChild(document.createTextNode(' '));
+      actions.appendChild(removeBtn);
+      row.appendChild(actions);
+
+      row.addEventListener('dragstart', onSeqDragStart);
+      row.addEventListener('dragover', onSeqDragOver);
+      row.addEventListener('dragleave', onSeqDragLeave);
+      row.addEventListener('drop', onSeqDrop);
+      row.addEventListener('dragend', onSeqDragEnd);
+      row.addEventListener('click', function (ev) {
+        if (ev.target.closest('button, input, select, textarea, a, label')) return;
+        setSeqFocus(i);
+      });
+      tbody.appendChild(row);
+
+      if (!item.collapsed && members === 0) {
+        const emptyRow = document.createElement('tr');
+        emptyRow.className = 'seq-group-empty-row';
+        emptyRow.setAttribute('data-index', String(i));
+        emptyRow.setAttribute('data-drop-mode', 'into');
+        const emptyTd = document.createElement('td');
+        emptyTd.colSpan = 11;
+        emptyTd.textContent = '拖入步骤到此分组';
+        emptyRow.appendChild(emptyTd);
+        emptyRow.addEventListener('dragover', onSeqDragOver);
+        emptyRow.addEventListener('dragleave', onSeqDragLeave);
+        emptyRow.addEventListener('drop', onSeqDrop);
+        tbody.appendChild(emptyRow);
+      }
+      continue;
+    }
+
+    const inGroup = owningGroupHeaderIndex(i) >= 0 && !isSeqGroupItem(item);
     const row = document.createElement('tr');
     row.setAttribute('data-index', String(i));
     row.draggable = !seqRunning && !seqPaused;
-    row.className = 'seq-row' + (seqExpandedIndexes[i] ? ' seq-row-expanded' : '');
+    row.className =
+      'seq-row' +
+      (inGroup ? ' seq-outline-child' : '') +
+      (seqExpandedIndexes[i] ? ' seq-row-expanded' : '') +
+      (flag.groupEnabled ? '' : ' seq-step-group-disabled') +
+      (seqFocusIndex === i ? ' seq-row-focused' : '') +
+      (seqCheckedIndexes[i] ? ' seq-row-picked' : '');
     const pos = item.position != null ? item.position : i;
     const stepResult = seqStepResults[pos];
     const source = item.template_source === 'general' ? 'general' : 'labview';
@@ -2809,7 +3243,7 @@ function renderSeqSelected() {
     const limitCells = formatSeqLimitCells(item, stepResult);
 
     row.innerHTML =
-      '<td class="mono">' + (i + 1) + '</td>' +
+      '<td class="mono"></td>' +
       '<td class="seq-check-cell"></td>' +
       '<td class="seq-check-cell"></td>' +
       '<td>' + name + '</td>' +
@@ -2820,10 +3254,29 @@ function renderSeqSelected() {
       '<td class="seq-limit-cell mono">' + limitCells.max + '</td>' +
       '<td class="seq-limit-cell mono">' + limitCells.unit + '</td>';
 
+    const indexWrap = document.createElement('span');
+    indexWrap.className = 'seq-outline-index';
+    const pick = document.createElement('input');
+    pick.type = 'checkbox';
+    pick.className = 'seq-pick';
+    pick.title = '勾选后可「编成一组」';
+    pick.checked = !!seqCheckedIndexes[i];
+    pick.disabled = seqRunning || seqPaused;
+    pick.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    pick.addEventListener('change', function () {
+      if (pick.checked) seqCheckedIndexes[i] = true;
+      else delete seqCheckedIndexes[i];
+      row.classList.toggle('seq-row-picked', !!pick.checked);
+      updateGroupSelectedBtn();
+    });
+    indexWrap.appendChild(pick);
+    indexWrap.appendChild(document.createTextNode(String(i + 1)));
+    row.children[0].appendChild(indexWrap);
+
     const enabledCb = document.createElement('input');
     enabledCb.type = 'checkbox';
     enabledCb.checked = enabled;
-    enabledCb.title = '启用';
+    enabledCb.title = flag.groupEnabled ? '启用' : '所属分组已禁用';
     enabledCb.disabled = seqRunning || seqPaused;
     enabledCb.addEventListener('change', async function () {
       item.enabled = enabledCb.checked;
@@ -2882,6 +3335,10 @@ function renderSeqSelected() {
     row.addEventListener('dragleave', onSeqDragLeave);
     row.addEventListener('drop', onSeqDrop);
     row.addEventListener('dragend', onSeqDragEnd);
+    row.addEventListener('click', function (ev) {
+      if (ev.target.closest('button, input, select, textarea, a, label')) return;
+      setSeqFocus(i);
+    });
     tbody.appendChild(row);
 
     const detailRow = document.createElement('tr');
@@ -2960,6 +3417,8 @@ function renderSeqSelected() {
     tbody.appendChild(detailRow);
   }
   setSeqControlsDisabled(seqRunning);
+  updateSeqInsertBadge();
+  updateGroupSelectedBtn();
 }
 
 function renderSeqInputsCell(host, item, index) {
@@ -2985,6 +3444,19 @@ function renderSeqInputsCell(host, item, index) {
 async function saveQueue() {
   const body = {
     items: seqSelected.map(function (item) {
+      if (item.template_source === 'group') {
+        return {
+          template_source: 'group',
+          name: item.name || '分组',
+          enabled: item.enabled !== false,
+          collapsed: !!item.collapsed,
+          note: item.note || '',
+          inputs: [],
+          limits: [],
+          breakpoint: false,
+          fail_policy: 'stop',
+        };
+      }
       return {
         template_source: item.template_source === 'general' ? 'general' : 'labview',
         vi_template_id: item.template_source === 'general' ? null : item.vi_template_id,
@@ -3128,7 +3600,7 @@ async function addToQueue(template) {
     showSeqMsg('模板缺少 ID', false);
     return;
   }
-  seqSelected.push({
+  const newItem = {
     template_source: template._source === 'general' ? 'general' : 'labview',
     vi_template_id: template._source === 'general' ? null : templateId,
     general_template_id: template._source === 'general' ? templateId : null,
@@ -3141,22 +3613,73 @@ async function addToQueue(template) {
     fail_policy: 'stop',
     limits: [],
     note: '',
-  });
+  };
+  const at = insertIndexForNewStep();
+  seqSelected.splice(at, 0, newItem);
+  seqFocusIndex = at;
   renderSeqSelected();
   await saveQueue();
 }
 
 async function removeFromQueue(index) {
   seqSelected.splice(index, 1);
+  if (seqFocusIndex === index) seqFocusIndex = null;
+  else if (seqFocusIndex != null && seqFocusIndex > index) seqFocusIndex -= 1;
+  const nextChecked = {};
+  Object.keys(seqCheckedIndexes).forEach(function (k) {
+    const i = parseInt(k, 10);
+    if (!seqCheckedIndexes[k] || i === index) return;
+    nextChecked[i > index ? i - 1 : i] = true;
+  });
+  seqCheckedIndexes = nextChecked;
   renderSeqSelected();
   await saveQueue();
 }
 
+function moveGroupBlock(groupIndex, delta) {
+  const end = endOfGroup(groupIndex);
+  const len = end - groupIndex;
+  const block = seqSelected.slice(groupIndex, end);
+  if (delta < 0) {
+    if (groupIndex === 0) return false;
+    const prev = groupIndex - 1;
+    const prevGroup = owningGroupHeaderIndex(prev);
+    const insertAt = prevGroup >= 0 && prevGroup < groupIndex ? prevGroup : prev;
+    seqSelected.splice(groupIndex, len);
+    seqSelected.splice(insertAt, 0, ...block);
+    seqFocusIndex = insertAt;
+    return true;
+  }
+  if (end >= seqSelected.length) return false;
+  if (isSeqGroupItem(seqSelected[end])) {
+    const nextEnd = endOfGroup(end);
+    seqSelected.splice(groupIndex, len);
+    const afterNext = groupIndex + (nextEnd - end);
+    seqSelected.splice(afterNext, 0, ...block);
+    seqFocusIndex = afterNext;
+    return true;
+  }
+  const insertAt = groupIndex + 1;
+  seqSelected.splice(groupIndex, len);
+  seqSelected.splice(insertAt, 0, ...block);
+  seqFocusIndex = insertAt;
+  return true;
+}
+
 async function moveQueueItem(index, delta) {
+  if (isSeqGroupItem(seqSelected[index])) {
+    if (!moveGroupBlock(index, delta)) return;
+    renderSeqSelected();
+    await saveQueue();
+    return;
+  }
   const newIndex = index + delta;
   if (newIndex < 0 || newIndex >= seqSelected.length) return;
+  // Moving a step onto a group header from below would nest incorrectly if we only swap:
+  // allow simple adjacent swap; membership follows positional owning group.
   const item = seqSelected.splice(index, 1)[0];
   seqSelected.splice(newIndex, 0, item);
+  seqFocusIndex = newIndex;
   renderSeqSelected();
   await saveQueue();
 }
@@ -3169,6 +3692,13 @@ function onSeqDragStart(e) {
   const row = e.currentTarget;
   seqDragIndex = parseInt(row.getAttribute('data-index'), 10);
   row.classList.add('seq-dragging');
+  if (isSeqGroupItem(seqSelected[seqDragIndex])) {
+    const end = endOfGroup(seqDragIndex);
+    document.querySelectorAll('#seq-selected-body tr.seq-row').forEach(function (r) {
+      const i = parseInt(r.getAttribute('data-index'), 10);
+      if (i > seqDragIndex && i < end) r.classList.add('seq-dragging');
+    });
+  }
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(seqDragIndex));
 }
@@ -3176,34 +3706,77 @@ function onSeqDragStart(e) {
 function onSeqDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  e.currentTarget.classList.add('seq-drag-over');
+  const placement = computeSeqDropPlacement(e, e.currentTarget);
+  if (!placement) return;
+  // Groups cannot nest into other groups.
+  if (
+    seqDragIndex != null &&
+    isSeqGroupItem(seqSelected[seqDragIndex]) &&
+    placement.mode === 'into'
+  ) {
+    clearSeqDropUi();
+    return;
+  }
+  applySeqDropPlacementVisual(placement);
 }
 
 function onSeqDragLeave(e) {
-  e.currentTarget.classList.remove('seq-drag-over');
+  const related = e.relatedTarget;
+  if (related && e.currentTarget.contains(related)) return;
+  e.currentTarget.classList.remove(
+    'seq-drag-over',
+    'seq-drop-before',
+    'seq-drop-after',
+    'seq-drop-after-block',
+    'seq-drop-into'
+  );
 }
 
 async function onSeqDrop(e) {
   e.preventDefault();
-  const targetRow = e.currentTarget;
-  targetRow.classList.remove('seq-drag-over');
-  if (seqDragIndex == null || seqRunning || seqPaused) return;
-  const dropIndex = parseInt(targetRow.getAttribute('data-index'), 10);
-  if (seqDragIndex === dropIndex) return;
-  const item = seqSelected.splice(seqDragIndex, 1)[0];
-  // After removal, indices after seqDragIndex shift down by one.
-  const insertAt = seqDragIndex < dropIndex ? dropIndex - 1 : dropIndex;
-  seqSelected.splice(insertAt, 0, item);
+  if (seqDragIndex == null || seqRunning || seqPaused) {
+    clearSeqDropUi();
+    return;
+  }
+  const placement = seqDropPlacement || computeSeqDropPlacement(e, e.currentTarget);
+  clearSeqDropUi();
+  if (!placement) return;
+
+  if (isSeqGroupItem(seqSelected[seqDragIndex])) {
+    const start = seqDragIndex;
+    const end = endOfGroup(start);
+    if (placement.index >= start && placement.index < end) return;
+    const insertAt = rootInsertIndexFromPlacement(placement);
+    if (insertAt == null) return;
+    const newFocus = relocateQueueSlice(start, end, insertAt);
+    if (newFocus == null) return;
+    seqFocusIndex = newFocus;
+  } else {
+    const start = seqDragIndex;
+    if (placement.mode === 'into' && placement.index === owningGroupHeaderIndex(start)) {
+      // dropping into own group end — still allow reorder to end
+    }
+    const insertAt = stepInsertIndexFromPlacement(placement);
+    if (insertAt == null) return;
+    if (insertAt === start || insertAt === start + 1) {
+      // no-op for before self / after self
+      if (placement.mode === 'before' && insertAt === start) return;
+      if (placement.mode === 'after' && insertAt === start + 1) return;
+    }
+    const newFocus = relocateQueueSlice(start, start + 1, insertAt);
+    if (newFocus == null) return;
+    seqFocusIndex = newFocus;
+  }
   seqDragIndex = null;
   renderSeqSelected();
   await saveQueue();
 }
 
 function onSeqDragEnd(e) {
-  e.currentTarget.classList.remove('seq-dragging');
-  document.querySelectorAll('.seq-drag-over').forEach(function (el) {
-    el.classList.remove('seq-drag-over');
+  document.querySelectorAll('#seq-selected-body tr.seq-dragging').forEach(function (el) {
+    el.classList.remove('seq-dragging');
   });
+  clearSeqDropUi();
   seqDragIndex = null;
 }
 
@@ -3493,11 +4066,73 @@ async function registerGeneralDelay() {
   }
 }
 
+function showGenVersionMsg(text, ok) {
+  const msg = document.getElementById('gen-version-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+async function runGeneralVersion() {
+  const outEl = document.getElementById('gen-version-out');
+  if (outEl) {
+    outEl.hidden = false;
+    outEl.textContent = '…';
+  }
+  showGenVersionMsg('试跑中…', true);
+  try {
+    const resp = await fetch('/api/general/version/run', { method: 'POST' });
+    const data = await resp.json();
+    if (outEl) outEl.textContent = JSON.stringify(data, null, 2);
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showGenVersionMsg('试跑失败: ' + err, false);
+      return;
+    }
+    const ver = data.version != null ? String(data.version) : '';
+    const cur = document.getElementById('gen-version-current');
+    if (cur && ver) cur.textContent = '当前版本：' + ver;
+    showGenVersionMsg('试跑完成' + (ver ? '：' + ver : ''), true);
+  } catch (e) {
+    if (outEl) outEl.textContent = e.message;
+    showGenVersionMsg('试跑失败: ' + e.message, false);
+  }
+}
+
+async function registerGeneralVersion() {
+  const name = String(document.getElementById('gen-version-name').value || '').trim();
+  if (!name) {
+    showGenVersionMsg('名称不能为空', false);
+    return;
+  }
+  showGenVersionMsg('注册中…', true);
+  try {
+    const resp = await fetch('/api/general/version/register-template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showGenVersionMsg('注册失败: ' + err, false);
+      return;
+    }
+    showGenVersionMsg('已注册: ' + (data.name || name) + ' (ID ' + data.id + ')', true);
+    await fetchGeneralTemplates();
+  } catch (e) {
+    showGenVersionMsg('注册失败: ' + e.message, false);
+  }
+}
+
 function kindLabel(kind) {
   switch ((kind || '').toLowerCase()) {
     case 'delay': return '延迟';
+    case 'version': return '版本号';
     case 'rest': return 'REST';
     case 'labview': return 'VI';
+    case 'group': return '分组';
     default: return escapeHtml(kind || '通用');
   }
 }
@@ -4128,6 +4763,15 @@ function renderGeneralTemplates(templates) {
         showGenDelayMsg('已加载到编辑区: ' + (t.name || t.id), true);
       });
       actions.appendChild(loadBtn);
+    } else if (kind === 'version') {
+      const loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.textContent = '加载到编辑区';
+      loadBtn.addEventListener('click', function () {
+        document.getElementById('gen-version-name').value = t.name || '读取 Agent 版本';
+        showGenVersionMsg('已加载到编辑区: ' + (t.name || t.id), true);
+      });
+      actions.appendChild(loadBtn);
     }
     row.appendChild(actions);
     tbody.appendChild(row);
@@ -4152,6 +4796,10 @@ async function fetchGeneralTemplates() {
 }
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+const seqInsertGroupBtn = document.getElementById('seq-insert-group');
+if (seqInsertGroupBtn) seqInsertGroupBtn.addEventListener('click', insertSeqGroup);
+const seqGroupSelectedBtn = document.getElementById('seq-group-selected');
+if (seqGroupSelectedBtn) seqGroupSelectedBtn.addEventListener('click', groupCheckedIntoFolder);
 const forceReleaseBtn = document.getElementById('force-release-btn');
 if (forceReleaseBtn) forceReleaseBtn.addEventListener('click', forceReleaseSlot);
 const seqSaveTemplateBtn = document.getElementById('seq-save-template-btn');
@@ -4182,6 +4830,10 @@ const genRunBtn = document.getElementById('gen-delay-run-btn');
 const genRegBtn = document.getElementById('gen-delay-register-btn');
 if (genRunBtn) genRunBtn.addEventListener('click', runGeneralDelay);
 if (genRegBtn) genRegBtn.addEventListener('click', registerGeneralDelay);
+const genVersionRunBtn = document.getElementById('gen-version-run-btn');
+const genVersionRegBtn = document.getElementById('gen-version-register-btn');
+if (genVersionRunBtn) genVersionRunBtn.addEventListener('click', runGeneralVersion);
+if (genVersionRegBtn) genVersionRegBtn.addEventListener('click', registerGeneralVersion);
 const apiRunBtn = document.getElementById('api-run-btn');
 const apiRegBtn = document.getElementById('api-register-btn');
 const apiHeadersAddBtn = document.getElementById('api-headers-add-btn');

@@ -1,4 +1,4 @@
-# ATLAS API 接口汇总
+# ATLAS API 与调用关系
 
 **无鉴权。** 仅限可信内网。路由以各服务 `crates/*/src/api.rs` 的 `router()` 为准。
 
@@ -6,52 +6,360 @@
 |------|----------|------|
 | **调度中心** | `http://127.0.0.1:26630` | `crates/scheduler` |
 | **Agent** | `http://127.0.0.1:26631` | `crates/agent` |
+| **数据库** | Postgres（仅中心连接） | `crates/scheduler` → `Store` |
 
-两套 API **独立**（不同主机）。下文按服务分章。
+两套 HTTP API **独立**（通常不同主机）。浏览器 **只打本机对应 WebUI 后端**：中心页 → 中心 API；Agent 页 → Agent API。Agent **从不**直连数据库；持久化一律经中心 API 落库。
 
 ### 使用方图例
 
 | 标记 | 含义 |
 |------|------|
-| **中心 WebUI** | `crates/scheduler/static` 页面有直接调用 |
-| **Agent WebUI** | `crates/agent/static` 页面有直接调用 |
-| **未使用** | 两端 WebUI 均未调用（可能仍被 Agent↔中心 **服务端** 代理使用，见备注） |
+| **中心 WebUI** | `crates/scheduler/static` 直接调用中心 `/api/*` |
+| **Agent WebUI** | `crates/agent/static` 直接调用 Agent `/api/*` |
+| **Agent 进程** | Agent 服务端代调中心（注册、写模板、队列、设置等） |
+| **中心 Poller** | 中心后台周期拉取各 Agent `GET /api/status` |
+| **未使用** | 两端 WebUI 均未调用（可能仍被 Agent 进程使用，见备注） |
 
 通用约定：JSON 为主；`/api/health` 返回纯文本 `ok`；错误体常见 `{ "error": "..." }`。
+
+---
+
+# 第〇部分：调用关系总览
+
+## 0.1 五层角色
+
+```mermaid
+flowchart LR
+  subgraph browsers [Browsers]
+    SW[SchedulerWebUI]
+    AW[AgentWebUI]
+  end
+  subgraph hosts [Hosts]
+    SA[SchedulerAPI]
+    AA[AgentAPI]
+    CLI[LabVIEW_CLI]
+    EXT[ExternalHTTP]
+  end
+  DB[(Postgres)]
+
+  SW -->|HTTP_26630| SA
+  AW -->|HTTP_26631| AA
+  AA -->|HTTP_26630| SA
+  SA --> DB
+  SA -->|poll_status| AA
+  AA --> CLI
+  AA --> EXT
+```
+
+要点：
+
+- **只有 Scheduler API 读写 Postgres。**
+- **中心 WebUI 不访问 Agent**；机台状态靠中心 Poller 拉 Agent `/api/status` 写回 `agents` 表。
+- **Agent WebUI 不访问中心、不访问 DB**；需要持久化时由 Agent API 转发到中心。
+
+## 0.2 谁调用谁（矩阵）
+
+| 调用方 → | 中心 API | Agent API | Postgres | LabVIEW CLI / 本机 Delay / 外网 REST |
+|----------|----------|-----------|----------|--------------------------------------|
+| 中心 WebUI | 是 | 否 | （经中心 API） | 否 |
+| Agent WebUI | 否 | 是 | 否 | （经 Agent API） |
+| Agent 进程 | 是 | — | 否 | 是（执行类） |
+| 中心 Poller | — | `GET /api/status` | 写 `agents` | 否 |
+
+## 0.3 主要数据表（中心）
+
+| 表 | 用途 |
+|----|------|
+| `agents` | 机台注册与 Poller 刷新的状态/资源 |
+| `vi_templates` | LabVIEW VI 模板 |
+| `general_templates` | Delay / Version / REST 等通用模板 |
+| `vi_run_queue_items` | 每台机当前序列执行队列 |
+| `sequence_templates` / `sequence_template_steps` | 已保存的序列模板 |
+| `agent_settings` | 每台机 units / variables（`${Var}` 展开源） |
+
+---
+
+## 0.4 机台注册与状态刷新
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+  participant Poll as CenterPoller
+
+  Note over AA,SA: 启动或手动重新注册
+  AW->>AA: POST /api/register-now
+  AA->>SA: POST /api/agents/register
+  SA->>DB: upsert agents
+
+  Note over Poll,AA: 中心周期性拉取
+  Poll->>AA: GET /api/status
+  AA-->>Poll: busy cpu memory hostname
+  Poll->>DB: update agents status telemetry
+```
+
+中心 WebUI 只读：`GET /api/agents`（约 2s 刷新机台页）← 读库中 Poller 已写入的快照。
+
+---
+
+## 0.5 中心 WebUI：机台 / 已注册功能 / 序列模板
+
+中心浏览器 **只调中心 API**，全部落库，不经 Agent。
+
+```mermaid
+sequenceDiagram
+  participant SW as SchedulerWebUI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+
+  SW->>SA: GET /api/agents
+  SA->>DB: SELECT agents
+  SA-->>SW: 机台列表
+
+  SW->>SA: GET /api/vi-templates
+  SA->>DB: SELECT vi_templates
+  SW->>SA: DELETE /api/vi-templates/{id}
+  SA->>DB: DELETE + 清理队列引用
+
+  SW->>SA: GET /api/general-templates
+  SA->>DB: SELECT general_templates
+  SW->>SA: DELETE /api/general-templates/{id}
+  SA->>DB: DELETE + 清理队列引用
+
+  SW->>SA: GET /api/sequence-templates
+  SA->>DB: SELECT sequence_templates
+  SW->>SA: DELETE /api/sequence-templates/{id}
+  SA->>DB: DELETE cascade steps
+```
+
+中心 WebUI **不**调用：settings、run-queue、模板 POST/PATCH、序列 create/load。
+
+---
+
+## 0.6 Agent：LabVIEW 试跑与注册
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant CLI as LabVIEW_CLI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+
+  AW->>AA: GET /api/labview/config
+  AA-->>AW: cli_path getinfo_path
+
+  AW->>AA: POST /api/labview/inspect
+  AA->>CLI: inspect
+  CLI-->>AA: params JSON
+  AA-->>AW: params
+
+  AW->>AA: POST /api/labview/run
+  AA->>SA: GET /api/agents/{id}/settings
+  SA->>DB: agent_settings
+  AA->>AA: expand ${Var}
+  AA->>CLI: run
+  CLI-->>AA: outputs
+  AA-->>AW: result
+
+  AW->>AA: POST /api/labview/register-template
+  AA->>SA: POST /api/vi-templates
+  SA->>DB: INSERT vi_templates
+```
+
+列表（VI 页 / 序列左侧）：`GET /api/labview/all-templates` → 中心 `GET /api/vi-templates`。
+
+---
+
+## 0.7 Agent：Delay / REST 试跑与注册
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant Ext as ExternalHTTP
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+
+  AW->>AA: POST /api/general/delay/run
+  AA->>SA: GET settings
+  AA->>AA: Slot acquire delay then sleep
+  AA-->>AW: result
+
+  AW->>AA: POST /api/general/rest/run
+  AA->>SA: GET settings
+  AA->>AA: Slot acquire rest
+  AA->>Ext: HTTP request
+  Ext-->>AA: response
+  AA-->>AW: result
+
+  AW->>AA: POST /api/general/delay/register-template
+  AA->>SA: POST /api/general-templates
+  SA->>DB: INSERT general_templates
+
+  AW->>AA: POST /api/general/rest/register-template
+  AA->>SA: POST /api/general-templates
+  SA->>DB: INSERT general_templates
+```
+
+---
+
+## 0.8 Agent：本机设置（units / variables）
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+
+  AW->>AA: GET /api/settings
+  AA->>SA: GET /api/agents/{id}/settings
+  SA->>DB: SELECT agent_settings
+  AA->>AA: enrich defaults Hostname IP
+  AA-->>AW: units variables
+
+  AW->>AA: PUT /api/settings
+  AA->>SA: PUT /api/agents/{id}/settings
+  SA->>DB: UPSERT agent_settings
+```
+
+`${Name}` 展开在 **试跑 / 序列执行** 时再次读 settings，不经过设置页。
+
+---
+
+## 0.9 序列：编辑队列与保存/加载模板
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+
+  AW->>AA: GET /api/labview/all-templates
+  AA->>SA: GET /api/vi-templates
+  AW->>AA: GET /api/general/all-templates
+  AA->>SA: GET /api/general-templates
+
+  AW->>AA: GET /api/sequence/run-queue
+  AA->>SA: GET /api/agents/{id}/run-queue
+  SA->>DB: SELECT vi_run_queue_items
+
+  AW->>AA: PUT /api/sequence/run-queue
+  AA->>SA: PUT /api/agents/{id}/run-queue
+  SA->>DB: REPLACE vi_run_queue_items
+
+  AW->>AA: POST /api/sequence-templates
+  AA->>SA: POST /api/sequence-templates
+  SA->>DB: copy queue to sequence_templates steps
+
+  AW->>AA: POST /api/sequence-templates/{id}/load
+  AA->>SA: POST /api/sequence-templates/{id}/load-to-agent
+  SA->>DB: overwrite agent run-queue from steps
+```
+
+说明：`load-to-agent` 只改 **中心库里该机的队列**；Agent 再 `GET run-queue` 刷新 UI，**没有**中心→Agent 的推送。
+
+---
+
+## 0.10 序列：执行 / 进度 / 断点
+
+执行在 **Agent 本机**；队列快照来自中心 DB；断点会话与 busy 槽在 Agent 内存。
+
+```mermaid
+sequenceDiagram
+  participant AW as AgentWebUI
+  participant AA as AgentAPI
+  participant SA as SchedulerAPI
+  participant DB as Postgres
+  participant Step as LabVIEW_or_Delay_or_REST
+
+  AW->>AA: POST /api/sequence/run
+  AA->>AA: Slot try_acquire sequence
+  AA->>SA: GET settings + GET run-queue
+  SA->>DB: read
+  AA->>AA: progress begin
+
+  loop each enabled step
+    AA->>AA: expand inputs limits
+    alt breakpoint before step
+      AA-->>AW: pause keep Slot Session
+    else run step
+      AA->>Step: LabVIEW CLI or delay or version or REST
+      Step-->>AA: outputs judge Spec
+    end
+  end
+
+  AW->>AA: GET /api/sequence/run/progress
+  AA-->>AW: per step progress
+
+  opt paused
+    AW->>AA: POST /api/sequence/run/continue
+    AA->>Step: resume from next_index
+  end
+
+  opt abort or force release
+    AW->>AA: POST /api/sequence/run/abort
+    AA->>AA: clear Session release Slot
+  end
+```
+
+完成后 Agent 写本机序列运行日志；**不**把逐步结果写回中心库。
+
+---
+
+## 0.11 功能 → 调用链速查
+
+| 功能 | 链路 |
+|------|------|
+| 中心看机台 | 中心 WebUI → 中心 `GET /api/agents` → DB；状态由 Poller ← Agent `/api/status` |
+| 中心删 VI/通用/序列模板 | 中心 WebUI → 中心 `DELETE ...` → DB |
+| VI 试跑 | Agent WebUI → Agent `labview/run` →（读 settings）→ LabVIEW CLI |
+| VI 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/vi-templates` → DB |
+| Delay/Version/REST 试跑 | Agent WebUI → Agent `general/*/run` → Slot → 本机/外网 |
+| Delay/Version/REST 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/general-templates` → DB |
+| 设置读写 | Agent WebUI → Agent `/api/settings` → 中心 `/api/agents/{id}/settings` → DB |
+| 序列队列编辑 | Agent WebUI → Agent `/api/sequence/run-queue` → 中心 `/api/agents/{id}/run-queue` → DB |
+| 序列存模板 | Agent WebUI → Agent `POST /api/sequence-templates` → 中心同名 → DB（自队列快照） |
+| 序列加载模板 | Agent WebUI → Agent `.../load` → 中心 `.../load-to-agent` → DB 覆盖队列 |
+| 序列执行 | Agent WebUI → Agent `/api/sequence/run*` → 读中心队列+设置 → 本机逐步执行 |
 
 ---
 
 # 第一部分：调度中心 API
 
 **基址：** `http://127.0.0.1:26630`  
-**可调用的 WebUI：** 仅 **中心 WebUI**（Agent 浏览器不会直接打中心地址）。
+**可调用的 WebUI：** 仅 **中心 WebUI**。Agent 浏览器不直接打中心。
 
 ## 1.1 接口一览与使用方
 
 | 方法 | 路径 | 使用方 | 备注 |
 |------|------|--------|------|
 | GET | `/api/health` | **未使用** | |
-| POST | `/api/agents/register` | **未使用** | Agent 进程注册/心跳 |
-| GET | `/api/agents` | **中心 WebUI** | 机台列表 / 详情数据源 |
+| POST | `/api/agents/register` | **Agent 进程** | 注册/upsert |
+| GET | `/api/agents` | **中心 WebUI** · **Agent 进程** | 列表；Agent 用于 resolve `agent_id` |
 | GET | `/api/agents/{id}` | **未使用** | |
-| GET | `/api/vi-templates` | **中心 WebUI** | 已注册功能 · VI |
-| POST | `/api/vi-templates` | **未使用** | Agent 注册 VI 时代理写入 |
+| GET | `/api/vi-templates` | **中心 WebUI** · **Agent 进程** | 中心列表；Agent `all-templates` |
+| POST | `/api/vi-templates` | **Agent 进程** | VI 注册写入 |
 | GET | `/api/vi-templates/{id}` | **未使用** | |
-| PATCH | `/api/vi-templates/{id}` | **未使用** | Agent `PATCH /api/labview/templates/{id}` 代理 |
+| PATCH | `/api/vi-templates/{id}` | **Agent 进程** | Agent `PATCH /api/labview/templates/{id}` |
 | DELETE | `/api/vi-templates/{id}` | **中心 WebUI** | 已注册功能 · 删除 |
-| GET | `/api/general-templates` | **中心 WebUI** | 已注册功能 · 通用 |
-| POST | `/api/general-templates` | **未使用** | Agent 注册 Delay/REST 时代理写入 |
+| GET | `/api/general-templates` | **中心 WebUI** · **Agent 进程** | |
+| POST | `/api/general-templates` | **Agent 进程** | Delay/Version/REST 注册 |
 | GET | `/api/general-templates/{id}` | **未使用** | |
-| DELETE | `/api/general-templates/{id}` | **中心 WebUI** | 已注册功能 · 删除 |
-| GET | `/api/sequence-templates` | **中心 WebUI** | 序列模板列表 |
-| POST | `/api/sequence-templates` | **未使用** | Agent 保存序列模板时代理 |
+| DELETE | `/api/general-templates/{id}` | **中心 WebUI** | |
+| GET | `/api/sequence-templates` | **中心 WebUI** · **Agent 进程** | |
+| POST | `/api/sequence-templates` | **Agent 进程** | 自该机 run-queue 快照建模板 |
 | GET | `/api/sequence-templates/{id}` | **未使用** | |
-| DELETE | `/api/sequence-templates/{id}` | **中心 WebUI** | 序列模板 · 删除 |
-| POST | `/api/sequence-templates/{id}/load-to-agent` | **未使用** | Agent `.../load` 代理 |
-| GET | `/api/agents/{id}/run-queue` | **未使用** | Agent `run-queue` GET 代理 |
-| PUT | `/api/agents/{id}/run-queue` | **未使用** | Agent `run-queue` PUT 代理 |
-| GET | `/api/agents/{id}/settings` | **未使用** | Agent `/api/settings` GET 代理 |
-| PUT | `/api/agents/{id}/settings` | **未使用** | Agent `/api/settings` PUT 代理 |
+| DELETE | `/api/sequence-templates/{id}` | **中心 WebUI** | |
+| POST | `/api/sequence-templates/{id}/load-to-agent` | **Agent 进程** | 覆盖 DB 中该机队列（非 HTTP 推 Agent） |
+| GET | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `GET /api/sequence/run-queue` |
+| PUT | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `PUT /api/sequence/run-queue` |
+| GET | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `GET /api/settings` |
+| PUT | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `PUT /api/settings` |
 
 ## 1.2 健康检查
 
@@ -59,23 +367,23 @@
 
 ## 1.3 机台
 
-**POST** `/api/agents/register` · 使用方：**未使用**（Agent 进程）
+**POST** `/api/agents/register` · 使用方：**Agent 进程**
 
 ```json
 { "name": "LINE-01", "ip": "192.168.1.10", "port": 26631 }
 ```
 
-**GET** `/api/agents` · 使用方：**中心 WebUI**  
+**GET** `/api/agents` · 使用方：**中心 WebUI** · **Agent 进程**  
 **GET** `/api/agents/{id}` · 使用方：**未使用**
 
 响应字段：`id`, `name`, `ip`, `port`, `status`, `cpu_percent`, `memory_percent`, `busy`, `last_seen_at?`, `created_at`
 
 ## 1.4 VI 模板
 
-**GET** `/api/vi-templates` · 使用方：**中心 WebUI**  
+**GET** `/api/vi-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
 Query：`agent_id?` · `kind?`
 
-**POST** `/api/vi-templates` · 使用方：**未使用**（Agent 注册代理）
+**POST** `/api/vi-templates` · 使用方：**Agent 进程**
 
 | 字段 | 说明 |
 |------|------|
@@ -89,45 +397,51 @@ Query：`agent_id?` · `kind?`
 | `timeout_secs` | 可选 |
 
 **GET** `/api/vi-templates/{id}` · 使用方：**未使用**  
-**PATCH** `/api/vi-templates/{id}` · 使用方：**未使用** — `name?` · `inputs?` · `show_front_panel?` · `timeout_secs?`  
+**PATCH** `/api/vi-templates/{id}` · 使用方：**Agent 进程** — `name?` · `inputs?` · `show_front_panel?` · `timeout_secs?`  
 **DELETE** `/api/vi-templates/{id}` · 使用方：**中心 WebUI** → `204`
 
 ## 1.5 通用模板
 
-**GET** `/api/general-templates` · 使用方：**中心 WebUI**  
+**GET** `/api/general-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
 Query：`agent_id?` · `kind?`
 
-**POST** `/api/general-templates` · 使用方：**未使用**（Agent 注册代理）  
+**POST** `/api/general-templates` · 使用方：**Agent 进程**  
 **GET** `/api/general-templates/{id}` · 使用方：**未使用**  
 **DELETE** `/api/general-templates/{id}` · 使用方：**中心 WebUI** → `204`
 
 ## 1.6 序列模板
 
-**GET** `/api/sequence-templates` · 使用方：**中心 WebUI**  
-**POST** `/api/sequence-templates` · 使用方：**未使用** — `{ "agent_id", "name", "note?" }`  
+**GET** `/api/sequence-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
+**POST** `/api/sequence-templates` · 使用方：**Agent 进程** — `{ "agent_id", "name", "note?" }`（服务端用该机当前 run-queue 生成 steps）  
 **GET** `/api/sequence-templates/{id}` · 使用方：**未使用**  
 **DELETE** `/api/sequence-templates/{id}` · 使用方：**中心 WebUI** → `204`  
-**POST** `/api/sequence-templates/{id}/load-to-agent` · 使用方：**未使用** — `{ "agent_id" }`
+**POST** `/api/sequence-templates/{id}/load-to-agent` · 使用方：**Agent 进程** — `{ "agent_id" }` → 覆盖 `vi_run_queue_items`
 
-`steps[]`：`position` · `template_source` · `vi_template_id?` · `general_template_id?` · `inputs` · `enabled` · `breakpoint` · `fail_policy` · `limits` · `note`
+`steps[]`：与执行队列 `items[]` 相同字段（含 `group` 组头：`name` · `collapsed`）。
 
 ## 1.7 执行队列
 
-**GET** `/api/agents/{id}/run-queue` · 使用方：**未使用**（Agent 队列代理）  
-**PUT** `/api/agents/{id}/run-queue` · 使用方：**未使用**（Agent 队列代理）
+**GET** `/api/agents/{id}/run-queue` · 使用方：**Agent 进程**  
+**PUT** `/api/agents/{id}/run-queue` · 使用方：**Agent 进程**
 
-`items[]` 每项：
+扁平有序列表。`template_source: "group"` 为**组头**；其后至下一组头之前的步骤属于该组；列表开头、首个组头前的步骤为未分组。
+
+`items[]` 步骤项：
 
 | 字段 | 说明 |
 |------|------|
-| `template_source` | `labview`（默认）或 `general` |
-| `vi_template_id` / `general_template_id` | 按来源选用 |
-| `inputs` | 步骤入参覆盖 |
-| `enabled` | 默认 `true` |
-| `breakpoint` | 执行前暂停 |
-| `fail_policy` | `stop`（默认）/ `continue` |
-| `limits` | Spec 数组，默认 `[]` |
+| `template_source` | `labview`（默认）/ `general` / `group` |
+| `vi_template_id` / `general_template_id` | 步骤按来源选用；**组头两者皆空** |
+| `name` | 组头标题（PUT 写入；GET 回显）；步骤为模板名 |
+| `collapsed` | 仅组头：UI 是否折叠组内步骤 |
+| `inputs` | 步骤入参覆盖；组头忽略 |
+| `enabled` | 默认 `true`；组头禁用则组内步骤执行时视为禁用 |
+| `breakpoint` | 仅步骤：执行前暂停 |
+| `fail_policy` | 仅步骤：`stop`（默认）/ `continue` |
+| `limits` | 仅步骤：Spec 数组，默认 `[]` |
 | `note` | 备注 |
+
+执行时 Agent 跳过组头；步骤有效启用 = `step.enabled && group.enabled`。
 
 ### Spec（`limits` 元素）
 
@@ -142,8 +456,8 @@ Query：`agent_id?` · `kind?`
 
 ## 1.8 机台设置
 
-**GET** `/api/agents/{id}/settings` · 使用方：**未使用**（Agent settings 代理）  
-**PUT** `/api/agents/{id}/settings` · 使用方：**未使用**（Agent settings 代理）
+**GET** `/api/agents/{id}/settings` · 使用方：**Agent 进程**  
+**PUT** `/api/agents/{id}/settings` · 使用方：**Agent 进程**
 
 ```json
 {
@@ -157,42 +471,47 @@ Query：`agent_id?` · `kind?`
 # 第二部分：Agent API
 
 **基址：** `http://127.0.0.1:26631`  
-**可调用的 WebUI：** 仅 **Agent WebUI**（中心浏览器不会直接打 Agent 的业务页接口；中心详情也不再调 Agent）。
+**可调用的 WebUI：** 仅 **Agent WebUI**。中心浏览器不直接打 Agent 业务接口。
+
+多数「持久化」接口会：`resolve_agent_id`（`GET` 中心 `/api/agents`）→ 再调中心对应资源。
 
 ## 2.1 接口一览与使用方
 
-| 方法 | 路径 | 使用方 | 备注 |
-|------|------|--------|------|
+| 方法 | 路径 | 使用方 | 后端要点 |
+|------|------|--------|----------|
 | GET | `/api/health` | **未使用** | |
-| GET | `/api/status` | **Agent WebUI** | 顶栏状态 / busy |
-| POST | `/api/slot/force-release` | **Agent WebUI** | 强制空闲 |
-| POST | `/api/register-now` | **Agent WebUI** | 重新注册 |
-| GET | `/api/labview/config` | **Agent WebUI** | VI 页路径展示 |
-| POST | `/api/labview/inspect` | **Agent WebUI** | 查询参数 |
-| POST | `/api/labview/run` | **Agent WebUI** | 试跑 |
-| POST | `/api/labview/register-template` | **Agent WebUI** | 注册到中心 |
-| GET | `/api/labview/registered-templates` | **未使用** | |
-| GET | `/api/labview/all-templates` | **Agent WebUI** | 中心 VI 列表 / 序列左侧 |
-| GET | `/api/labview/agent-id` | **未使用** | |
-| PATCH | `/api/labview/templates/{id}` | **未使用** | |
-| GET | `/api/sequence/run-queue` | **Agent WebUI** | 序列队列 |
-| PUT | `/api/sequence/run-queue` | **Agent WebUI** | 保存队列 |
-| POST | `/api/sequence/run` | **Agent WebUI** | 开始执行 |
-| GET | `/api/sequence/run/progress` | **Agent WebUI** | 执行进度轮询 |
-| POST | `/api/sequence/run/continue` | **Agent WebUI** | 断点继续 |
-| POST | `/api/sequence/run/abort` | **Agent WebUI** | 断点中止 |
-| GET | `/api/sequence-templates` | **Agent WebUI** | 中心序列模板 |
-| POST | `/api/sequence-templates` | **Agent WebUI** | 保存为模板 |
-| POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | 加载到队列 |
-| GET | `/api/settings` | **Agent WebUI** | 配置页 |
-| PUT | `/api/settings` | **Agent WebUI** | 配置页保存 |
-| POST | `/api/general/delay/run` | **Agent WebUI** | 通用 · Delay 试跑 |
-| POST | `/api/general/delay/register-template` | **Agent WebUI** | 通用 · 注册 Delay |
+| GET | `/api/status` | **Agent WebUI** · **中心 Poller** | 本机指标 + Slot + Session |
+| POST | `/api/slot/force-release` | **Agent WebUI** | 清 Session + 释放 Slot |
+| POST | `/api/register-now` | **Agent WebUI** | → 中心 `POST /api/agents/register` |
+| GET | `/api/labview/config` | **Agent WebUI** | 本机配置路径 |
+| POST | `/api/labview/inspect` | **Agent WebUI** | LabVIEW CLI |
+| POST | `/api/labview/run` | **Agent WebUI** | expand → CLI（不占 Slot） |
+| POST | `/api/labview/register-template` | **Agent WebUI** | → 中心 `POST /api/vi-templates` |
+| GET | `/api/labview/registered-templates` | **未使用** | → 中心按 agent 过滤 |
+| GET | `/api/labview/all-templates` | **Agent WebUI** | → 中心 `GET /api/vi-templates` |
+| GET | `/api/labview/agent-id` | **未使用** | resolve id |
+| PATCH | `/api/labview/templates/{id}` | **未使用** | → 中心 PATCH |
+| GET | `/api/sequence/run-queue` | **Agent WebUI** | → 中心 run-queue GET |
+| PUT | `/api/sequence/run-queue` | **Agent WebUI** | → 中心 run-queue PUT |
+| POST | `/api/sequence/run` | **Agent WebUI** | Slot + 读队列/设置 + 本机逐步执行 |
+| GET | `/api/sequence/run/progress` | **Agent WebUI** | 本机 progress |
+| POST | `/api/sequence/run/continue` | **Agent WebUI** | Session 续跑 |
+| POST | `/api/sequence/run/abort` | **Agent WebUI** | 中止并释放 Slot |
+| GET | `/api/sequence-templates` | **Agent WebUI** | → 中心列表 |
+| POST | `/api/sequence-templates` | **Agent WebUI** | → 中心创建（带 agent_id） |
+| POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-agent |
+| GET | `/api/settings` | **Agent WebUI** | → 中心 settings GET |
+| PUT | `/api/settings` | **Agent WebUI** | → 中心 settings PUT |
+| POST | `/api/general/delay/run` | **Agent WebUI** | expand + Slot + sleep |
+| POST | `/api/general/delay/register-template` | **Agent WebUI** | → 中心 general-templates |
 | GET | `/api/general/delay/templates` | **未使用** | |
-| POST | `/api/general/rest/run` | **Agent WebUI** | API · 试跑 |
-| POST | `/api/general/rest/register-template` | **Agent WebUI** | API · 注册 |
-| GET | `/api/general/rest/templates` | **Agent WebUI** | API · 模板列表 |
-| GET | `/api/general/all-templates` | **Agent WebUI** | 序列左侧通用列表等 |
+| POST | `/api/general/version/run` | **Agent WebUI** | Slot + 返回 Agent 版本 |
+| POST | `/api/general/version/register-template` | **Agent WebUI** | → 中心 general-templates |
+| GET | `/api/general/version/templates` | **未使用** | |
+| POST | `/api/general/rest/run` | **Agent WebUI** | expand + Slot + 外网 HTTP |
+| POST | `/api/general/rest/register-template` | **Agent WebUI** | → 中心 general-templates |
+| GET | `/api/general/rest/templates` | **Agent WebUI** | → 中心 `?kind=rest` |
+| GET | `/api/general/all-templates` | **Agent WebUI** | → 中心 general-templates |
 
 ## 2.2 健康检查
 
@@ -200,7 +519,7 @@ Query：`agent_id?` · `kind?`
 
 ## 2.3 状态与注册
 
-**GET** `/api/status` · 使用方：**Agent WebUI**
+**GET** `/api/status` · 使用方：**Agent WebUI** · **中心 Poller**
 
 | 字段 | 说明 |
 |------|------|
@@ -250,7 +569,7 @@ Query：`agent_id?` · `kind?`
 
 **GET** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
 **PUT** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
-Body 形状见第一部分 1.7。
+Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分组、折叠、改名、整组启停。
 
 ## 2.6 序列执行
 
@@ -269,7 +588,7 @@ Body 形状见第一部分 1.7。
 ## 2.7 序列模板
 
 **GET** `/api/sequence-templates` · 使用方：**Agent WebUI**  
-**POST** `/api/sequence-templates` · 使用方：**Agent WebUI** — `{ "name", "note?" }`  
+**POST** `/api/sequence-templates` · 使用方：**Agent WebUI** — `{ "name", "note?" }`（Agent 注入 `agent_id`）  
 **POST** `/api/sequence-templates/{id}/load` · 使用方：**Agent WebUI**
 
 ## 2.8 本机设置
@@ -285,6 +604,14 @@ Body 见第一部分 1.8。
 **POST** `/api/general/delay/run` · 使用方：**Agent WebUI** — `{ "delay_ms": 200 }`  
 **POST** `/api/general/delay/register-template` · 使用方：**Agent WebUI** — `{ "name", "delay_ms" }`  
 **GET** `/api/general/delay/templates` · 使用方：**未使用**
+
+## 2.9.1 Version（读取 Agent 版本号）
+
+**POST** `/api/general/version/run` · 使用方：**Agent WebUI** — 无 Body；返回 `{ "ok": true, "kind": "version", "version": "<CARGO_PKG_VERSION>" }`  
+**POST** `/api/general/version/register-template` · 使用方：**Agent WebUI** — `{ "name" }`；注册到中心后可加入序列  
+**GET** `/api/general/version/templates` · 使用方：**未使用**
+
+序列中 `kind: "version"` 的通用步骤由 Agent 本机直接返回上述输出，不调用 LabVIEW。
 
 ## 2.10 REST
 

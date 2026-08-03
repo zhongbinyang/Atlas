@@ -93,6 +93,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/017_agent_settings.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/018_queue_group_rows.sql"),
+    )
+    .await?;
     Ok(())
 }
 

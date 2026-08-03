@@ -160,6 +160,8 @@ pub struct SequenceTemplateStep {
     pub fail_policy: String,
     pub limits_json: String,
     pub note: String,
+    pub title: String,
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,7 +173,7 @@ pub struct SequenceTemplateEnriched {
 
 #[derive(Debug, Clone)]
 pub struct ViRunQueueReplaceItem {
-    pub template_source: String, // "labview" | "general"
+    pub template_source: String, // "labview" | "general" | "group"
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
     pub inputs_json: Option<String>,
@@ -180,6 +182,8 @@ pub struct ViRunQueueReplaceItem {
     pub fail_policy: String, // "stop" | "continue"
     pub limits_json: String,   // JSON array text
     pub note: String,
+    pub title: String,
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +207,8 @@ pub struct ViRunQueueItem {
     pub fail_policy: String,
     pub limits_json: String,
     pub note: String,
+    pub title: String,
+    pub collapsed: bool,
 }
 
 fn normalize_fail_policy(fail_policy: &str) -> &'static str {
@@ -876,8 +882,8 @@ impl Store {
                 r#"
                 INSERT INTO sequence_template_steps
                   (sequence_template_id, position, template_source, vi_template_id, general_template_id,
-                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note, title, collapsed)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 "#,
             )
             .bind(tpl.id)
@@ -891,6 +897,8 @@ impl Store {
             .bind(&item.fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
+            .bind(&item.title)
+            .bind(item.collapsed)
             .execute(&mut *tx)
             .await?;
         }
@@ -941,7 +949,7 @@ impl Store {
             SELECT
               id, sequence_template_id, position, template_source, vi_template_id,
               general_template_id, inputs_json, enabled, breakpoint, fail_policy,
-              limits_json, note
+              limits_json, note, title, collapsed
             FROM sequence_template_steps
             WHERE sequence_template_id = $1
             ORDER BY position ASC, id ASC
@@ -982,6 +990,8 @@ impl Store {
                 fail_policy: step.fail_policy,
                 limits_json: step.limits_json,
                 note: step.note,
+                title: step.title,
+                collapsed: step.collapsed,
             })
             .collect();
         self.replace_vi_run_queue(agent_id, &items).await
@@ -1324,19 +1334,23 @@ impl Store {
         let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
             r#"
             SELECT q.id, q.agent_id,
-                   CASE
-                     WHEN q.general_template_id IS NOT NULL THEN 'general'
-                     ELSE 'labview'
-                   END AS template_source,
+                   q.template_source,
                    q.vi_template_id, q.general_template_id, q.position, q.created_at,
-                   COALESCE(v.name, g.name) AS template_name,
-                   COALESCE(v.kind, g.kind) AS kind,
+                   CASE
+                     WHEN q.template_source = 'group' THEN COALESCE(NULLIF(q.title, ''), '分组')
+                     ELSE COALESCE(v.name, g.name, '')
+                   END AS template_name,
+                   CASE
+                     WHEN q.template_source = 'group' THEN 'group'
+                     ELSE COALESCE(v.kind, g.kind, 'labview')
+                   END AS kind,
                    COALESCE(v.vi_path, '') AS vi_path,
-                   COALESCE(q.inputs_json, v.inputs_json, g.inputs_json) AS inputs_json,
-                   COALESCE(v.outputs_json, g.outputs_json) AS outputs_json,
+                   COALESCE(q.inputs_json, v.inputs_json, g.inputs_json, '[]') AS inputs_json,
+                   COALESCE(v.outputs_json, g.outputs_json, '[]') AS outputs_json,
                    COALESCE(v.show_front_panel, 0) AS show_front_panel,
                    v.timeout_secs AS timeout_secs,
-                   q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note
+                   q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note,
+                   q.title, q.collapsed
             FROM vi_run_queue_items q
             LEFT JOIN vi_templates v ON v.id = q.vi_template_id
             LEFT JOIN general_templates g ON g.id = q.general_template_id
@@ -1363,6 +1377,27 @@ impl Store {
         for item in items {
             let source = item.template_source.as_str();
             match source {
+                "group" => {
+                    let title = item.title.trim();
+                    let title = if title.is_empty() {
+                        "分组".to_string()
+                    } else {
+                        title.to_string()
+                    };
+                    normalized_items.push(ViRunQueueReplaceItem {
+                        template_source: "group".into(),
+                        vi_template_id: None,
+                        general_template_id: None,
+                        inputs_json: Some("[]".into()),
+                        enabled: item.enabled,
+                        breakpoint: false,
+                        fail_policy: "stop".into(),
+                        limits_json: "[]".into(),
+                        note: item.note.clone(),
+                        title,
+                        collapsed: item.collapsed,
+                    });
+                }
                 "general" => {
                     let Some(template_id) = item.general_template_id else {
                         return Err(QueueReplaceError::BadTemplate {
@@ -1381,11 +1416,14 @@ impl Store {
                         });
                     };
                     normalized_items.push(ViRunQueueReplaceItem {
+                        template_source: "general".into(),
                         inputs_json: Some(
                             item.inputs_json
                                 .clone()
                                 .unwrap_or_else(|| template.inputs_json.clone()),
                         ),
+                        title: String::new(),
+                        collapsed: false,
                         ..item.clone()
                     });
                 }
@@ -1407,11 +1445,14 @@ impl Store {
                         });
                     };
                     normalized_items.push(ViRunQueueReplaceItem {
+                        template_source: "labview".into(),
                         inputs_json: Some(
                             item.inputs_json
                                 .clone()
                                 .unwrap_or_else(|| template.inputs_json.clone()),
                         ),
+                        title: String::new(),
+                        collapsed: false,
                         ..item.clone()
                     });
                 }
@@ -1434,8 +1475,8 @@ impl Store {
                 r#"
                 INSERT INTO vi_run_queue_items
                   (id, agent_id, vi_template_id, general_template_id, inputs_json, position, created_at,
-                   enabled, breakpoint, fail_policy, limits_json, note)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                   enabled, breakpoint, fail_policy, limits_json, note, title, collapsed, template_source)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 "#,
             )
             .bind(&id)
@@ -1450,6 +1491,9 @@ impl Store {
             .bind(fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
+            .bind(&item.title)
+            .bind(item.collapsed)
+            .bind(&item.template_source)
             .execute(&mut *tx)
             .await
             .map_err(QueueReplaceError::Db)?;
@@ -1634,6 +1678,8 @@ struct ViRunQueueItemRow {
     fail_policy: String,
     limits_json: String,
     note: String,
+    title: String,
+    collapsed: bool,
 }
 
 impl ViRunQueueItemRow {
@@ -1658,6 +1704,8 @@ impl ViRunQueueItemRow {
             fail_policy: self.fail_policy,
             limits_json: self.limits_json,
             note: self.note,
+            title: self.title,
+            collapsed: self.collapsed,
         }
     }
 }
@@ -1699,6 +1747,8 @@ struct SequenceTemplateStepRow {
     fail_policy: String,
     limits_json: String,
     note: String,
+    title: String,
+    collapsed: bool,
 }
 
 impl SequenceTemplateStepRow {
@@ -1716,6 +1766,8 @@ impl SequenceTemplateStepRow {
             fail_policy: self.fail_policy,
             limits_json: self.limits_json,
             note: self.note,
+            title: self.title,
+            collapsed: self.collapsed,
         }
     }
 }
@@ -2361,6 +2413,8 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
+                title: "".into(),
+                collapsed: false,
             })
             .collect()
     }
@@ -2464,6 +2518,8 @@ mod tests {
             fail_policy: "continue".into(),
             limits_json: r#"[{"output":"Power_dBm","min":-5.0,"max":3.0,"unit":"dBm"}]"#.into(),
             note: "ch1".into(),
+            title: "".into(),
+            collapsed: false,
         }];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -2473,5 +2529,74 @@ mod tests {
         assert!(listed[0].inputs_json.contains("\"Channel\""));
         assert!(listed[0].limits_json.contains("Power_dBm"));
         assert_eq!(listed[0].note, "ch1");
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_accepts_group_headers() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let tpl = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
+
+        let items = vec![
+            ViRunQueueReplaceItem {
+                template_source: "group".into(),
+                vi_template_id: None,
+                general_template_id: None,
+                inputs_json: None,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits_json: "[]".into(),
+                note: "".into(),
+                title: "预处理".into(),
+                collapsed: true,
+            },
+            ViRunQueueReplaceItem {
+                template_source: "labview".into(),
+                vi_template_id: Some(tpl.id),
+                general_template_id: None,
+                inputs_json: None,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits_json: "[]".into(),
+                note: "".into(),
+                title: "".into(),
+                collapsed: false,
+            },
+        ];
+        let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].template_source, "group");
+        assert_eq!(listed[0].template_name, "预处理");
+        assert!(listed[0].collapsed);
+        assert!(listed[0].vi_template_id.is_none());
+        assert_eq!(listed[1].template_source, "labview");
+        assert_eq!(listed[1].vi_template_id, Some(tpl.id));
+
+        let tpl_seq = store
+            .create_sequence_template_from_queue(&agent.id, "seq1", "", &listed)
+            .await
+            .unwrap();
+        let steps = store
+            .get_sequence_template_steps(tpl_seq.id)
+            .await
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].template_source, "group");
+        assert_eq!(steps[0].title, "预处理");
+        assert!(steps[0].collapsed);
+
+        store
+            .replace_vi_run_queue(&agent.id, &[])
+            .await
+            .unwrap();
+        let reloaded = store
+            .load_sequence_template_to_agent(tpl_seq.id, &agent.id)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded[0].template_source, "group");
+        assert_eq!(reloaded[0].template_name, "预处理");
     }
 }

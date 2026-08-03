@@ -180,7 +180,19 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
         .and_then(|v| v.as_array())
         .ok_or_else(|| "invalid queue response: missing items".to_string())?;
     let mut out = Vec::with_capacity(items.len());
+    let mut group_enabled = true;
     for item in items {
+        let source = item
+            .get("template_source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("labview");
+        if source == "group" {
+            group_enabled = item
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            continue;
+        }
         let position = item
             .get("position")
             .and_then(|v| v.as_i64())
@@ -238,10 +250,11 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
                     .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
             }
         });
-        let enabled = item
+        let step_enabled = item
             .get("enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let enabled = step_enabled && group_enabled;
         let breakpoint = item
             .get("breakpoint")
             .and_then(|v| v.as_bool())
@@ -508,6 +521,9 @@ async fn run_one_step(
     if crate::general::is_delay_template(Some(item.kind.as_str()), &item.vi_path) {
         let delay_ms = crate::general::delay_ms_from_inputs(&inputs)?;
         return Ok(crate::general::run_delay_ms(delay_ms).await);
+    }
+    if crate::general::is_version_template(Some(item.kind.as_str()), &item.vi_path) {
+        return Ok(crate::general::run_read_version());
     }
     if crate::rest::is_rest_template(Some(item.kind.as_str()), &item.vi_path) {
         return crate::rest::run_request_from_inputs(&inputs).await;
@@ -875,5 +891,77 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].template_id, "88");
         assert_eq!(items[0].kind, "delay");
+    }
+
+    #[test]
+    fn queue_items_for_run_skips_group_headers() {
+        let body = serde_json::json!({
+            "items": [
+                {
+                    "position": 0,
+                    "id": "g1",
+                    "template_source": "group",
+                    "name": "预处理",
+                    "enabled": true
+                },
+                {
+                    "position": 1,
+                    "id": "q1",
+                    "template_source": "labview",
+                    "vi_template_id": 42,
+                    "name": "Add",
+                    "vi_path": "C:\\x\\Add.vi",
+                    "enabled": true
+                }
+            ]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].queue_item_id, "q1");
+        assert!(items[0].enabled);
+    }
+
+    #[test]
+    fn queue_items_for_run_disables_steps_when_group_disabled() {
+        let body = serde_json::json!({
+            "items": [
+                {
+                    "position": 0,
+                    "id": "g1",
+                    "template_source": "group",
+                    "name": "预处理",
+                    "enabled": false
+                },
+                {
+                    "position": 1,
+                    "id": "q1",
+                    "template_source": "labview",
+                    "vi_template_id": 42,
+                    "name": "Add",
+                    "vi_path": "C:\\x\\Add.vi",
+                    "enabled": true
+                },
+                {
+                    "position": 2,
+                    "id": "g2",
+                    "template_source": "group",
+                    "name": "测试",
+                    "enabled": true
+                },
+                {
+                    "position": 3,
+                    "id": "q2",
+                    "template_source": "labview",
+                    "vi_template_id": 43,
+                    "name": "Mul",
+                    "vi_path": "C:\\x\\Mul.vi",
+                    "enabled": true
+                }
+            ]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(!items[0].enabled);
+        assert!(items[1].enabled);
     }
 }

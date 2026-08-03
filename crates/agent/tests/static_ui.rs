@@ -74,6 +74,19 @@ fn sequence_page_uses_collapsed_drawers_around_queue() {
         "the execution queue must remain the primary middle section"
     );
     assert!(
+        INDEX.contains("id=\"seq-insert-group\"")
+            && INDEX.contains("id=\"seq-group-selected\"")
+            && INDEX.contains("id=\"seq-insert-badge\"")
+            && APP.contains("insertSeqGroup")
+            && APP.contains("groupSelectedSteps")
+            && APP.contains("groupCheckedIntoFolder")
+            && APP.contains("insertIndexForNewStep")
+            && APP.contains("moveGroupBlock")
+            && APP.contains("seq-outline-child")
+            && APP.contains("template_source: 'group'"),
+        "execution queue must support outline folders, multi-select grouping, and group block moves"
+    );
+    assert!(
         APP.contains("展开上方「中心全部功能」后添加"),
         "empty-queue guidance must point to the top drawer"
     );
@@ -198,6 +211,15 @@ fn api_page_exposes_rest_client_controls() {
             && APP.contains("setApiEditorTab")
             && APP.contains("refreshBodyJsonStatus"),
         "client must call REST endpoints and support JSON header/body editors"
+    );
+    assert!(
+        INDEX.contains("id=\"gen-version-run-btn\"")
+            && INDEX.contains("id=\"gen-version-register-btn\"")
+            && APP.contains("/api/general/version/run")
+            && APP.contains("/api/general/version/register-template")
+            && APP.contains("case 'version': return '版本号'")
+            && APP.contains("registerGeneralVersion"),
+        "general workbench must expose Agent version read + register for sequences"
     );
     assert!(
         INDEX.contains("class=\"api-workbench\"")
