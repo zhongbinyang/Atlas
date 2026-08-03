@@ -161,6 +161,11 @@ fn settings_page_exposes_units_and_variables() {
             && INDEX.contains("id=\"device-cfg-import-apply-btn\""),
         "settings page must expose Device_CFG import controls and preview modal"
     );
+    assert!(
+        APP.contains("openDeviceCfgImportPreview")
+            && APP.contains("applyDeviceCfgImportPreview"),
+        "settings must wire Device_CFG import preview apply flow"
+    );
 }
 
 #[test]

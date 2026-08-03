@@ -164,6 +164,7 @@ let settingsDirty = false;
 let settingsBaseline = '';
 let settingsUndo = null;
 let settingsUndoTimer = null;
+let pendingDeviceCfgPreview = null;
 
 function isSystemVarName(name) {
   return name === 'Hostname' || name === 'IP';
@@ -308,6 +309,87 @@ function mergeDeviceCfgPreviewIntoVariables(existingVariables, previewRows) {
     }
   });
   return out;
+}
+
+function statusLabelDeviceCfg(status) {
+  if (status === 'add') return '新增';
+  if (status === 'update') return '覆盖';
+  return '跳过';
+}
+
+function closeDeviceCfgImportModal() {
+  const modal = document.getElementById('device-cfg-import-modal');
+  if (modal) modal.hidden = true;
+  pendingDeviceCfgPreview = null;
+}
+
+function openDeviceCfgImportPreview(text) {
+  const current = collectSettingsFromDom();
+  const preview = buildDeviceCfgImportPreview(text, current.variables);
+  pendingDeviceCfgPreview = preview;
+  const summary = document.getElementById('device-cfg-import-summary');
+  if (summary) {
+    summary.textContent =
+      '将新增' +
+      preview.summary.added +
+      ' 个、覆盖' +
+      preview.summary.updated +
+      ' 个；另跳过' +
+      preview.summary.skipped +
+      ' 行（非地址键或空值）。合并后请点保存。';
+  }
+  const tbody = document.getElementById('device-cfg-import-body');
+  if (tbody) {
+    tbody.innerHTML = '';
+    if (!preview.rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">没有可导入的地址变量</td></tr>';
+    } else {
+      preview.rows.forEach(function (row) {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' +
+          statusLabelDeviceCfg(row.status) +
+          '</td>' +
+          '<td class="mono">' +
+          escapeHtml(row.name) +
+          '</td>' +
+          '<td class="mono">' +
+          escapeHtml(row.value) +
+          '</td>' +
+          '<td class="mono">' +
+          escapeHtml('[' + row.section + '] ' + row.key) +
+          '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+  }
+  const applyBtn = document.getElementById('device-cfg-import-apply-btn');
+  if (applyBtn) applyBtn.disabled = !preview.rows.length;
+  const modal = document.getElementById('device-cfg-import-modal');
+  if (modal) modal.hidden = false;
+}
+
+function applyDeviceCfgImportPreview() {
+  if (!pendingDeviceCfgPreview || !pendingDeviceCfgPreview.rows.length) {
+    closeDeviceCfgImportModal();
+    return;
+  }
+  const current = collectSettingsFromDom();
+  const mergedVars = mergeDeviceCfgPreviewIntoVariables(
+    current.variables,
+    pendingDeviceCfgPreview.rows
+  );
+  agentSettings = {
+    units: current.units,
+    variables: mergedVars,
+  };
+  renderSettingsUnits();
+  renderSettingsVars();
+  markSettingsDirty();
+  const n =
+    pendingDeviceCfgPreview.summary.added + pendingDeviceCfgPreview.summary.updated;
+  closeDeviceCfgImportModal();
+  showSettingsMsg('已合并' + n + ' 个变量到编辑区，请保存', true);
 }
 
 function cloneSettingsData(data) {
@@ -4217,10 +4299,38 @@ const settingsSaveBtn = document.getElementById('settings-save-btn');
 const settingsUnitAddBtn = document.getElementById('settings-unit-add-btn');
 const settingsVarAddBtn = document.getElementById('settings-var-add-btn');
 const settingsRestoreUnitsBtn = document.getElementById('settings-restore-units-btn');
+const settingsImportDeviceCfgBtn = document.getElementById('settings-import-device-cfg-btn');
+const settingsDeviceCfgFile = document.getElementById('settings-device-cfg-file');
+const deviceCfgImportCancelBtn = document.getElementById('device-cfg-import-cancel-btn');
+const deviceCfgImportApplyBtn = document.getElementById('device-cfg-import-apply-btn');
 if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', saveAgentSettings);
 if (settingsUnitAddBtn) settingsUnitAddBtn.addEventListener('click', addSettingsUnit);
 if (settingsVarAddBtn) settingsVarAddBtn.addEventListener('click', addSettingsVar);
 if (settingsRestoreUnitsBtn) settingsRestoreUnitsBtn.addEventListener('click', restoreDefaultUnits);
+if (settingsImportDeviceCfgBtn && settingsDeviceCfgFile) {
+  settingsImportDeviceCfgBtn.addEventListener('click', function () {
+    settingsDeviceCfgFile.value = '';
+    settingsDeviceCfgFile.click();
+  });
+  settingsDeviceCfgFile.addEventListener('change', function () {
+    const file = settingsDeviceCfgFile.files && settingsDeviceCfgFile.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      openDeviceCfgImportPreview(String(reader.result || ''));
+    };
+    reader.onerror = function () {
+      showSettingsMsg('读取文件失败', false);
+    };
+    reader.readAsText(file);
+  });
+}
+if (deviceCfgImportCancelBtn) {
+  deviceCfgImportCancelBtn.addEventListener('click', closeDeviceCfgImportModal);
+}
+if (deviceCfgImportApplyBtn) {
+  deviceCfgImportApplyBtn.addEventListener('click', applyDeviceCfgImportPreview);
+}
 window.addEventListener('beforeunload', function (ev) {
   if (!settingsDirty) return;
   ev.preventDefault();
