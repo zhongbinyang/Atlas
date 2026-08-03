@@ -29,6 +29,9 @@ pub struct QueueItemForRun {
     pub breakpoint: bool,
     pub fail_policy: String,
     pub limits: Vec<LimitRule>,
+    /// Logical instrument names to lock before this step (empty = no lock).
+    #[serde(default)]
+    pub resources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +85,72 @@ fn parse_limits_from_item(item: &Value) -> Result<Vec<LimitRule>, String> {
     }
     if let Some(s) = item.get("limits_json").and_then(|v| v.as_str()) {
         return parse_limits_json(s);
+    }
+    Ok(vec![])
+}
+
+/// Parse step resources: JSON array of non-empty strings.
+/// Trims each name, rejects duplicates within one step, and enforces
+/// charset `^[A-Za-z][A-Za-z0-9_.-]{0,63}$`.
+pub fn parse_resources_json(s: &str) -> Result<Vec<String>, String> {
+    let value: Value =
+        serde_json::from_str(s).map_err(|e| format!("invalid resources_json: {e}"))?;
+    parse_resources_value(&value)
+}
+
+fn parse_resources_value(value: &Value) -> Result<Vec<String>, String> {
+    let arr = value
+        .as_array()
+        .ok_or_else(|| "resources must be a JSON array of strings".to_string())?;
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen = std::collections::HashSet::new();
+    for (i, item) in arr.iter().enumerate() {
+        let Some(raw) = item.as_str() else {
+            return Err(format!("resources[{i}] must be a string"));
+        };
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err(format!("resources[{i}] must be a non-empty string"));
+        }
+        if !is_valid_resource_name(name) {
+            return Err(format!(
+                "resources[{i}] invalid name '{name}' (expected ^[A-Za-z][A-Za-z0-9_.-]{{0,63}}$)"
+            ));
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(format!("resources[{i}] duplicate '{name}'"));
+        }
+        out.push(name.to_string());
+    }
+    Ok(out)
+}
+
+fn is_valid_resource_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    let rest_len = name.len().saturating_sub(first.len_utf8());
+    if rest_len > 63 {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
+fn parse_resources_from_item(item: &Value) -> Result<Vec<String>, String> {
+    if let Some(v) = item.get("resources") {
+        if v.is_array() {
+            return parse_resources_value(v);
+        }
+        if let Some(s) = v.as_str() {
+            return parse_resources_json(s);
+        }
+    }
+    if let Some(s) = item.get("resources_json").and_then(|v| v.as_str()) {
+        return parse_resources_json(s);
     }
     Ok(vec![])
 }
@@ -257,6 +326,7 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
                 .unwrap_or("stop"),
         );
         let limits = parse_limits_from_item(item)?;
+        let resources = parse_resources_from_item(item)?;
         out.push(QueueItemForRun {
             position,
             queue_item_id,
@@ -271,6 +341,7 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             breakpoint,
             fail_policy,
             limits,
+            resources,
         });
     }
     out.sort_by_key(|i| i.position);
@@ -544,6 +615,7 @@ mod tests {
             breakpoint: false,
             fail_policy: "stop".into(),
             limits: vec![],
+            resources: vec![],
         }
     }
 
@@ -781,6 +853,39 @@ mod tests {
         assert!(!items[0].breakpoint);
         assert_eq!(items[0].fail_policy, "stop");
         assert!(items[0].limits.is_empty());
+        assert!(items[0].resources.is_empty());
+    }
+
+    #[test]
+    fn queue_items_for_run_parses_resources_array_and_json() {
+        let body = serde_json::json!({
+            "items": [{
+                "position": 0,
+                "id": "q1",
+                "vi_template_id": 42,
+                "name": "Add",
+                "vi_path": "C:\\x\\Add.vi",
+                "resources": ["station.dca", " ch.evb "]
+            }]
+        });
+        let items = queue_items_for_run(&body).unwrap();
+        assert_eq!(
+            items[0].resources,
+            vec!["station.dca".to_string(), "ch.evb".to_string()]
+        );
+
+        let body_json = serde_json::json!({
+            "items": [{
+                "position": 0,
+                "id": "q1",
+                "vi_template_id": 42,
+                "name": "Add",
+                "vi_path": "C:\\x\\Add.vi",
+                "resources_json": "[\"station.osa\"]"
+            }]
+        });
+        let items = queue_items_for_run(&body_json).unwrap();
+        assert_eq!(items[0].resources, vec!["station.osa".to_string()]);
     }
 
     #[test]

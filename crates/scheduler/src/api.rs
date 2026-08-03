@@ -9,7 +9,7 @@ use common::{ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    Agent, GeneralTemplateEnriched, QueueReplaceError,
+    parse_resources_json, Agent, GeneralTemplateEnriched, QueueReplaceError,
     SequenceTemplateEnriched, SequenceTemplateStep, Store,
     ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
     ViTemplatePatch,
@@ -96,6 +96,8 @@ pub struct SequenceTemplateStepView {
     pub name: String,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub resources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +204,7 @@ fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTem
         note: step.note,
         name,
         collapsed: step.collapsed,
+        resources: parse_resources_json(&step.resources_json)?,
     })
 }
 
@@ -330,6 +333,8 @@ pub struct ViRunQueueItemView {
     pub note: String,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub resources: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -364,6 +369,8 @@ pub struct ReplaceViRunQueueItem {
     pub name: String,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub resources: Vec<String>,
 }
 
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
@@ -392,6 +399,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         limits,
         note: item.note,
         collapsed: item.collapsed,
+        resources: parse_resources_json(&item.resources_json)?,
     })
 }
 
@@ -2242,6 +2250,31 @@ async fn put_vi_run_queue(
             },
             None => None,
         };
+        let resources_raw = match serde_json::to_string(&item.resources) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: format!("items[{i}].resources: {err}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let resources = match parse_resources_json(&resources_raw) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: format!("items[{i}].resources: {err}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let resources_json = serde_json::to_string(&resources).unwrap_or_else(|_| "[]".into());
         items.push(ViRunQueueReplaceItem {
             template_source: source,
             vi_template_id,
@@ -2255,6 +2288,7 @@ async fn put_vi_run_queue(
             note: item.note,
             title,
             collapsed: item.collapsed,
+            resources_json,
         });
     }
 
@@ -2768,6 +2802,61 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::CREATED);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_queue_put_persists_resources() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let tpl = create_vi_template_with_inputs_http(
+            app,
+            &agent_id,
+            "ResTpl",
+            r"C:\res.vi",
+            serde_json::json!([]),
+            false,
+            None,
+        )
+        .await;
+
+        let put_body = serde_json::json!({
+            "items": [{
+                "vi_template_id": tpl.id,
+                "resources": ["station.dca"]
+            }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/agents/{agent_id}/run-queue"),
+                &put_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let put_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(put_list.items.len(), 1);
+        assert_eq!(put_list.items[0].resources, vec!["station.dca".to_string()]);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/run-queue"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let get_list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(get_list.items.len(), 1);
+        assert_eq!(get_list.items[0].resources, vec!["station.dca".to_string()]);
     }
 
     #[tokio::test]

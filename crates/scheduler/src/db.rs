@@ -118,6 +118,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/022_agent_channels.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/023_step_resources.sql"),
+    )
+    .await?;
     Ok(())
 }
 

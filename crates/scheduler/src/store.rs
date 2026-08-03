@@ -285,6 +285,7 @@ pub struct SequenceTemplateStep {
     pub note: String,
     pub title: String,
     pub collapsed: bool,
+    pub resources_json: String,
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +308,7 @@ pub struct ViRunQueueReplaceItem {
     pub note: String,
     pub title: String,
     pub collapsed: bool,
+    pub resources_json: String, // JSON string array text
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +334,7 @@ pub struct ViRunQueueItem {
     pub note: String,
     pub title: String,
     pub collapsed: bool,
+    pub resources_json: String,
 }
 
 fn normalize_fail_policy(fail_policy: &str) -> &'static str {
@@ -339,6 +342,53 @@ fn normalize_fail_policy(fail_policy: &str) -> &'static str {
         "continue" => "continue",
         _ => "stop",
     }
+}
+
+/// Parse step `resources_json`: JSON array of non-empty strings.
+/// Trims each name, rejects duplicates within one step, and enforces
+/// charset `^[A-Za-z][A-Za-z0-9_.-]{0,63}$`.
+pub fn parse_resources_json(s: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(s).map_err(|e| format!("invalid resources_json: {e}"))?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| "resources must be a JSON array of strings".to_string())?;
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen = std::collections::HashSet::new();
+    for (i, item) in arr.iter().enumerate() {
+        let Some(raw) = item.as_str() else {
+            return Err(format!("resources[{i}] must be a string"));
+        };
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err(format!("resources[{i}] must be a non-empty string"));
+        }
+        if !is_valid_resource_name(name) {
+            return Err(format!(
+                "resources[{i}] invalid name '{name}' (expected ^[A-Za-z][A-Za-z0-9_.-]{{0,63}}$)"
+            ));
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(format!("resources[{i}] duplicate '{name}'"));
+        }
+        out.push(name.to_string());
+    }
+    Ok(out)
+}
+
+fn is_valid_resource_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    let rest_len = name.len() - first.len_utf8();
+    if rest_len > 63 {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
 #[derive(Debug)]
@@ -1450,8 +1500,9 @@ impl Store {
                 r#"
                 INSERT INTO sequence_template_steps
                   (sequence_template_id, position, template_source, vi_template_id, general_template_id,
-                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note, title, collapsed)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note, title, collapsed,
+                   resources_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 "#,
             )
             .bind(tpl.id)
@@ -1467,6 +1518,7 @@ impl Store {
             .bind(&item.note)
             .bind(&item.title)
             .bind(item.collapsed)
+            .bind(&item.resources_json)
             .execute(&mut *tx)
             .await?;
         }
@@ -1517,7 +1569,7 @@ impl Store {
             SELECT
               id, sequence_template_id, position, template_source, vi_template_id,
               general_template_id, inputs_json, enabled, breakpoint, fail_policy,
-              limits_json, note, title, collapsed
+              limits_json, note, title, collapsed, resources_json
             FROM sequence_template_steps
             WHERE sequence_template_id = $1
             ORDER BY position ASC, id ASC
@@ -1560,6 +1612,7 @@ impl Store {
                 note: step.note,
                 title: step.title,
                 collapsed: step.collapsed,
+                resources_json: step.resources_json,
             })
             .collect();
         self.replace_vi_run_queue(agent_id, &items).await
@@ -1918,7 +1971,7 @@ impl Store {
                    COALESCE(v.show_front_panel, 0) AS show_front_panel,
                    v.timeout_secs AS timeout_secs,
                    q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note,
-                   q.title, q.collapsed
+                   q.title, q.collapsed, q.resources_json
             FROM vi_run_queue_items q
             LEFT JOIN vi_templates v ON v.id = q.vi_template_id
             LEFT JOIN general_templates g ON g.id = q.general_template_id
@@ -1964,6 +2017,7 @@ impl Store {
                         note: item.note.clone(),
                         title,
                         collapsed: item.collapsed,
+                        resources_json: "[]".into(),
                     });
                 }
                 "general" => {
@@ -2043,8 +2097,9 @@ impl Store {
                 r#"
                 INSERT INTO vi_run_queue_items
                   (id, agent_id, vi_template_id, general_template_id, inputs_json, position, created_at,
-                   enabled, breakpoint, fail_policy, limits_json, note, title, collapsed, template_source)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                   enabled, breakpoint, fail_policy, limits_json, note, title, collapsed, template_source,
+                   resources_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 "#,
             )
             .bind(&id)
@@ -2062,6 +2117,7 @@ impl Store {
             .bind(&item.title)
             .bind(item.collapsed)
             .bind(&item.template_source)
+            .bind(&item.resources_json)
             .execute(&mut *tx)
             .await
             .map_err(QueueReplaceError::Db)?;
@@ -2248,6 +2304,7 @@ struct ViRunQueueItemRow {
     note: String,
     title: String,
     collapsed: bool,
+    resources_json: String,
 }
 
 impl ViRunQueueItemRow {
@@ -2274,6 +2331,7 @@ impl ViRunQueueItemRow {
             note: self.note,
             title: self.title,
             collapsed: self.collapsed,
+            resources_json: self.resources_json,
         }
     }
 }
@@ -2317,6 +2375,7 @@ struct SequenceTemplateStepRow {
     note: String,
     title: String,
     collapsed: bool,
+    resources_json: String,
 }
 
 impl SequenceTemplateStepRow {
@@ -2336,6 +2395,7 @@ impl SequenceTemplateStepRow {
             note: self.note,
             title: self.title,
             collapsed: self.collapsed,
+            resources_json: self.resources_json,
         }
     }
 }
@@ -2984,6 +3044,7 @@ mod tests {
                 note: "".into(),
                 title: "".into(),
                 collapsed: false,
+                resources_json: "[]".into(),
             })
             .collect()
     }
@@ -3089,6 +3150,7 @@ mod tests {
             note: "ch1".into(),
             title: "".into(),
             collapsed: false,
+            resources_json: "[]".into(),
         }];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -3119,6 +3181,7 @@ mod tests {
                 note: "".into(),
                 title: "预处理".into(),
                 collapsed: true,
+                resources_json: "[]".into(),
             },
             ViRunQueueReplaceItem {
                 template_source: "labview".into(),
@@ -3132,6 +3195,7 @@ mod tests {
                 note: "".into(),
                 title: "".into(),
                 collapsed: false,
+                resources_json: "[]".into(),
             },
         ];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
