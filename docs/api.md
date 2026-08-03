@@ -278,6 +278,8 @@ Body 形状见第一部分 1.7。
 **PUT** `/api/settings` · 使用方：**Agent WebUI**  
 Body 见第一部分 1.8。
 
+配置页支持从旧测控 `Device_CFG.ini` **本地导入**地址类变量（白名单键 → `{Section}_{Key}`），合并进编辑区后经 `PUT /api/settings` 持久化。Agent 运行时不读取磁盘 INI。
+
 ## 2.9 Delay
 
 **POST** `/api/general/delay/run` · 使用方：**Agent WebUI** — `{ "delay_ms": 200 }`  
