@@ -44,6 +44,84 @@ pub enum ResourceLockError {
     Cancelled,
 }
 
+struct Waiting {
+    name: String,
+    id: u64,
+    rx: oneshot::Receiver<()>,
+}
+
+/// Tracks partial acquires so a dropped/cancelled future cannot leak locks.
+struct AcquireInProgress {
+    manager: Arc<ResourceLockManager>,
+    held: Vec<String>,
+    /// Currently queued waiter. Cleared when wait completes.
+    waiting: Option<Waiting>,
+    /// When true, Drop releases `held` and cancels/unwinds `waiting`.
+    armed: bool,
+}
+
+impl AcquireInProgress {
+    fn new(manager: Arc<ResourceLockManager>, capacity: usize) -> Self {
+        Self {
+            manager,
+            held: Vec::with_capacity(capacity),
+            waiting: None,
+            armed: true,
+        }
+    }
+
+    fn into_guard(mut self) -> ResourceGuard {
+        debug_assert!(self.waiting.is_none());
+        self.armed = false;
+        let names = std::mem::take(&mut self.held);
+        ResourceGuard {
+            manager: Arc::clone(&self.manager),
+            names,
+        }
+    }
+
+    fn abort_with(&mut self, err: ResourceLockError) -> ResourceLockError {
+        self.cleanup();
+        self.armed = false;
+        err
+    }
+
+    fn cleanup(&mut self) {
+        if let Some(mut w) = self.waiting.take() {
+            match w.rx.try_recv() {
+                Ok(()) => {
+                    // Grant already transferred to us.
+                    self.held.push(w.name);
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    if !self.manager.cancel_waiter(&w.name, w.id) {
+                        // Releaser popped us under the mutex; send already ran before unlock.
+                        match w.rx.try_recv() {
+                            Ok(()) => self.held.push(w.name),
+                            // send failed (we are aborting) — releaser recurses; we do not own.
+                            Err(_) => {}
+                        }
+                    }
+                }
+                // Sender dropped without grant — we do not own.
+                Err(oneshot::error::TryRecvError::Closed) => {}
+            }
+        }
+        if !self.held.is_empty() {
+            self.manager.release_held(&self.held);
+            self.held.clear();
+        }
+    }
+}
+
+impl Drop for AcquireInProgress {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cleanup();
+        }
+    }
+}
+
 impl ResourceLockManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -75,53 +153,71 @@ impl ResourceLockManager {
         }
 
         let deadline = Instant::now() + timeout;
-        let mut held: Vec<String> = Vec::with_capacity(ordered.len());
+        let mut progress = AcquireInProgress::new(Arc::clone(self), ordered.len());
 
         for name in ordered {
-            if let Some(ref mut rx) = cancel {
-                if *rx.borrow() {
-                    self.release_held(&held);
-                    return Err(ResourceLockError::Cancelled);
-                }
+            if cancel_signaled(cancel.as_ref()) {
+                return Err(progress.abort_with(ResourceLockError::Cancelled));
             }
 
             match self.try_acquire_one(&name, owner) {
                 AcquireOne::Granted => {
-                    held.push(name);
-                    continue;
+                    progress.held.push(name);
                 }
                 AcquireOne::MustWait { id, rx } => {
+                    progress.waiting = Some(Waiting {
+                        name: name.clone(),
+                        id,
+                        rx,
+                    });
                     let remaining = deadline.saturating_duration_since(Instant::now());
-                    let wait_result = wait_for_grant(rx, remaining, cancel.as_mut()).await;
+                    let wait_result = {
+                        let waiting = progress.waiting.as_mut().expect("waiting just set");
+                        wait_for_grant(&mut waiting.rx, remaining, cancel.as_mut()).await
+                    };
+
                     match wait_result {
                         WaitOutcome::Granted => {
-                            self.set_owner(&name, owner);
-                            held.push(name);
+                            let w = progress.waiting.take().expect("waiting during grant");
+                            self.set_owner(&w.name, owner);
+                            progress.held.push(w.name);
                         }
                         WaitOutcome::Timeout => {
-                            if !self.cancel_waiter(&name, id) {
-                                // Race: grant already transferred; take ownership then unwind.
-                                held.push(name.clone());
+                            let w = progress.waiting.take().expect("waiting during timeout");
+                            if !self.cancel_waiter(&w.name, w.id) {
+                                // Grant raced with timeout — take ownership then unwind.
+                                progress.held.push(w.name.clone());
                             }
-                            self.release_held(&held);
-                            return Err(ResourceLockError::Timeout { resource: name });
+                            return Err(progress.abort_with(ResourceLockError::Timeout {
+                                resource: w.name,
+                            }));
                         }
                         WaitOutcome::Cancelled => {
-                            if !self.cancel_waiter(&name, id) {
-                                held.push(name);
+                            let mut w = progress.waiting.take().expect("waiting during cancel");
+                            if !self.cancel_waiter(&w.name, w.id) {
+                                // Releaser may have transferred; only claim if value is present.
+                                if w.rx.try_recv().is_ok() {
+                                    progress.held.push(w.name);
+                                }
                             }
-                            self.release_held(&held);
-                            return Err(ResourceLockError::Cancelled);
+                            return Err(progress.abort_with(ResourceLockError::Cancelled));
+                        }
+                        WaitOutcome::CancelledAfterGrant => {
+                            // oneshot already received; we own the lock and must unwind.
+                            let w = progress.waiting.take().expect("waiting during cancel-after-grant");
+                            progress.held.push(w.name);
+                            return Err(progress.abort_with(ResourceLockError::Cancelled));
                         }
                     }
                 }
             }
         }
 
-        Ok(ResourceGuard {
-            manager: Arc::clone(self),
-            names: held,
-        })
+        if cancel_signaled(cancel.as_ref()) {
+            return Err(progress.abort_with(ResourceLockError::Cancelled));
+        }
+
+        Ok(progress.into_guard())
     }
 
     fn try_acquire_one(&self, name: &str, owner: &str) -> AcquireOne {
@@ -201,6 +297,16 @@ impl ResourceLockManager {
             state.owner = None;
         }
     }
+
+    #[cfg(test)]
+    fn is_held(&self, name: &str) -> bool {
+        let inner = self.inner.lock().expect("resource lock poisoned");
+        inner.resources.get(name).map(|s| s.held).unwrap_or(false)
+    }
+}
+
+fn cancel_signaled(cancel: Option<&tokio::sync::watch::Receiver<bool>>) -> bool {
+    cancel.map(|rx| *rx.borrow()).unwrap_or(false)
 }
 
 enum AcquireOne {
@@ -212,40 +318,51 @@ enum WaitOutcome {
     Granted,
     Timeout,
     Cancelled,
+    /// Grant oneshot received, but cancel is also set — caller owns lock and must release.
+    CancelledAfterGrant,
 }
 
 async fn wait_for_grant(
-    mut rx: oneshot::Receiver<()>,
+    rx: &mut oneshot::Receiver<()>,
     timeout: Duration,
     cancel: Option<&mut tokio::sync::watch::Receiver<bool>>,
 ) -> WaitOutcome {
+    if cancel_signaled(cancel.as_deref()) {
+        return WaitOutcome::Cancelled;
+    }
+
     let sleep = tokio::time::sleep(timeout);
     tokio::pin!(sleep);
 
     if let Some(cancel) = cancel {
         loop {
+            // Prefer cancel over grant when both are ready (no `biased` toward rx).
             tokio::select! {
-                biased;
-                res = &mut rx => {
+                changed = cancel.changed() => {
+                    if changed.is_err() || *cancel.borrow() {
+                        return WaitOutcome::Cancelled;
+                    }
+                }
+                res = &mut *rx => {
                     return match res {
-                        Ok(()) => WaitOutcome::Granted,
+                        Ok(()) => {
+                            if *cancel.borrow() {
+                                WaitOutcome::CancelledAfterGrant
+                            } else {
+                                WaitOutcome::Granted
+                            }
+                        }
                         Err(_) => WaitOutcome::Cancelled,
                     };
                 }
                 _ = &mut sleep => {
                     return WaitOutcome::Timeout;
                 }
-                changed = cancel.changed() => {
-                    if changed.is_err() || *cancel.borrow() {
-                        return WaitOutcome::Cancelled;
-                    }
-                }
             }
         }
     } else {
         tokio::select! {
-            biased;
-            res = &mut rx => {
+            res = &mut *rx => {
                 match res {
                     Ok(()) => WaitOutcome::Granted,
                     Err(_) => WaitOutcome::Cancelled,
@@ -321,5 +438,104 @@ mod tests {
             .await
             .unwrap();
         drop(g);
+    }
+
+    #[tokio::test]
+    async fn drop_during_wait_does_not_leak() {
+        let m = ResourceLockManager::new();
+        let g1 = m
+            .acquire(&["station.dca".into()], "ch-1", Duration::from_secs(5), None)
+            .await
+            .unwrap();
+
+        let m2 = m.clone();
+        let h = tokio::spawn(async move {
+            m2.acquire(&["station.dca".into()], "ch-2", Duration::from_secs(5), None)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!h.is_finished());
+
+        // Abort the waiting acquire (simulates future drop / task cancel).
+        h.abort();
+        let _ = h.await;
+        drop(g1);
+
+        // Resource must be obtainable again — no leaked waiter/hold from aborted acquire.
+        let g3 = m
+            .acquire(
+                &["station.dca".into()],
+                "ch-3",
+                Duration::from_millis(200),
+                None,
+            )
+            .await
+            .expect("resource should not leak after aborted waiter");
+        assert!(m.is_held("station.dca"));
+        drop(g3);
+        assert!(!m.is_held("station.dca"));
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_cancelled_without_holding() {
+        let m = ResourceLockManager::new();
+        let g1 = m
+            .acquire(&["station.dca".into()], "ch-1", Duration::from_secs(5), None)
+            .await
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let m2 = m.clone();
+        let h = tokio::spawn(async move {
+            m2.acquire(
+                &["station.dca".into()],
+                "ch-2",
+                Duration::from_secs(5),
+                Some(rx),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!h.is_finished());
+
+        tx.send(true).unwrap();
+        let err = h.await.unwrap().unwrap_err();
+        assert!(matches!(err, ResourceLockError::Cancelled));
+
+        // Cancelled waiter must not hold the lock; holder still g1.
+        assert!(m.is_held("station.dca"));
+        drop(g1);
+
+        let g3 = m
+            .acquire(
+                &["station.dca".into()],
+                "ch-3",
+                Duration::from_millis(200),
+                None,
+            )
+            .await
+            .expect("lock free after cancel");
+        drop(g3);
+        assert!(!m.is_held("station.dca"));
+    }
+
+    #[tokio::test]
+    async fn cancel_after_last_resource_granted_returns_cancelled() {
+        // Immediate grants (no wait) must still honor cancel before returning Ok(Guard).
+        let m = ResourceLockManager::new();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tx.send(true).unwrap();
+
+        let err = m
+            .acquire(
+                &["station.dca".into()],
+                "ch-1",
+                Duration::from_secs(1),
+                Some(rx),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ResourceLockError::Cancelled));
+        assert!(!m.is_held("station.dca"));
     }
 }
