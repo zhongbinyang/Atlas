@@ -2662,7 +2662,8 @@ function setSeqControlsDisabled(disabled) {
   const snEl = document.getElementById('seq-sn');
   const woEl = document.getElementById('seq-work-order');
   if (runBtn) runBtn.disabled = disabled || !seqSelected.length;
-  if (abortBtn) abortBtn.disabled = true;
+  // Abort is usable while a sequence POST is in flight (shared cancel watch).
+  if (abortBtn) abortBtn.disabled = !disabled;
   if (snEl) snEl.disabled = disabled;
   if (woEl) woEl.disabled = disabled;
   const insertGroupBtn = document.getElementById('seq-insert-group');
@@ -4534,13 +4535,14 @@ async function abortSequence() {
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('中止失败: ' + err, false);
+      if (abortBtn) abortBtn.disabled = false;
       return;
     }
-    handleSequenceResponse(data);
+    // Cancel is async: workers stop between steps / lock waits; runSequence handles final result.
+    showSeqMsg('中止已请求…', true);
   } catch (e) {
     showSeqMsg('中止失败: ' + e.message, false);
-  } finally {
-    setSeqControlsDisabled(false);
+    if (abortBtn) abortBtn.disabled = false;
   }
 }
 

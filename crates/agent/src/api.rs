@@ -18,14 +18,16 @@ use crate::labview::{
     normalize_fs_path, run_cli,
     LabviewError, LabviewParam,
 };
-use crate::labview_sequence::{
-    queue_items_for_run, run_sequence, SequenceResponse, SequenceRunOpts,
+use crate::channel_run::{
+    channel_specs_from_list, run_multi_channel, ChannelRunRequest, MultiChannelSequenceResponse,
 };
+use crate::labview_sequence::queue_items_for_run;
 use crate::metrics::MetricsSnapshot;
 use crate::resource_lock::ResourceLockManager;
 use crate::sequence_session::SequenceProgressSlot;
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,6 +44,8 @@ pub struct AppState {
     pub labview_getinfo: PathBuf,
     pub sequence_progress: Arc<SequenceProgressSlot>,
     pub resource_locks: Arc<ResourceLockManager>,
+    /// Active mid-run cancel sender; set while a multi-channel sequence is in flight.
+    pub sequence_cancel: Arc<tokio::sync::Mutex<Option<watch::Sender<bool>>>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,6 +77,9 @@ struct RunSequenceRequest {
     work_order: Option<String>,
     #[serde(default)]
     sequence_template_id: Option<i64>,
+    /// If set, run only these enabled channel indexes; omit = all enabled.
+    #[serde(default)]
+    channel_indexes: Option<Vec<usize>>,
 }
 
 fn normalize_run_sequence_opt(value: Option<String>) -> Option<String> {
@@ -358,12 +365,13 @@ async fn build_busy_snapshot(s: &AppState) -> BusySnapshot {
         "rest" => "REST 试跑进行中".to_string(),
         other => format!("机台忙碌（{other}）"),
     };
+    let can_abort = reason == "sequence" && s.sequence_cancel.lock().await.is_some();
     BusySnapshot {
         busy: true,
         busy_reason: Some(reason),
         busy_message: Some(message),
         can_continue: false,
-        can_abort: false,
+        can_abort,
         can_force_release: true,
         pause_before_position: None,
         pause_step_name: None,
@@ -418,6 +426,9 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
     let was_busy = s.slot.is_busy().await;
+    if let Some(tx) = s.sequence_cancel.lock().await.take() {
+        let _ = tx.send(true);
+    }
     s.sequence_progress.clear().await;
     s.slot.release().await;
     (
@@ -1498,15 +1509,11 @@ async fn general_rest_templates(State(s): State<AppState>) -> impl IntoResponse 
     }
 }
 
-async fn log_sequence_run(
-    s: &AppState,
-    sequence_template_id: Option<i64>,
+fn steps_log_json(
     items: &[crate::labview_sequence::QueueItemForRun],
-    resp: &SequenceResponse,
-) {
-    let finished_at = chrono::Utc::now();
-    let steps: Vec<Value> = resp
-        .steps
+    steps: &[crate::labview_sequence::SequenceStepResult],
+) -> Vec<Value> {
+    steps
         .iter()
         .map(|step| {
             let item = items.iter().find(|i| i.position == step.position);
@@ -1525,15 +1532,37 @@ async fn log_sequence_run(
                 "error": step.error,
             })
         })
+        .collect()
+}
+
+async fn log_multi_channel_run(
+    s: &AppState,
+    sequence_template_id: Option<i64>,
+    items: &[crate::labview_sequence::QueueItemForRun],
+    resp: &MultiChannelSequenceResponse,
+) {
+    let finished_at = chrono::Utc::now();
+    let channels: Vec<Value> = resp
+        .channels
+        .iter()
+        .map(|ch| {
+            serde_json::json!({
+                "channel_index": ch.channel_index,
+                "channel_name": ch.channel_name,
+                "overall": ch.response.overall,
+                "stopped": ch.response.stopped,
+                "failed_at": ch.response.failed_at,
+                "sn": ch.response.sn,
+                "steps": steps_log_json(items, &ch.response.steps),
+            })
+        })
         .collect();
     let payload = serde_json::json!({
         "sequence_template_id": sequence_template_id,
         "overall": resp.overall,
-        "stopped": resp.stopped,
-        "failed_at": resp.failed_at,
         "sn": resp.sn,
         "work_order": resp.work_order,
-        "steps": steps,
+        "channels": channels,
         "finished_at": crate::logging::format_finished_at_local(finished_at),
         "hostname": s.hostname,
     });
@@ -1570,17 +1599,12 @@ async fn labview_run_sequence(
     State(s): State<AppState>,
     body: Option<Json<RunSequenceRequest>>,
 ) -> impl IntoResponse {
-    let sequence_template_id = body
-        .as_ref()
-        .and_then(|Json(req)| req.sequence_template_id);
-    let mut run_opts = body
-        .map(|Json(req)| SequenceRunOpts {
-            sn: normalize_run_sequence_opt(req.sn.clone()),
-            work_order: normalize_run_sequence_opt(req.work_order.clone()),
-            ..Default::default()
-        })
-        .unwrap_or_default();
-    run_opts.vars = load_settings_vars(&s).await;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let sequence_template_id = req.sequence_template_id;
+    let sn = normalize_run_sequence_opt(req.sn.clone());
+    let work_order = normalize_run_sequence_opt(req.work_order.clone());
+    let channel_indexes = req.channel_indexes.clone();
+    let base_vars = load_settings_vars(&s).await;
 
     if let Err("busy") = s.slot.try_acquire("sequence").await {
         let snap = build_busy_snapshot(&s).await;
@@ -1643,13 +1667,77 @@ async fn labview_run_sequence(
             .into_response();
     }
 
-    s.sequence_progress.begin().await;
-    run_opts.progress = Some(s.sequence_progress.clone());
+    // Load enabled channels (empty table → synthetic CH0 inside orchestrator).
+    let channels = match crate::register::get_agent_channels(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+    )
+    .await
+    {
+        Ok((ch_status, ch_body)) if ch_status.is_success() => {
+            match channel_specs_from_list(
+                &ch_body,
+                channel_indexes.as_deref(),
+            ) {
+                Ok(v) => {
+                    if channel_indexes.is_some() && v.is_empty() {
+                        s.slot.release().await;
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorBody {
+                                error: "no enabled channels match channel_indexes".into(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    v
+                }
+                Err(msg) => {
+                    s.slot.release().await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorBody { error: msg }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        Ok((ch_status, ch_body)) => {
+            // Soft-fail: treat missing channels endpoint as single synthetic channel.
+            tracing::warn!(
+                status = %ch_status,
+                body = %ch_body,
+                "failed to load channels; falling back to synthetic CH0"
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load channels; falling back to synthetic CH0");
+            Vec::new()
+        }
+    };
 
-    let resp = run_sequence(&s.labview_cli, &s.labview_getinfo, &items, run_opts).await;
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    *s.sequence_cancel.lock().await = Some(cancel_tx);
 
+    let run_req = ChannelRunRequest {
+        items: items.clone(),
+        base_vars,
+        channels,
+        resource_locks: s.resource_locks.clone(),
+        resource_timeout: std::time::Duration::from_secs(300),
+        sn,
+        work_order,
+        progress: s.sequence_progress.clone(),
+        cancel: cancel_rx,
+    };
+
+    let resp = run_multi_channel(&s.labview_cli, &s.labview_getinfo, run_req).await;
+
+    *s.sequence_cancel.lock().await = None;
     s.slot.release().await;
-    log_sequence_run(&s, sequence_template_id, &items, &resp).await;
+    log_multi_channel_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
 
@@ -1668,14 +1756,30 @@ async fn labview_run_sequence_continue_gone() -> impl IntoResponse {
 }
 
 async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
-    // Mid-run abort is rewired in a later multi-channel task; keep the route.
-    let _ = s;
-    (
-        StatusCode::CONFLICT,
-        Json(ErrorBody {
-            error: "no active sequence session".into(),
-        }),
-    )
+    let tx = {
+        let guard = s.sequence_cancel.lock().await;
+        guard.clone()
+    };
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(true);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "aborting": true,
+                })),
+            )
+                .into_response()
+        }
+        None => (
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: "no active sequence session".into(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn register_now(State(s): State<AppState>) -> impl IntoResponse {
@@ -1715,6 +1819,7 @@ mod tests {
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
             sequence_progress: SequenceProgressSlot::new(),
             resource_locks: ResourceLockManager::new(),
+            sequence_cancel: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 

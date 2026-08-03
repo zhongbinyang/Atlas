@@ -74,13 +74,15 @@ pub struct SequenceRunOpts {
     pub vars: std::collections::HashMap<String, String>,
     /// Optional live progress publisher for UI polling.
     pub progress: Option<Arc<SequenceProgressSlot>>,
+    /// When set, progress updates target this channel in the multi-channel snapshot.
+    pub progress_channel: Option<(usize, String)>,
     /// Shared resource lock manager (None = no locking).
     pub resource_locks: Option<Arc<ResourceLockManager>>,
     /// Owner label for acquired locks (e.g. `"ch-0"`).
     pub resource_owner: String,
     /// Per-step acquire timeout (default 300s).
     pub resource_timeout: Duration,
-    /// Optional cancel signal checked while waiting for locks.
+    /// Optional cancel signal checked between steps and while waiting for locks.
     pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
@@ -91,12 +93,17 @@ impl Default for SequenceRunOpts {
             work_order: None,
             vars: Default::default(),
             progress: None,
+            progress_channel: None,
             resource_locks: None,
             resource_owner: "ch-0".into(),
             resource_timeout: Duration::from_secs(300),
             cancel: None,
         }
     }
+}
+
+fn cancel_signaled(cancel: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
+    cancel.as_ref().map(|rx| *rx.borrow()).unwrap_or(false)
 }
 
 /// Acquire `resources` (if any / if locks configured), run `f`, then release on drop.
@@ -429,28 +436,49 @@ where
 {
     let mut stopped = false;
     let mut failed_at = None;
+    let mut aborted = false;
     let vars = opts.vars.clone();
     let progress = opts.progress.clone();
+    let progress_channel = opts.progress_channel.clone();
     let mut sn = opts.sn;
     let work_order = opts.work_order;
 
-    async fn publish_steps(progress: &Option<Arc<SequenceProgressSlot>>, steps: &[SequenceStepResult]) {
+    async fn publish_steps(
+        progress: &Option<Arc<SequenceProgressSlot>>,
+        progress_channel: &Option<(usize, String)>,
+        steps: &[SequenceStepResult],
+    ) {
         if let Some(p) = progress {
-            p.set_steps(steps.to_vec()).await;
+            if let Some((idx, _)) = progress_channel {
+                p.set_channel_steps(*idx, steps.to_vec()).await;
+            } else {
+                p.set_steps(steps.to_vec()).await;
+            }
         }
     }
 
     async fn publish_current(
         progress: &Option<Arc<SequenceProgressSlot>>,
+        progress_channel: &Option<(usize, String)>,
         position: usize,
         name: &str,
     ) {
         if let Some(p) = progress {
-            p.set_current(position, name.to_string()).await;
+            if let Some((idx, _)) = progress_channel {
+                p.set_channel_current(*idx, position, name.to_string()).await;
+            } else {
+                p.set_current(position, name.to_string()).await;
+            }
         }
     }
 
     for (i, item) in items.iter().enumerate().skip(start_index) {
+        if cancel_signaled(&opts.cancel) {
+            aborted = true;
+            stopped = true;
+            break;
+        }
+
         if !item.enabled {
             steps.push(SequenceStepResult {
                 position: item.position,
@@ -464,13 +492,13 @@ where
                 result: None,
                 error: None,
             });
-            publish_steps(&progress, &steps).await;
+            publish_steps(&progress, &progress_channel, &steps).await;
             continue;
         }
 
         let _ = item.breakpoint;
 
-        publish_current(&progress, item.position, &item.name).await;
+        publish_current(&progress, &progress_channel, item.position, &item.name).await;
 
         // Progress stays at current step name while waiting for locks (no waiting_resource hint yet).
         let step_outcome = with_step_resources(
@@ -485,19 +513,31 @@ where
 
         match step_outcome {
             Err(lock_err) => {
+                let cancelled = matches!(lock_err, ResourceLockError::Cancelled);
                 steps.push(SequenceStepResult {
                     position: item.position,
                     queue_item_id: item.queue_item_id.clone(),
                     template_id: item.template_id.clone(),
                     name: item.name.clone(),
                     ok: false,
-                    status: "error".into(),
+                    status: if cancelled {
+                        "aborted".into()
+                    } else {
+                        "error".into()
+                    },
                     measured: None,
                     limits: limits_value(&item.limits),
                     result: None,
                     error: Some(resource_lock_error_message(&lock_err)),
                 });
-                publish_steps(&progress, &steps).await;
+                publish_steps(&progress, &progress_channel, &steps).await;
+
+                if cancelled {
+                    aborted = true;
+                    stopped = true;
+                    failed_at = Some(i);
+                    break;
+                }
 
                 if should_stop_on_status("error", &item.fail_policy) {
                     stopped = true;
@@ -539,7 +579,7 @@ where
                         }
                     }),
                 });
-                publish_steps(&progress, &steps).await;
+                publish_steps(&progress, &progress_channel, &steps).await;
 
                 if should_stop_on_status(&status, &item.fail_policy) {
                     stopped = true;
@@ -560,7 +600,7 @@ where
                     result: None,
                     error: Some(err),
                 });
-                publish_steps(&progress, &steps).await;
+                publish_steps(&progress, &progress_channel, &steps).await;
 
                 if should_stop_on_status("error", &item.fail_policy) {
                     stopped = true;
@@ -571,10 +611,20 @@ where
         }
     }
 
-    let overall = compute_overall(&steps);
+    let overall = if aborted {
+        "aborted".into()
+    } else {
+        compute_overall(&steps)
+    };
 
     if let Some(p) = &progress {
-        p.finish(steps.clone()).await;
+        if let Some((idx, name)) = &progress_channel {
+            // Multi-channel: leave running=true until orchestrator finishes all workers.
+            p.set_channel_overall(*idx, name.clone(), steps.clone(), overall.clone())
+                .await;
+        } else {
+            p.finish(steps.clone()).await;
+        }
     }
 
     SequenceResponse {
@@ -621,7 +671,7 @@ pub async fn run_sequence(
     .await
 }
 
-async fn run_one_step(
+pub async fn run_one_step(
     cli: &Path,
     getinfo: &Path,
     item: &QueueItemForRun,

@@ -537,10 +537,10 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | PATCH | `/api/labview/templates/{id}` | **未使用** | → 中心 PATCH |
 | GET | `/api/sequence/run-queue` | **Agent WebUI** | → 中心 run-queue GET |
 | PUT | `/api/sequence/run-queue` | **Agent WebUI** | → 中心 run-queue PUT |
-| POST | `/api/sequence/run` | **Agent WebUI** | Slot + 读队列/设置 + 本机逐步执行 |
-| GET | `/api/sequence/run/progress` | **Agent WebUI** | 本机 progress |
+| POST | `/api/sequence/run` | **Agent WebUI** | Slot + 多通道并行 + 共享资源锁 |
+| GET | `/api/sequence/run/progress` | **Agent WebUI** | 本机多通道 progress |
 | POST | `/api/sequence/run/continue` | — | **410 Gone**（断点已移除） |
-| POST | `/api/sequence/run/abort` | **Agent WebUI** | 中止（保留路由） |
+| POST | `/api/sequence/run/abort` | **Agent WebUI** | 置 cancel，各通道在步间/等锁时停止 |
 | GET | `/api/sequence-templates` | **Agent WebUI** | → 中心列表 |
 | POST | `/api/sequence-templates` | **Agent WebUI** | → 中心创建（带 agent_id） |
 | POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-agent |
@@ -578,7 +578,7 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | `cpu_percent` · `memory_percent` | 资源占用 |
 | `busy` · `uptime_secs` | 是否忙碌 / 运行秒数 |
 | `busy_reason` · `busy_message` | 如 `sequence` · `delay` · `rest` |
-| `can_continue` · `can_abort` · `can_force_release` | `can_continue` 恒为 false；`can_force_release` 忙碌时可强制空闲 |
+| `can_continue` · `can_abort` · `can_force_release` | `can_continue` 恒为 false；序列执行中 `can_abort=true`；`can_force_release` 忙碌时可强制空闲 |
 | `pause_before_position` · `pause_step_name` | 已废弃（恒为空） |
 | `log_dir` | 日志根目录 |
 
@@ -627,15 +627,49 @@ Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分�
 **POST** `/api/sequence/run` · 使用方：**Agent WebUI**
 
 ```json
-{ "sn": "SN001", "work_order": "WO-1", "sequence_template_id": 12 }
+{ "sn": "SN001", "work_order": "WO-1", "sequence_template_id": 12, "channel_indexes": [0, 2] }
 ```
 
-响应：`overall` · `stopped` · `failed_at?` · `steps[]` · `sn?` · `work_order?`（不再返回 `pause`）
+- `channel_indexes` 可选：只跑指定已启用通道；省略则跑全部已启用通道。
+- 通道表为空或无已启用通道时，使用合成通道 `CH0`（index 0）。
+- 始终返回多通道信封（单通道同样包在 `channels[]` 内）：
+
+```json
+{
+  "channels": [
+    {
+      "channel_index": 0,
+      "channel_name": "CH0",
+      "response": { "overall": "pass", "stopped": false, "failed_at": null, "steps": [], "sn": null, "work_order": null }
+    }
+  ],
+  "overall": "pass",
+  "sn": "SN001",
+  "work_order": "WO-1"
+}
+```
+
+站级 `overall`：任一通道为 `fail` / `error` / `aborted` → `fail`，否则 `pass`。  
+`TaskSlot` 以 owner `"sequence"` 占用整个多通道会话一次；各通道共享 `ResourceLockManager`，`resource_owner` 为 `ch-{index}`。
 
 **GET** `/api/sequence/run/progress` · 使用方：**Agent WebUI**  
-在步骤持有 `resources[]` 时，Agent 会先 acquire 再执行该步；等待锁期间 progress 仍显示该步为当前步（`current_position` / `current_name`），**不会**单独下发 `waiting_resource` 状态（步骤结果仍为未写入，直到 acquire 成功或超时/取消后记 `status=error`）。  
+
+```json
+{
+  "running": true,
+  "channels": [
+    { "channel_index": 0, "name": "CH0", "steps": [], "overall": null, "current_position": 1, "current_name": "Eye" }
+  ],
+  "steps": [],
+  "current_position": 1,
+  "current_name": "Eye"
+}
+```
+
+顶层 `steps` / `current_*` 为第一通道的兼容镜像（Task 7 起 UI 应以 `channels` 为准）。  
+在步骤持有 `resources[]` 时，Agent 会先 acquire 再执行该步；等待锁期间 progress 仍显示该步为当前步，**不会**单独下发 `waiting_resource` 状态（超时记 `status=error`；取消记 `status=aborted`）。  
 **POST** `/api/sequence/run/continue` · **410 Gone**（断点已移除）  
-**POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI**
+**POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI** — 对共享 `watch` cancel 置位；响应 `{ "ok": true, "aborting": true }`。各通道在步间或等锁时停止；原始 `POST /run` 返回最终多通道结果。无进行中会话时 **409**。
 
 ## 2.7 序列模板
 

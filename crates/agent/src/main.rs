@@ -1,5 +1,6 @@
 mod advertise;
 mod api;
+mod channel_run;
 mod config;
 mod expand;
 mod general;
@@ -62,6 +63,7 @@ async fn main() {
         labview_getinfo: cfg.labview_getinfo.clone(),
         sequence_progress: SequenceProgressSlot::new(),
         resource_locks: ResourceLockManager::new(),
+        sequence_cancel: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let reg = common::RegisterAgentRequest {
