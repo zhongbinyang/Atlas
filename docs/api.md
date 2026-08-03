@@ -726,6 +726,13 @@ Body 见第一部分 1.8（PUT 仅 variables）。
 
 配置页「通道」表格编辑 `channel_index` / `name` / `enabled` / 扁平 overlay 键值；保存为全量 `PUT { "channels": [...] }`。序列页勾选已启用通道，请求体可带 `channel_indexes`。
 
+**手动 E2E 核对（多通道 + 资源锁）**：在实机/LabVIEW 上建议按下列顺序验收（自动化测试仅覆盖子逻辑，不替代现场时序观察）：
+1. 配置 4 个启用通道，overlay 区分 `Port`/通道 IP，设备档含共享 `DCA_IP`。
+2. 序列：灵敏度步 `resources=[]` 且输入用 `${Port}`/通道 IP；眼图步 `resources=["station.dca"]` 且输入用 `${DCA_IP}`。
+3. 四通道同跑：Step A 各通道时间戳应重叠；Step B 眼图步应串行（等待通道可见 wait/延后启动）。
+4. CH1 眼图步拉长占用：CH2–4 等待后依次执行；Abort 应取消仍在等待的通道。
+5. 通道表为空（0 行）时：行为与单通道一致（合成 CH0、空 overlay），与改造前单队列一致。
+
 ## 2.9 Delay
 
 **POST** `/api/general/delay/run` · 使用方：**Agent WebUI** — `{ "delay_ms": 200 }`  
