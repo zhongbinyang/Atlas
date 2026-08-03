@@ -22,6 +22,7 @@ use crate::labview_sequence::{
     queue_items_for_run, run_sequence, SequenceResponse, SequenceRunOpts,
 };
 use crate::metrics::MetricsSnapshot;
+use crate::resource_lock::ResourceLockManager;
 use crate::sequence_session::SequenceProgressSlot;
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
@@ -40,6 +41,7 @@ pub struct AppState {
     pub labview_cli: PathBuf,
     pub labview_getinfo: PathBuf,
     pub sequence_progress: Arc<SequenceProgressSlot>,
+    pub resource_locks: Arc<ResourceLockManager>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1713,6 +1715,7 @@ mod tests {
             labview_cli: PathBuf::from(r"C:\labview-runner-cli\labview-runner-cli.exe"),
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
             sequence_progress: SequenceProgressSlot::new(),
+            resource_locks: ResourceLockManager::new(),
         }
     }
 

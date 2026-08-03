@@ -9,6 +9,7 @@ mod limits;
 mod logging;
 mod metrics;
 mod register;
+mod resource_lock;
 mod rest;
 mod sequence_session;
 mod settings_defaults;
@@ -18,6 +19,7 @@ mod web;
 use api::AppState;
 use config::AgentConfig;
 use metrics::{MetricsSampler, MetricsSnapshot};
+use resource_lock::ResourceLockManager;
 use sequence_session::SequenceProgressSlot;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -59,6 +61,7 @@ async fn main() {
         labview_cli: cfg.labview_cli.clone(),
         labview_getinfo: cfg.labview_getinfo.clone(),
         sequence_progress: SequenceProgressSlot::new(),
+        resource_locks: ResourceLockManager::new(),
     };
 
     let reg = common::RegisterAgentRequest {
