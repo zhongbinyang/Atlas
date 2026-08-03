@@ -404,6 +404,7 @@
             <li>Spec 的 unit 下拉来自单位表；说明仅展示，不参与判定。</li>
             <li>入参 / Spec / Delay / REST 等处输入 <code class="mono">/</code> 打开变量选择器，写入语法为 <code class="mono">${Name}</code>，例如 <code class="mono">${Hostname}</code>、<code class="mono">{"sn":"${Lot}"}</code>。</li>
             <li><code class="mono">Hostname</code>、<code class="mono">IP</code> 为系统变量，值随本机刷新。</li>
+            <li>可将旧测控 <code class="mono">Device_CFG.ini</code> 导入为地址类变量（如 <code class="mono">${DCA_Setting_Intru_Com_Add}</code>）；导入后需点<strong>保存</strong>。</li>
           </ul>
         </details>
 
@@ -437,6 +438,8 @@
                 <span id="settings-vars-count" class="settings-count">0</span>
               </div>
               <button type="button" id="settings-var-add-btn" class="btn-sm">+ 添加</button>
+              <button type="button" id="settings-import-device-cfg-btn" class="btn-sm" title="从旧测控 Device_CFG.ini 导入地址类变量">导入 Device_CFG…</button>
+              <input id="settings-device-cfg-file" type="file" accept=".ini,text/plain" hidden>
             </div>
             <div class="settings-table-scroll">
               <table class="settings-table">
@@ -616,6 +619,29 @@
       <p id="app-alert-body" class="app-alert-body"></p>
       <div class="spec-modal-actions">
         <button type="button" id="app-alert-ok-btn" class="btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+  <div id="device-cfg-import-modal" class="spec-modal" hidden>
+    <div class="spec-modal-card" style="max-width: 42rem;">
+      <h3>导入 Device_CFG 预览</h3>
+      <p id="device-cfg-import-summary" class="muted-hint"></p>
+      <div class="table-scroll" style="max-height: 16rem;">
+        <table class="settings-table">
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>变量名</th>
+              <th>值</th>
+              <th>来源</th>
+            </tr>
+          </thead>
+          <tbody id="device-cfg-import-body"></tbody>
+        </table>
+      </div>
+      <div class="spec-modal-actions">
+        <button type="button" id="device-cfg-import-cancel-btn">取消</button>
+        <button type="button" id="device-cfg-import-apply-btn" class="btn-primary">合并到编辑区</button>
       </div>
     </div>
   </div>

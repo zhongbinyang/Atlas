@@ -154,6 +154,13 @@ fn settings_page_exposes_units_and_variables() {
             && APP.contains("sanitizeDeviceCfgIdent"),
         "settings must expose Device_CFG.ini parse/preview/merge helpers"
     );
+    assert!(
+        INDEX.contains("id=\"settings-import-device-cfg-btn\"")
+            && INDEX.contains("id=\"settings-device-cfg-file\"")
+            && INDEX.contains("id=\"device-cfg-import-modal\"")
+            && INDEX.contains("id=\"device-cfg-import-apply-btn\""),
+        "settings page must expose Device_CFG import controls and preview modal"
+    );
 }
 
 #[test]
