@@ -240,6 +240,36 @@ pub fn variables_map_for_expand_with_profiles(
     map
 }
 
+/// Merge per-channel overlay into an expand map and set `Channel` / `ChannelIndex` builtins.
+pub fn apply_channel_overlay(
+    base: &std::collections::HashMap<String, String>,
+    channel_index: usize,
+    channel_name: &str,
+    overlay: &Value,
+) -> std::collections::HashMap<String, String> {
+    let mut map = base.clone();
+    if let Some(obj) = overlay.as_object() {
+        for (key, val) in obj {
+            let value = match val {
+                Value::Null => continue,
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                other => other.to_string(),
+            };
+            map.insert(key.clone(), value);
+        }
+    }
+    let channel = if channel_name.is_empty() {
+        (channel_index + 1).to_string()
+    } else {
+        channel_name.to_string()
+    };
+    map.insert("Channel".into(), channel);
+    map.insert("ChannelIndex".into(), channel_index.to_string());
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +404,17 @@ mod tests {
         assert_eq!(map.get("EVB_Setting_IP_Add").map(String::as_str), Some("manual"));
         assert_eq!(map.get("EVB_Setting_Port").map(String::as_str), Some("1"));
         assert_eq!(map.get("Cal_Gain").map(String::as_str), Some("1.0"));
+    }
+
+    #[test]
+    fn channel_overlay_overrides_device_and_sets_builtins() {
+        let mut base = std::collections::HashMap::new();
+        base.insert("Port".into(), "0".into());
+        base.insert("DCA_IP".into(), "10.0.0.9".into());
+        let map = apply_channel_overlay(&base, 1, "CH2", &json!({"Port": "2"}));
+        assert_eq!(map.get("Port").map(String::as_str), Some("2"));
+        assert_eq!(map.get("DCA_IP").map(String::as_str), Some("10.0.0.9"));
+        assert_eq!(map.get("Channel").map(String::as_str), Some("CH2"));
+        assert_eq!(map.get("ChannelIndex").map(String::as_str), Some("1"));
     }
 }
