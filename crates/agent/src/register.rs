@@ -68,8 +68,55 @@ pub struct AgentSettingsPayload {
     pub units: Vec<common::AgentUnit>,
     #[serde(default)]
     pub variables: Vec<common::AgentVariable>,
+    #[serde(default)]
+    pub array_expand_mode: common::ArrayExpandMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_profiles: Vec<AgentConfigProfilePayload>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calibration_profiles: Vec<AgentConfigProfilePayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_calibration_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct AgentConfigProfilePayload {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub agent_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub setting: Value,
+    #[serde(default)]
+    pub is_active: bool,
+    #[serde(default)]
+    pub source_filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CreateAgentConfigProfileBody {
+    pub name: String,
+    #[serde(default)]
+    pub setting: Value,
+    #[serde(default)]
+    pub source_filename: String,
+    #[serde(default)]
+    pub activate: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdateAgentConfigProfileBody {
+    pub name: String,
+    #[serde(default)]
+    pub setting: Value,
+    #[serde(default)]
+    pub source_filename: String,
 }
 
 fn deserialize_units_flex<'de, D>(deserializer: D) -> Result<Vec<common::AgentUnit>, D::Error>
@@ -102,6 +149,30 @@ pub async fn get_agent_settings(
     resp.json().await.map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct CenterUnitsPayload {
+    #[serde(default, deserialize_with = "deserialize_units_flex")]
+    pub units: Vec<common::AgentUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+pub async fn get_center_units(
+    client: &reqwest::Client,
+    center_url: &str,
+) -> Result<CenterUnitsPayload, String> {
+    let url = format!("{}/api/units", center_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("get units failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
 pub async fn put_agent_settings(
     client: &reqwest::Client,
     center_url: &str,
@@ -113,9 +184,20 @@ pub async fn put_agent_settings(
         center_url.trim_end_matches('/'),
         agent_id
     );
+    // Only persist units/variables; profiles use dedicated APIs.
+    let slim = AgentSettingsPayload {
+        units: Vec::new(),
+        variables: body.variables.clone(),
+        array_expand_mode: body.array_expand_mode,
+        updated_at: None,
+        device_profiles: Vec::new(),
+        calibration_profiles: Vec::new(),
+        active_device_id: None,
+        active_calibration_id: None,
+    };
     let resp = client
         .put(&url)
-        .json(body)
+        .json(&slim)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -123,6 +205,141 @@ pub async fn put_agent_settings(
         return Err(format!("put settings failed: {}", resp.status()));
     }
     resp.json().await.map_err(|e| e.to_string())
+}
+
+fn config_profiles_url(center_url: &str, agent_id: &str, kind: &str) -> String {
+    format!(
+        "{}/api/agents/{}/{}",
+        center_url.trim_end_matches('/'),
+        agent_id,
+        kind
+    )
+}
+
+pub async fn list_config_profiles(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    kind: &str,
+) -> Result<Vec<AgentConfigProfilePayload>, String> {
+    let url = config_profiles_url(center_url, agent_id, kind);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("list {kind} failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+pub async fn create_config_profile(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    kind: &str,
+    body: &CreateAgentConfigProfileBody,
+) -> Result<AgentConfigProfilePayload, String> {
+    let url = config_profiles_url(center_url, agent_id, kind);
+    let resp = client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("create {kind} failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+pub async fn update_config_profile(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    kind: &str,
+    profile_id: &str,
+    body: &UpdateAgentConfigProfileBody,
+) -> Result<AgentConfigProfilePayload, String> {
+    let url = format!(
+        "{}/{}",
+        config_profiles_url(center_url, agent_id, kind),
+        profile_id
+    );
+    let resp = client
+        .put(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("update {kind} failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+pub async fn delete_config_profile(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    kind: &str,
+    profile_id: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/{}",
+        config_profiles_url(center_url, agent_id, kind),
+        profile_id
+    );
+    let resp = client
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NO_CONTENT || resp.status().is_success() {
+        return Ok(());
+    }
+    Err(format!("delete {kind} failed: {}", resp.status()))
+}
+
+pub async fn activate_config_profile(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    kind: &str,
+    profile_id: &str,
+) -> Result<AgentConfigProfilePayload, String> {
+    let url = format!(
+        "{}/{}/activate",
+        config_profiles_url(center_url, agent_id, kind),
+        profile_id
+    );
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("activate {kind} failed: {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+pub async fn get_active_config_profiles(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+) -> Result<(Option<AgentConfigProfilePayload>, Option<AgentConfigProfilePayload>), String> {
+    let settings = get_agent_settings(client, center_url, agent_id).await?;
+    let device = settings
+        .device_profiles
+        .into_iter()
+        .find(|p| p.is_active);
+    let calibration = settings
+        .calibration_profiles
+        .into_iter()
+        .find(|p| p.is_active);
+    Ok((device, calibration))
 }
 
 pub async fn patch_vi_template(

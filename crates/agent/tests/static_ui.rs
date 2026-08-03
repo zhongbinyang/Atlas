@@ -139,45 +139,77 @@ fn settings_page_exposes_units_and_variables() {
         "配置 must be a top-level tab"
     );
     assert!(
-        INDEX.contains("id=\"settings-units-body\"")
+        !INDEX.contains("id=\"settings-units-body\"")
+            && !INDEX.contains("id=\"settings-restore-units-btn\"")
             && INDEX.contains("id=\"settings-vars-body\"")
             && INDEX.contains("settings-col-desc")
             && INDEX.contains("id=\"settings-save-btn\"")
-            && INDEX.contains("settings-grid")
+            && INDEX.contains("id=\"settings-array-expand-mode\"")
+            && INDEX.contains("settings-stack")
             && INDEX.contains("settings-toolbar")
             && INDEX.contains("settings-help"),
-        "settings page needs dual-pane layout, toolbar, help, tables and save"
+        "settings page must drop units editor; keep vars/profiles toolbar and help"
     );
     assert!(
         APP.contains("loadAgentSettingsPage")
+            && APP.contains("fetchCenterUnits")
+            && APP.contains("centerUnits")
             && APP.contains("attachVarPicker")
             && APP.contains("getCaretViewportPoint")
             && APP.contains("ArrowDown")
             && APP.contains("settingsDirty")
             && APP.contains("isSystemVarName")
             && APP.contains("spec-unit-select")
-            && APP.contains("/api/settings"),
-        "settings UI must support dirty state, system vars, Spec unit + / picker"
+            && APP.contains("/api/settings")
+            && APP.contains("/api/units"),
+        "settings UI must load center units for Spec; dirty/vars/picker remain"
     );
     assert!(
         APP.contains("DEVICE_CFG_ADDRESS_KEYS")
             && APP.contains("parseDeviceCfgIni")
+            && APP.contains("iniToSettingJson")
+            && APP.contains("coerceIniScalarOrArray")
+            && APP.contains("tomlToSettingJson")
+            && APP.contains("textToSettingJson")
+            && APP.contains("openProfileImportPreview")
+            && APP.contains("sanitizeDeviceCfgIdent")
             && APP.contains("buildDeviceCfgImportPreview")
-            && APP.contains("mergeDeviceCfgPreviewIntoVariables")
-            && APP.contains("sanitizeDeviceCfgIdent"),
-        "settings must expose Device_CFG.ini parse/preview/merge helpers"
+            && APP.contains("mergeDeviceCfgPreviewIntoVariables"),
+        "settings must expose INI/TOML→profile helpers"
     );
     assert!(
         INDEX.contains("id=\"settings-import-device-cfg-btn\"")
             && INDEX.contains("id=\"settings-device-cfg-file\"")
+            && INDEX.contains("id=\"settings-import-calibration-cfg-btn\"")
+            && INDEX.contains("id=\"settings-device-profiles-body\"")
+            && INDEX.contains("id=\"settings-calibration-profiles-body\"")
+            && INDEX.contains("id=\"settings-device-flat-body\"")
+            && INDEX.contains("id=\"settings-calibration-flat-body\"")
+            && INDEX.contains("id=\"settings-device-section\"")
+            && INDEX.contains("id=\"settings-calibration-section\"")
+            && INDEX.contains("id=\"settings-vars-section\"")
             && INDEX.contains("id=\"device-cfg-import-modal\"")
-            && INDEX.contains("id=\"device-cfg-import-apply-btn\""),
-        "settings page must expose Device_CFG import controls and preview modal"
+            && INDEX.contains("id=\"device-cfg-import-apply-btn\"")
+            && INDEX.contains("id=\"profile-import-name\""),
+        "settings page must stack device/cal/vars sections with flat expand tables"
     );
     assert!(
-        APP.contains("openDeviceCfgImportPreview")
-            && APP.contains("applyDeviceCfgImportPreview"),
-        "settings must wire Device_CFG import preview apply flow"
+        APP.contains("openProfileImportPreview")
+            && APP.contains("applyDeviceCfgImportPreview")
+            && APP.contains("refreshConfigProfiles")
+            && APP.contains("activateConfigProfile")
+            && APP.contains("settingJsonToToml")
+            && APP.contains("exportViewedProfileToml")
+            && APP.contains("renderActiveProfileFlat")
+            && APP.contains("saveActiveProfileFlat")
+            && APP.contains("/api/device-profiles")
+            && APP.contains("/api/calibration-profiles"),
+        "settings must wire profile CRUD, flat edit, TOML import/view/export"
+    );
+    assert!(
+        INDEX.contains("id=\"profile-view-toml\"")
+            && INDEX.contains("id=\"profile-view-export-btn\""),
+        "profile view modal must show TOML and offer export"
     );
 }
 

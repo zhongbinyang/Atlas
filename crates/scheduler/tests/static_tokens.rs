@@ -181,6 +181,16 @@ fn scheduler_static_ui_uses_offline_assets_and_accessible_feedback() {
     assert!(!app.contains("alert("), "native alerts must be removed");
     assert!(app.contains("setAttribute('aria-current', 'page')"));
     assert!(
+        index.contains("id=\"nav-units\"")
+            && index.contains("id=\"view-units\"")
+            && index.contains("id=\"units-body\"")
+            && index.contains("id=\"units-save-btn\"")
+            && app.contains("/api/units")
+            && app.contains("loadCenterUnitsPage")
+            && app.contains("saveCenterUnits"),
+        "center WebUI must expose shared units page and /api/units"
+    );
+    assert!(
         !app.contains("detail-shot")
             && !app.contains("detail-history")
             && !app.contains("detail-files")

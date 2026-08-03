@@ -1952,17 +1952,163 @@ th {
   margin: 0.2rem 0;
 }
 
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.settings-section {
+  background: var(--panel, #f7fafc);
+  border: 1px solid var(--border, #c5d0db);
+  border-radius: var(--radius, 6px);
+  padding: 0;
+}
+
+.settings-section-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  user-select: none;
+}
+
+.settings-section-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section-summary::before {
+  content: '▸';
+  color: var(--muted, #667);
+  font-size: 0.85em;
+}
+
+.settings-section[open] > .settings-section-summary::before {
+  content: '▾';
+}
+
+.settings-section-title {
+  flex: 1;
+}
+
+.settings-section-body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--border, #c5d0db);
+}
+
+.settings-section-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.settings-flat-heading {
+  margin: 0.85rem 0 0.4rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.settings-table-scroll-sm {
+  max-height: 10rem;
+}
+
+.settings-flat-name {
+  white-space: nowrap;
+}
+
+.settings-var-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.settings-var-name-wrap .settings-var-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-var-dollar {
+  color: var(--muted, #667);
+  flex-shrink: 0;
+}
+
+.settings-var-name-display {
+  margin-right: 0.35rem;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr 1.15fr;
   gap: 1rem;
   align-items: start;
+  margin-top: 1rem;
 }
 
 @media (max-width: 1100px) {
   .settings-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.settings-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.settings-expand-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted, #556);
+}
+
+.settings-expand-mode select {
+  max-width: 16rem;
+}
+
+.settings-profile-active {
+  color: var(--accent, #0a7);
+  font-weight: 600;
+}
+
+.settings-profile-json {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0.75rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.settings-import-name-label {
+  display: block;
+  margin: 0.75rem 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.settings-import-name-label input {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  box-sizing: border-box;
+}
+
+.settings-import-activate {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
 }
 
 .settings-card {

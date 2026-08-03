@@ -19,6 +19,7 @@
         <button type="button" id="nav-machines" class="tab active" data-route="machines" aria-current="page">机台</button>
         <button type="button" id="nav-functions" class="tab" data-route="functions">已注册功能</button>
         <button type="button" id="nav-sequences" class="tab" data-route="sequences">序列模板</button>
+        <button type="button" id="nav-units" class="tab" data-route="units">单位</button>
       </nav>
     </div>
     <button id="refresh-btn" type="button" class="btn-primary">刷新</button>
@@ -164,6 +165,35 @@
             </thead>
             <tbody id="sequence-templates-body">
               <tr><td colspan="5" class="empty">暂无序列模板</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div id="view-units" class="view" hidden>
+      <section id="units-section" class="units-panel">
+        <div class="units-toolbar">
+          <h2 class="view-title">单位</h2>
+          <div class="units-toolbar-actions">
+            <button type="button" id="units-restore-btn" class="btn-sm">恢复默认</button>
+            <button type="button" id="units-add-btn" class="btn-sm">+ 添加</button>
+            <button type="button" id="units-save-btn" class="btn-primary">保存</button>
+          </div>
+        </div>
+        <p class="muted-hint">全局共享；所有机台 Spec 单位下拉共用此表。</p>
+        <p id="units-msg" class="msg" hidden></p>
+        <div class="table-scroll">
+          <table class="settings-table">
+            <thead>
+              <tr>
+                <th>单位</th>
+                <th>说明</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="units-body">
+              <tr><td colspan="3" class="empty">加载中…</td></tr>
             </tbody>
           </table>
         </div>

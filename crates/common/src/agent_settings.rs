@@ -17,6 +17,36 @@ pub struct AgentVariable {
     pub description: String,
 }
 
+/// How JSON array values in device/calibration profiles expand into `${Var}`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrayExpandMode {
+    /// `4.58;4.5;4.6` — legacy INI multi-value.
+    #[default]
+    Semicolon,
+    /// `[4.58,4.5,4.6]` — raw JSON array text.
+    Json,
+}
+
+pub const ARRAY_EXPAND_MODE_SEMICOLON: &str = "semicolon";
+pub const ARRAY_EXPAND_MODE_JSON: &str = "json";
+
+impl ArrayExpandMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Semicolon => ARRAY_EXPAND_MODE_SEMICOLON,
+            Self::Json => ARRAY_EXPAND_MODE_JSON,
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            ARRAY_EXPAND_MODE_JSON | "raw" | "original" => Self::Json,
+            _ => Self::Semicolon,
+        }
+    }
+}
+
 /// Common units for optical-module (光模块) test Specs.
 pub fn default_agent_units() -> Vec<AgentUnit> {
     DEFAULT_AGENT_UNITS

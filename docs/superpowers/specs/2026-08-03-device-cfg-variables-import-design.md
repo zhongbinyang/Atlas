@@ -1,5 +1,9 @@
 # Design: Legacy CFG layering + Device_CFG → Agent variables import
 
+> **Status: SUPERSEDED (2026-08)**  
+> 「白名单地址键 → 手工 `variables`」主路径已被 **Device / Calibration 多配置档** 取代：INI 整份导入为 `agent_device_profiles` / `agent_calibration_profiles` 的 `setting_json`，运行时 flatten 进 `${Section_Key}`（不写回 `variables_json`）。  
+> 详见实现与 `docs/api.md` §1.8 / §2.8。下文仅作历史决策记录；whitelist→variables 解析辅助仍保留在 UI 中作兼容，但不是推荐导入路径。
+
 Date: 2026-08-03
 
 ## Goal

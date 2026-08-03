@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
     http::{header, Request, StatusCode},
     response::IntoResponse,
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use common::{AgentStatusResponse, ErrorBody, RegisterAgentRequest};
@@ -147,6 +147,31 @@ pub fn router(state: AppState) -> Router {
             post(labview_run_sequence_abort),
         )
         .route("/api/settings", get(agent_settings_get).put(agent_settings_put))
+        .route("/api/units", get(agent_units_get))
+        .route(
+            "/api/device-profiles",
+            get(device_profiles_list).post(device_profiles_create),
+        )
+        .route(
+            "/api/device-profiles/{profile_id}",
+            put(device_profiles_update).delete(device_profiles_delete),
+        )
+        .route(
+            "/api/device-profiles/{profile_id}/activate",
+            post(device_profiles_activate),
+        )
+        .route(
+            "/api/calibration-profiles",
+            get(calibration_profiles_list).post(calibration_profiles_create),
+        )
+        .route(
+            "/api/calibration-profiles/{profile_id}",
+            put(calibration_profiles_update).delete(calibration_profiles_delete),
+        )
+        .route(
+            "/api/calibration-profiles/{profile_id}/activate",
+            post(calibration_profiles_activate),
+        )
         .route("/api/general/delay/run", post(general_delay_run))
         .route(
             "/api/general/delay/register-template",
@@ -664,6 +689,13 @@ async fn agent_settings_get(State(s): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn agent_units_get(State(s): State<AppState>) -> impl IntoResponse {
+    match crate::register::get_center_units(&s.http_client, &s.center_url).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
 async fn agent_settings_put(
     State(s): State<AppState>,
     Json(body): Json<crate::register::AgentSettingsPayload>,
@@ -675,6 +707,182 @@ async fn agent_settings_put(
     match crate::register::put_agent_settings(&s.http_client, &s.center_url, &agent_id, &body).await
     {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+const DEVICE_PROFILES_KIND: &str = "device-profiles";
+const CALIBRATION_PROFILES_KIND: &str = "calibration-profiles";
+
+async fn device_profiles_list(State(s): State<AppState>) -> impl IntoResponse {
+    proxy_list_profiles(&s, DEVICE_PROFILES_KIND).await
+}
+
+async fn calibration_profiles_list(State(s): State<AppState>) -> impl IntoResponse {
+    proxy_list_profiles(&s, CALIBRATION_PROFILES_KIND).await
+}
+
+async fn proxy_list_profiles(s: &AppState, kind: &str) -> axum::response::Response {
+    let agent_id = match resolve_agent_id_for_proxy(s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::list_config_profiles(&s.http_client, &s.center_url, &agent_id, kind)
+        .await
+    {
+        Ok(list) => (StatusCode::OK, Json(list)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn device_profiles_create(
+    State(s): State<AppState>,
+    Json(body): Json<crate::register::CreateAgentConfigProfileBody>,
+) -> impl IntoResponse {
+    proxy_create_profile(&s, DEVICE_PROFILES_KIND, body).await
+}
+
+async fn calibration_profiles_create(
+    State(s): State<AppState>,
+    Json(body): Json<crate::register::CreateAgentConfigProfileBody>,
+) -> impl IntoResponse {
+    proxy_create_profile(&s, CALIBRATION_PROFILES_KIND, body).await
+}
+
+async fn proxy_create_profile(
+    s: &AppState,
+    kind: &str,
+    body: crate::register::CreateAgentConfigProfileBody,
+) -> axum::response::Response {
+    let agent_id = match resolve_agent_id_for_proxy(s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::create_config_profile(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+        kind,
+        &body,
+    )
+    .await
+    {
+        Ok(p) => (StatusCode::OK, Json(p)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn device_profiles_update(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+    Json(body): Json<crate::register::UpdateAgentConfigProfileBody>,
+) -> impl IntoResponse {
+    proxy_update_profile(&s, DEVICE_PROFILES_KIND, &profile_id, body).await
+}
+
+async fn calibration_profiles_update(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+    Json(body): Json<crate::register::UpdateAgentConfigProfileBody>,
+) -> impl IntoResponse {
+    proxy_update_profile(&s, CALIBRATION_PROFILES_KIND, &profile_id, body).await
+}
+
+async fn proxy_update_profile(
+    s: &AppState,
+    kind: &str,
+    profile_id: &str,
+    body: crate::register::UpdateAgentConfigProfileBody,
+) -> axum::response::Response {
+    let agent_id = match resolve_agent_id_for_proxy(s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::update_config_profile(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+        kind,
+        profile_id,
+        &body,
+    )
+    .await
+    {
+        Ok(p) => (StatusCode::OK, Json(p)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn device_profiles_delete(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+) -> impl IntoResponse {
+    proxy_delete_profile(&s, DEVICE_PROFILES_KIND, &profile_id).await
+}
+
+async fn calibration_profiles_delete(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+) -> impl IntoResponse {
+    proxy_delete_profile(&s, CALIBRATION_PROFILES_KIND, &profile_id).await
+}
+
+async fn proxy_delete_profile(
+    s: &AppState,
+    kind: &str,
+    profile_id: &str,
+) -> axum::response::Response {
+    let agent_id = match resolve_agent_id_for_proxy(s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::delete_config_profile(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+        kind,
+        profile_id,
+    )
+    .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn device_profiles_activate(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+) -> impl IntoResponse {
+    proxy_activate_profile(&s, DEVICE_PROFILES_KIND, &profile_id).await
+}
+
+async fn calibration_profiles_activate(
+    State(s): State<AppState>,
+    Path(profile_id): Path<String>,
+) -> impl IntoResponse {
+    proxy_activate_profile(&s, CALIBRATION_PROFILES_KIND, &profile_id).await
+}
+
+async fn proxy_activate_profile(
+    s: &AppState,
+    kind: &str,
+    profile_id: &str,
+) -> axum::response::Response {
+    let agent_id = match resolve_agent_id_for_proxy(s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::activate_config_profile(
+        &s.http_client,
+        &s.center_url,
+        &agent_id,
+        kind,
+        profile_id,
+    )
+    .await
+    {
+        Ok(p) => (StatusCode::OK, Json(p)).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
     }
 }

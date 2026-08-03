@@ -75,7 +75,10 @@ flowchart LR
 | `general_templates` | Delay / Version / REST 等通用模板 |
 | `vi_run_queue_items` | 每台机当前序列执行队列 |
 | `sequence_templates` / `sequence_template_steps` | 已保存的序列模板 |
-| `agent_settings` | 每台机 units / variables（`${Var}` 展开源） |
+| `agent_settings` | 每台机手工 variables（`units_json` 列保留但不作为写路径） |
+| `center_units` | 全局共享单位表（中心 WebUI 维护，所有机台 Spec 复用） |
+| `agent_device_profiles` | 每台机多套设备配置档（`setting_json`，至多一条 `is_active`） |
+| `agent_calibration_profiles` | 每台机多套校准配置档（同上） |
 
 ---
 
@@ -358,8 +361,15 @@ sequenceDiagram
 | POST | `/api/sequence-templates/{id}/load-to-agent` | **Agent 进程** | 覆盖 DB 中该机队列（非 HTTP 推 Agent） |
 | GET | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `GET /api/sequence/run-queue` |
 | PUT | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `PUT /api/sequence/run-queue` |
-| GET | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `GET /api/settings` |
-| PUT | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `PUT /api/settings` |
+| GET | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `GET /api/settings`（附带 profiles；`units` 为全局只读） |
+| PUT | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `PUT /api/settings`（仅 variables） |
+| GET/PUT | `/api/units` | **中心 WebUI** · **Agent 进程** | 全局单位表 |
+| GET/POST | `/api/agents/{id}/device-profiles` | **Agent 进程** | 列表 / 创建设备配置档 |
+| PUT/DELETE | `/api/agents/{id}/device-profiles/{profileId}` | **Agent 进程** | 更新 / 删除 |
+| POST | `/api/agents/{id}/device-profiles/{profileId}/activate` | **Agent 进程** | 设为当前设备档 |
+| GET/POST | `/api/agents/{id}/calibration-profiles` | **Agent 进程** | 校准配置档（同上） |
+| PUT/DELETE | `/api/agents/{id}/calibration-profiles/{profileId}` | **Agent 进程** | |
+| POST | `/api/agents/{id}/calibration-profiles/{profileId}/activate` | **Agent 进程** | |
 
 ## 1.2 健康检查
 
@@ -459,12 +469,55 @@ Query：`agent_id?` · `kind?`
 **GET** `/api/agents/{id}/settings` · 使用方：**Agent 进程**  
 **PUT** `/api/agents/{id}/settings` · 使用方：**Agent 进程**
 
+GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 variables + `array_expand_mode`**（忽略 body 中的 units）。配置档走独立 API：
+
 ```json
 {
   "units": [{ "symbol": "dBm", "description": "功率" }],
-  "variables": [{ "name": "SN_PREFIX", "value": "A", "description": "" }]
+  "variables": [{ "name": "SN_PREFIX", "value": "A", "description": "" }],
+  "array_expand_mode": "semicolon",
+  "device_profiles": [],
+  "calibration_profiles": [],
+  "active_device_id": null,
+  "active_calibration_id": null
 }
 ```
+
+`array_expand_mode`：`semicolon`（默认，数组展开为 `4.58;4.5;4.6`）或 `json`（展开为 `[4.58,4.5,4.6]`）。
+
+## 1.8.0 全局单位
+
+**GET/PUT** `/api/units` · 使用方：**中心 WebUI**（编辑）· **Agent 进程**（只读代理）
+
+```json
+{
+  "units": [{ "symbol": "dBm", "description": "光功率，相对 1 mW" }],
+  "updated_at": "…"
+}
+```
+
+单位为中心共享；所有机台 Spec 下拉复用。首次空表时由默认光学单位或历史 `agent_settings.units_json` 种子填充。
+
+## 1.8.1 设备 / 校准配置档
+
+**GET/POST** `/api/agents/{id}/device-profiles`  
+**PUT/DELETE** `/api/agents/{id}/device-profiles/{profileId}`  
+**POST** `/api/agents/{id}/device-profiles/{profileId}/activate`  
+
+校准同理：`/api/agents/{id}/calibration-profiles…`
+
+创建 Body：
+
+```json
+{
+  "name": "DUT1",
+  "setting": { "Section": { "Key": "value" } },
+  "source_filename": "Device_CFG.ini",
+  "activate": true
+}
+```
+
+同一 agent 每类至多一条 `is_active=true`。Agent 展开 `${Var}` 时：手工 variables > 当前 device flatten > 当前 calibration flatten（`Section_Key`，空值跳过）。Flatten **不写回** `variables_json`。
 
 ---
 
@@ -500,8 +553,15 @@ Query：`agent_id?` · `kind?`
 | GET | `/api/sequence-templates` | **Agent WebUI** | → 中心列表 |
 | POST | `/api/sequence-templates` | **Agent WebUI** | → 中心创建（带 agent_id） |
 | POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-agent |
-| GET | `/api/settings` | **Agent WebUI** | → 中心 settings GET |
-| PUT | `/api/settings` | **Agent WebUI** | → 中心 settings PUT |
+| GET | `/api/settings` | **Agent WebUI** | → 中心 settings GET（含 profiles；units 只读） |
+| PUT | `/api/settings` | **Agent WebUI** | → 中心 settings PUT（仅 variables） |
+| GET | `/api/units` | **Agent WebUI** | → 中心 `GET /api/units`（Spec 下拉） |
+| GET/POST | `/api/device-profiles` | **Agent WebUI** | → 中心 device-profiles |
+| PUT/DELETE | `/api/device-profiles/{id}` | **Agent WebUI** | |
+| POST | `/api/device-profiles/{id}/activate` | **Agent WebUI** | |
+| GET/POST | `/api/calibration-profiles` | **Agent WebUI** | → 中心 calibration-profiles |
+| PUT/DELETE | `/api/calibration-profiles/{id}` | **Agent WebUI** | |
+| POST | `/api/calibration-profiles/{id}/activate` | **Agent WebUI** | |
 | POST | `/api/general/delay/run` | **Agent WebUI** | expand + Slot + sleep |
 | POST | `/api/general/delay/register-template` | **Agent WebUI** | → 中心 general-templates |
 | GET | `/api/general/delay/templates` | **未使用** | |
@@ -595,9 +655,16 @@ Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分�
 
 **GET** `/api/settings` · 使用方：**Agent WebUI**  
 **PUT** `/api/settings` · 使用方：**Agent WebUI**  
-Body 见第一部分 1.8。
+Body 见第一部分 1.8（PUT 仅 variables）。
 
-配置页支持从旧测控 `Device_CFG.ini` **本地导入**地址类变量（白名单键 → `{Section}_{Key}`），合并进编辑区后经 `PUT /api/settings` 持久化。Agent 运行时不读取磁盘 INI。
+**GET** `/api/units` · 使用方：**Agent WebUI** — Spec 单位下拉；→ 中心全局单位。单位编辑在**中心 WebUI「单位」页**，Agent 机台配置页不再提供单位编辑。
+
+### 设备 / 校准配置档（代理）
+
+**GET/POST** `/api/device-profiles` · **PUT/DELETE** `/api/device-profiles/{id}` · **POST** `…/activate`  
+**GET/POST** `/api/calibration-profiles` · 同上  
+
+配置页可将 `Device_CFG.ini` / `Calibration*.ini` **整份导入为配置档**（嵌套 `setting` JSON），再启用一套；运行时 flatten 进 `${Section_Key}`，不写入手工变量。Agent 不读取磁盘 INI 路径。白名单→variables 的旧导入路径已降级为兼容辅助，主路径为 profile。
 
 ## 2.9 Delay
 

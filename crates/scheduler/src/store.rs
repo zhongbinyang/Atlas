@@ -22,7 +22,67 @@ pub use common::{AgentUnit, AgentVariable};
 pub struct AgentSettings {
     pub units: Vec<AgentUnit>,
     pub variables: Vec<AgentVariable>,
+    pub array_expand_mode: common::ArrayExpandMode,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CenterUnits {
+    pub units: Vec<AgentUnit>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct CenterUnitsRow {
+    #[allow(dead_code)]
+    id: String,
+    units_json: String,
+    updated_at: String,
+}
+
+impl CenterUnitsRow {
+    fn into_units(self) -> CenterUnits {
+        CenterUnits {
+            units: common::parse_units_json(&self.units_json),
+            updated_at: Some(self.updated_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfigProfile {
+    pub id: String,
+    pub agent_id: String,
+    pub name: String,
+    pub setting_json: String,
+    pub is_active: bool,
+    pub source_filename: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentConfigProfileRow {
+    id: String,
+    agent_id: String,
+    name: String,
+    setting_json: String,
+    is_active: bool,
+    source_filename: String,
+    updated_at: String,
+}
+
+impl AgentConfigProfileRow {
+    fn into_profile(self) -> AgentConfigProfile {
+        AgentConfigProfile {
+            id: self.id,
+            agent_id: self.agent_id,
+            name: self.name,
+            setting_json: self.setting_json,
+            is_active: self.is_active,
+            source_filename: self.source_filename,
+            updated_at: self.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -31,6 +91,8 @@ struct AgentSettingsRow {
     agent_id: String,
     units_json: String,
     variables_json: String,
+    #[sqlx(default)]
+    array_expand_mode: String,
     updated_at: String,
 }
 
@@ -42,6 +104,7 @@ impl AgentSettingsRow {
         AgentSettings {
             units,
             variables,
+            array_expand_mode: common::ArrayExpandMode::parse(&self.array_expand_mode),
             updated_at: Some(self.updated_at),
         }
     }
@@ -377,7 +440,9 @@ impl Store {
     pub async fn get_agent_settings(&self, agent_id: &str) -> Result<AgentSettings, sqlx::Error> {
         let row = sqlx::query_as::<_, AgentSettingsRow>(
             r#"
-            SELECT agent_id, units_json, variables_json, updated_at
+            SELECT agent_id, units_json, variables_json,
+                   COALESCE(array_expand_mode, 'semicolon') AS array_expand_mode,
+                   updated_at
             FROM agent_settings
             WHERE agent_id = $1
             "#,
@@ -388,38 +453,420 @@ impl Store {
         Ok(row
             .map(|r| r.into_settings())
             .unwrap_or_else(|| AgentSettings {
-                units: common::default_agent_units(),
+                units: Vec::new(),
                 variables: common::default_agent_variables(),
+                array_expand_mode: common::ArrayExpandMode::Semicolon,
                 updated_at: None,
             }))
     }
 
+    /// Persist variables + array expand mode; leave legacy `units_json` unchanged.
     pub async fn upsert_agent_settings(
         &self,
         agent_id: &str,
-        units: &[AgentUnit],
         variables: &[AgentVariable],
+        array_expand_mode: common::ArrayExpandMode,
     ) -> Result<AgentSettings, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
-        let units_json = serde_json::to_string(units).unwrap_or_else(|_| "[]".into());
         let variables_json = serde_json::to_string(variables).unwrap_or_else(|_| "[]".into());
+        let mode = array_expand_mode.as_str();
         sqlx::query(
             r#"
-            INSERT INTO agent_settings (agent_id, units_json, variables_json, updated_at)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO agent_settings (agent_id, units_json, variables_json, array_expand_mode, updated_at)
+            VALUES ($1, '[]', $2, $3, $4)
             ON CONFLICT (agent_id) DO UPDATE SET
-              units_json = EXCLUDED.units_json,
               variables_json = EXCLUDED.variables_json,
+              array_expand_mode = EXCLUDED.array_expand_mode,
               updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(agent_id)
-        .bind(&units_json)
         .bind(&variables_json)
+        .bind(mode)
         .bind(&now)
         .execute(&self.pool)
         .await?;
         self.get_agent_settings(agent_id).await
+    }
+
+    pub async fn get_center_units(&self) -> Result<CenterUnits, sqlx::Error> {
+        let row = sqlx::query_as::<_, CenterUnitsRow>(
+            r#"
+            SELECT id, units_json, updated_at
+            FROM center_units
+            WHERE id = 'default'
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(r) = row {
+            return Ok(r.into_units());
+        }
+        self.seed_center_units().await
+    }
+
+    async fn seed_center_units(&self) -> Result<CenterUnits, sqlx::Error> {
+        // Prefer first non-empty historical per-agent units list; else optical defaults.
+        let legacy_rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT units_json
+            FROM agent_settings
+            WHERE units_json IS NOT NULL AND units_json <> '' AND units_json <> '[]'
+            ORDER BY updated_at DESC
+            LIMIT 20
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        let mut units = common::default_agent_units();
+        for (raw,) in legacy_rows {
+            let parsed = common::parse_units_json(&raw);
+            if !parsed.is_empty() {
+                units = parsed;
+                break;
+            }
+        }
+        self.upsert_center_units(&units).await
+    }
+
+    pub async fn upsert_center_units(
+        &self,
+        units: &[AgentUnit],
+    ) -> Result<CenterUnits, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let units_json = serde_json::to_string(units).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            r#"
+            INSERT INTO center_units (id, units_json, updated_at)
+            VALUES ('default', $1, $2)
+            ON CONFLICT (id) DO UPDATE SET
+              units_json = EXCLUDED.units_json,
+              updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&units_json)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(CenterUnits {
+            units: units.to_vec(),
+            updated_at: Some(now),
+        })
+    }
+
+    pub async fn list_device_profiles(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
+        self.list_config_profiles("agent_device_profiles", agent_id)
+            .await
+    }
+
+    pub async fn list_calibration_profiles(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
+        self.list_config_profiles("agent_calibration_profiles", agent_id)
+            .await
+    }
+
+    async fn list_config_profiles(
+        &self,
+        table: &str,
+        agent_id: &str,
+    ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
+        // table is an internal constant only
+        let sql = format!(
+            r#"
+            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            FROM {table}
+            WHERE agent_id = $1
+            ORDER BY name ASC, updated_at DESC
+            "#
+        );
+        let rows = sqlx::query_as::<_, AgentConfigProfileRow>(&sql)
+            .bind(agent_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.into_profile()).collect())
+    }
+
+    pub async fn create_device_profile(
+        &self,
+        agent_id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+        activate: bool,
+    ) -> Result<AgentConfigProfile, sqlx::Error> {
+        self.create_config_profile(
+            "agent_device_profiles",
+            agent_id,
+            name,
+            setting_json,
+            source_filename,
+            activate,
+        )
+        .await
+    }
+
+    pub async fn create_calibration_profile(
+        &self,
+        agent_id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+        activate: bool,
+    ) -> Result<AgentConfigProfile, sqlx::Error> {
+        self.create_config_profile(
+            "agent_calibration_profiles",
+            agent_id,
+            name,
+            setting_json,
+            source_filename,
+            activate,
+        )
+        .await
+    }
+
+    async fn create_config_profile(
+        &self,
+        table: &str,
+        agent_id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+        activate: bool,
+    ) -> Result<AgentConfigProfile, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        if activate {
+            let clear = format!("UPDATE {table} SET is_active = FALSE WHERE agent_id = $1");
+            sqlx::query(&clear).bind(agent_id).execute(&mut *tx).await?;
+        }
+        let insert = format!(
+            r#"
+            INSERT INTO {table} (id, agent_id, name, setting_json, is_active, source_filename, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#
+        );
+        sqlx::query(&insert)
+            .bind(&id)
+            .bind(agent_id)
+            .bind(name)
+            .bind(setting_json)
+            .bind(activate)
+            .bind(source_filename)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.get_config_profile(table, &id)
+            .await
+            .map(|o| o.expect("just inserted"))
+    }
+
+    async fn get_config_profile(
+        &self,
+        table: &str,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        let sql = format!(
+            r#"
+            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            FROM {table}
+            WHERE id = $1
+            "#
+        );
+        let row = sqlx::query_as::<_, AgentConfigProfileRow>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.into_profile()))
+    }
+
+    pub async fn get_device_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.get_config_profile("agent_device_profiles", id).await
+    }
+
+    pub async fn get_calibration_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.get_config_profile("agent_calibration_profiles", id)
+            .await
+    }
+
+    pub async fn update_device_profile(
+        &self,
+        id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.update_config_profile(
+            "agent_device_profiles",
+            id,
+            name,
+            setting_json,
+            source_filename,
+        )
+        .await
+    }
+
+    pub async fn update_calibration_profile(
+        &self,
+        id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.update_config_profile(
+            "agent_calibration_profiles",
+            id,
+            name,
+            setting_json,
+            source_filename,
+        )
+        .await
+    }
+
+    async fn update_config_profile(
+        &self,
+        table: &str,
+        id: &str,
+        name: &str,
+        setting_json: &str,
+        source_filename: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let sql = format!(
+            r#"
+            UPDATE {table}
+            SET name = $2, setting_json = $3, source_filename = $4, updated_at = $5
+            WHERE id = $1
+            "#
+        );
+        let res = sqlx::query(&sql)
+            .bind(id)
+            .bind(name)
+            .bind(setting_json)
+            .bind(source_filename)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_config_profile(table, id).await
+    }
+
+    pub async fn delete_device_profile(&self, id: &str) -> Result<bool, sqlx::Error> {
+        self.delete_config_profile("agent_device_profiles", id).await
+    }
+
+    pub async fn delete_calibration_profile(&self, id: &str) -> Result<bool, sqlx::Error> {
+        self.delete_config_profile("agent_calibration_profiles", id)
+            .await
+    }
+
+    async fn delete_config_profile(&self, table: &str, id: &str) -> Result<bool, sqlx::Error> {
+        let sql = format!("DELETE FROM {table} WHERE id = $1");
+        let res = sqlx::query(&sql).bind(id).execute(&self.pool).await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn activate_device_profile(
+        &self,
+        agent_id: &str,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.activate_config_profile("agent_device_profiles", agent_id, id)
+            .await
+    }
+
+    pub async fn activate_calibration_profile(
+        &self,
+        agent_id: &str,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.activate_config_profile("agent_calibration_profiles", agent_id, id)
+            .await
+    }
+
+    async fn activate_config_profile(
+        &self,
+        table: &str,
+        agent_id: &str,
+        id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        let existing = self.get_config_profile(table, id).await?;
+        let Some(p) = existing else {
+            return Ok(None);
+        };
+        if p.agent_id != agent_id {
+            return Ok(None);
+        }
+        let mut tx = self.pool.begin().await?;
+        let clear = format!("UPDATE {table} SET is_active = FALSE WHERE agent_id = $1");
+        sqlx::query(&clear)
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        let now = Utc::now().to_rfc3339();
+        let set = format!(
+            "UPDATE {table} SET is_active = TRUE, updated_at = $2 WHERE id = $1 AND agent_id = $3"
+        );
+        sqlx::query(&set)
+            .bind(id)
+            .bind(&now)
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.get_config_profile(table, id).await
+    }
+
+    pub async fn get_active_device_profile(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.get_active_config_profile("agent_device_profiles", agent_id)
+            .await
+    }
+
+    pub async fn get_active_calibration_profile(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        self.get_active_config_profile("agent_calibration_profiles", agent_id)
+            .await
+    }
+
+    async fn get_active_config_profile(
+        &self,
+        table: &str,
+        agent_id: &str,
+    ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
+        let sql = format!(
+            r#"
+            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            FROM {table}
+            WHERE agent_id = $1 AND is_active = TRUE
+            LIMIT 1
+            "#
+        );
+        let row = sqlx::query_as::<_, AgentConfigProfileRow>(&sql)
+            .bind(agent_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.into_profile()))
     }
 
     pub async fn create_template(

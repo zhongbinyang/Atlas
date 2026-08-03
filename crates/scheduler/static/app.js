@@ -132,6 +132,7 @@ function parseRoute() {
   }
   if (parts[0] === 'functions') return { name: 'functions' };
   if (parts[0] === 'sequences') return { name: 'sequences' };
+  if (parts[0] === 'units') return { name: 'units' };
   return { name: 'machines' };
 }
 
@@ -146,7 +147,7 @@ function showToast(text, kind) {
 }
 
 function showView(id) {
-  ['view-machines', 'view-agent-detail', 'view-functions', 'view-sequences'].forEach((vid) => {
+  ['view-machines', 'view-agent-detail', 'view-functions', 'view-sequences', 'view-units'].forEach((vid) => {
     const el = document.getElementById(vid);
     if (!el) return;
     const on = vid === id;
@@ -155,8 +156,10 @@ function showView(id) {
   });
   const currentNav = id === 'view-functions'
     ? 'nav-functions'
-    : (id === 'view-sequences' ? 'nav-sequences' : 'nav-machines');
-  ['nav-machines', 'nav-functions', 'nav-sequences'].forEach((navId) => {
+    : (id === 'view-sequences'
+      ? 'nav-sequences'
+      : (id === 'view-units' ? 'nav-units' : 'nav-machines'));
+  ['nav-machines', 'nav-functions', 'nav-sequences', 'nav-units'].forEach((navId) => {
     const tab = document.getElementById(navId);
     if (!tab) return;
     const current = navId === currentNav;
@@ -185,6 +188,11 @@ async function applyRoute(route, isCurrent) {
     updateViTemplatesAgentFilter();
     await fetchViTemplates(isCurrent);
     if (!isCurrent()) return;
+    return;
+  }
+  if (route.name === 'units') {
+    showView('view-units');
+    await loadCenterUnitsPage();
     return;
   }
   if (route.name === 'agent') {
@@ -379,6 +387,7 @@ document.querySelectorAll('.modal-backdrop').forEach(el => {
 document.getElementById('nav-machines').addEventListener('click', () => setHash('machines'));
 document.getElementById('nav-functions').addEventListener('click', () => setHash('functions'));
 document.getElementById('nav-sequences').addEventListener('click', () => setHash('sequences'));
+document.getElementById('nav-units').addEventListener('click', () => setHash('units'));
 document.getElementById('agent-detail-back').addEventListener('click', () => setHash('machines'));
 
 window.addEventListener('hashchange', applyCurrentRoute);
@@ -693,6 +702,177 @@ const refreshViTemplatesFromFilter = dashboardRuntime.createSafeEventHandler(
 );
 document.getElementById('vi-templates-agent-filter').addEventListener('change', refreshViTemplatesFromFilter);
 document.getElementById('vi-templates-source-filter').addEventListener('change', refreshViTemplatesFromFilter);
+
+const DEFAULT_CENTER_UNITS = [
+  { symbol: 'dBm', description: '光功率，相对 1 mW' },
+  { symbol: 'dB', description: '相对量（消光比、回损、增益等）' },
+  { symbol: 'nm', description: '波长' },
+  { symbol: '°C', description: '温度（壳体/环境）' },
+  { symbol: 'V', description: '电压（供电/监测）' },
+  { symbol: 'mA', description: '电流（偏置、功耗）' },
+  { symbol: 'mW', description: '光功率（毫瓦）' },
+  { symbol: 'µW', description: '光功率（微瓦）' },
+  { symbol: 'Gbps', description: '线速率 / 比特率' },
+  { symbol: 'ps', description: '时间或抖动（皮秒）' },
+  { symbol: 'UI', description: 'Unit Interval（归一化抖动）' },
+  { symbol: '%', description: '百分比' },
+];
+
+let centerUnits = [];
+
+function showUnitsMsg(text, ok) {
+  const el = document.getElementById('units-msg');
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = text;
+  el.className = ok ? 'msg ok' : 'msg err';
+}
+
+function escapeUnitsHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderCenterUnits() {
+  const tbody = document.getElementById('units-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!centerUnits.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无单位，可添加或恢复默认</td></tr>';
+    return;
+  }
+  centerUnits.forEach(function (u, idx) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input class="units-symbol" type="text" maxlength="32" value="' +
+      escapeUnitsHtml(u.symbol || '') +
+      '"></td>' +
+      '<td><input class="units-desc" type="text" maxlength="200" value="' +
+      escapeUnitsHtml(u.description || '') +
+      '"></td>' +
+      '<td><button type="button" class="btn-sm btn-danger units-del-btn">删除</button></td>';
+    const sym = tr.querySelector('.units-symbol');
+    const desc = tr.querySelector('.units-desc');
+    const del = tr.querySelector('.units-del-btn');
+    sym.addEventListener('input', function () {
+      centerUnits[idx].symbol = sym.value;
+    });
+    desc.addEventListener('input', function () {
+      centerUnits[idx].description = desc.value;
+    });
+    del.addEventListener('click', function () {
+      centerUnits.splice(idx, 1);
+      renderCenterUnits();
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function collectCenterUnitsFromDom() {
+  const out = [];
+  document.querySelectorAll('#units-body tr').forEach(function (tr) {
+    const sym = tr.querySelector('.units-symbol');
+    const desc = tr.querySelector('.units-desc');
+    if (!sym) return;
+    const symbol = sym.value.trim();
+    if (!symbol) return;
+    out.push({
+      symbol: symbol,
+      description: desc ? desc.value.trim() : '',
+    });
+  });
+  return out;
+}
+
+async function loadCenterUnitsPage() {
+  try {
+    const resp = await fetch('/api/units');
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      throw new Error(String((data && data.error) || resp.status));
+    }
+    centerUnits = Array.isArray(data.units)
+      ? data.units.map(function (u) {
+          return {
+            symbol: (u && u.symbol) || '',
+            description: (u && u.description) || '',
+          };
+        })
+      : [];
+    renderCenterUnits();
+    showUnitsMsg('已加载 ' + centerUnits.length + ' 个单位', true);
+  } catch (e) {
+    centerUnits = [];
+    renderCenterUnits();
+    showUnitsMsg('加载失败: ' + e.message, false);
+  }
+}
+
+async function saveCenterUnits() {
+  const units = collectCenterUnitsFromDom();
+  const seen = {};
+  for (let i = 0; i < units.length; i++) {
+    if (units[i].symbol.length > 32) {
+      showUnitsMsg('单位过长: ' + units[i].symbol, false);
+      return;
+    }
+    if ((units[i].description || '').length > 200) {
+      showUnitsMsg('说明过长: ' + units[i].symbol, false);
+      return;
+    }
+    if (seen[units[i].symbol]) {
+      showUnitsMsg('重复单位: ' + units[i].symbol, false);
+      return;
+    }
+    seen[units[i].symbol] = true;
+  }
+  try {
+    const resp = await fetch('/api/units', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ units: units }),
+    });
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      throw new Error(String((data && data.error) || resp.status));
+    }
+    centerUnits = Array.isArray(data.units) ? data.units : units;
+    renderCenterUnits();
+    showUnitsMsg('已保存 ' + centerUnits.length + ' 个单位', true);
+    showToast('单位已保存', 'success');
+  } catch (e) {
+    showUnitsMsg('保存失败: ' + e.message, false);
+    showToast('保存单位失败: ' + e.message, 'error');
+  }
+}
+
+const unitsAddBtn = document.getElementById('units-add-btn');
+const unitsSaveBtn = document.getElementById('units-save-btn');
+const unitsRestoreBtn = document.getElementById('units-restore-btn');
+if (unitsAddBtn) {
+  unitsAddBtn.addEventListener('click', function () {
+    centerUnits = collectCenterUnitsFromDom();
+    centerUnits.push({ symbol: '', description: '' });
+    renderCenterUnits();
+  });
+}
+if (unitsSaveBtn) unitsSaveBtn.addEventListener('click', saveCenterUnits);
+if (unitsRestoreBtn) {
+  unitsRestoreBtn.addEventListener('click', function () {
+    centerUnits = DEFAULT_CENTER_UNITS.map(function (u) {
+      return { symbol: u.symbol, description: u.description };
+    });
+    renderCenterUnits();
+    showUnitsMsg('已恢复默认单位（未保存）', true);
+  });
+}
 
 const refreshController = dashboardRuntime.createRefreshController({
   delayMs: POLL_MS,

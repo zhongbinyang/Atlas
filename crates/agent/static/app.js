@@ -1,6 +1,7 @@
 const POLL_MS = 2000;
 let lastAgentStatus = null;
-let agentSettings = { units: [], variables: [] };
+let agentSettings = { units: [], variables: [], array_expand_mode: 'semicolon' };
+let centerUnits = [];
 let varPickerEl = null;
 let varPickerTarget = null;
 let varPickerIndex = 0;
@@ -164,12 +165,15 @@ let settingsDirty = false;
 let settingsBaseline = '';
 let settingsUndo = null;
 let settingsUndoTimer = null;
-let pendingDeviceCfgPreview = null;
+let pendingProfileImport = null;
+let deviceProfiles = [];
+let calibrationProfiles = [];
 
 function isSystemVarName(name) {
   return name === 'Hostname' || name === 'IP';
 }
 
+/** @deprecated whitelist path kept for optional legacy merge; primary import is full INI → profile */
 var DEVICE_CFG_ADDRESS_KEYS = {
   IP_Add: true,
   Com_Add: true,
@@ -198,11 +202,64 @@ function normalizeDeviceCfgValue(raw) {
   ) {
     s = s.slice(1, -1).trim();
   }
-  // Legacy quirk: trailing extra quote e.g. "192.168.6.13""
   if (s.charAt(s.length - 1) === '"' && s.indexOf('"') === s.length - 1) {
     s = s.slice(0, -1).trim();
   }
   return s;
+}
+
+/** INI `a;b;c` → JSON array (numeric items as numbers); single token stays string/number. */
+function coerceIniScalar(token) {
+  var t = String(token == null ? '' : token).trim();
+  if (t === '') return '';
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(t)) {
+    var n = Number(t);
+    if (!isNaN(n) && isFinite(n)) return n;
+  }
+  return t;
+}
+
+function coerceIniScalarOrArray(raw) {
+  var s = normalizeDeviceCfgValue(raw);
+  if (!s && s !== '0') return '';
+  if (s.indexOf(';') < 0) return coerceIniScalar(s);
+  var parts = s
+    .split(';')
+    .map(function (p) {
+      return String(p).trim();
+    })
+    .filter(function (p) {
+      return p !== '';
+    });
+  if (parts.length <= 1) return coerceIniScalar(parts.length ? parts[0] : s);
+  return parts.map(coerceIniScalar);
+}
+
+/** Display / edit form for setting values (arrays → `a;b;c`). */
+function settingValueToEditText(value) {
+  if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value
+      .map(function (v) {
+        return v == null ? '' : String(v);
+      })
+      .filter(function (v) {
+        return v !== '';
+      })
+      .join(';');
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function editTextToSettingValue(text) {
+  return coerceIniScalarOrArray(text);
 }
 
 function parseDeviceCfgIni(text) {
@@ -227,6 +284,212 @@ function parseDeviceCfgIni(text) {
     entries.push({ section: section, key: key, value: value });
   }
   return entries;
+}
+
+/** Full INI → nested setting JSON (skip empty; `a;b;c` → array). */
+function iniToSettingJson(text) {
+  var setting = {};
+  var entries = parseDeviceCfgIni(text);
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var value = coerceIniScalarOrArray(e.value);
+    if (value === '' || value == null) continue;
+    if (Array.isArray(value) && !value.length) continue;
+    var section = e.section || 'Default';
+    if (!setting[section]) setting[section] = {};
+    setting[section][e.key] = value;
+  }
+  return { setting: setting, rows: settingToFlatPreviewRows(setting) };
+}
+
+var PROFILE_META_DESCRIPTIONS = '__descriptions__';
+
+function isProfileMetaSection(section) {
+  return String(section || '').indexOf('__') === 0;
+}
+
+/** Minimal TOML subset: [section] + key = "value" | 'value' | bare */
+function parseTomlSetting(text) {
+  var setting = {};
+  var section = '';
+  var lines = String(text || '').split(/\r?\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var rawLine = lines[i];
+    var line = rawLine.trim();
+    if (!line) continue;
+    if (line.charAt(0) === '#' || line.charAt(0) === ';') continue;
+    var sec = line.match(/^\[([^\]]+)\]$/);
+    if (sec) {
+      section = sec[1].trim().replace(/^"|"$/g, '');
+      continue;
+    }
+    var eq = line.indexOf('=');
+    if (eq < 0) continue;
+    var key = line.slice(0, eq).trim().replace(/^"|"$/g, '');
+    var valueRaw = line.slice(eq + 1).trim();
+    if (!key) continue;
+    var value = valueRaw;
+    if (
+      (value.charAt(0) === '"' && value.charAt(value.length - 1) === '"') ||
+      (value.charAt(0) === "'" && value.charAt(value.length - 1) === "'")
+    ) {
+      value = value.slice(1, -1);
+      value = value
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    } else {
+      // strip inline comment for bare values
+      var hash = value.indexOf(' #');
+      if (hash >= 0) value = value.slice(0, hash).trim();
+      value = value.replace(/^'|'$/g, '');
+    }
+    value = String(value).trim();
+    if (!value && value !== '0') continue;
+    var secName = section || 'Default';
+    if (!setting[secName]) setting[secName] = {};
+    setting[secName][key] = value;
+  }
+  return setting;
+}
+
+function settingToFlatPreviewRows(setting) {
+  var rows = [];
+  var obj = setting && typeof setting === 'object' ? setting : {};
+  var descs =
+    obj[PROFILE_META_DESCRIPTIONS] && typeof obj[PROFILE_META_DESCRIPTIONS] === 'object'
+      ? obj[PROFILE_META_DESCRIPTIONS]
+      : {};
+  var sections = Object.keys(obj).sort();
+  for (var i = 0; i < sections.length; i++) {
+    var section = sections[i];
+    if (isProfileMetaSection(section)) continue;
+    var keysObj = obj[section];
+    if (!keysObj || typeof keysObj !== 'object' || Array.isArray(keysObj)) continue;
+    var keys = Object.keys(keysObj).sort();
+    for (var j = 0; j < keys.length; j++) {
+      var key = keys[j];
+      var rawVal = keysObj[key];
+      if (rawVal == null) continue;
+      if (Array.isArray(rawVal) && !rawVal.length) continue;
+      var valueText = settingValueToEditText(rawVal);
+      if (!valueText && valueText !== '0') continue;
+      var flatName = sanitizeDeviceCfgIdent(section + '_' + key);
+      if (!flatName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(flatName)) continue;
+      rows.push({
+        section: section,
+        key: key,
+        value: valueText,
+        flatName: flatName,
+        description: descs[flatName] || '[' + section + '] ' + key,
+      });
+    }
+  }
+  return rows;
+}
+
+function tomlToSettingJson(text) {
+  var setting = parseTomlSetting(text);
+  return { setting: setting, rows: settingToFlatPreviewRows(setting) };
+}
+
+function textToSettingJson(text, sourceFilename) {
+  var name = String(sourceFilename || '').toLowerCase();
+  if (/\.toml$/i.test(name)) return tomlToSettingJson(text);
+  // Heuristic: TOML-looking content without classic INI if user picks wrong extension
+  var sample = String(text || '').trim();
+  if (
+    !/\.ini$/i.test(name) &&
+    (/^\s*\[[^\]]+\]\s*$/m.test(sample) && /=\s*["']/.test(sample))
+  ) {
+    return tomlToSettingJson(text);
+  }
+  return iniToSettingJson(text);
+}
+
+function tomlNeedsQuotedKey(key) {
+  return !/^[A-Za-z0-9_-]+$/.test(String(key || ''));
+}
+
+function escapeTomlBasicString(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\t/g, '\\t')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+function formatTomlKey(key) {
+  var k = String(key == null ? '' : key);
+  if (!k) return '""';
+  if (tomlNeedsQuotedKey(k)) return '"' + escapeTomlBasicString(k) + '"';
+  return k;
+}
+
+/** Nested `{ Section: { Key: value } }` → TOML text (string values). */
+function settingJsonToToml(setting) {
+  var obj = setting && typeof setting === 'object' ? setting : {};
+  var sections = Object.keys(obj).sort();
+  var lines = [];
+  for (var i = 0; i < sections.length; i++) {
+    var section = sections[i];
+    if (isProfileMetaSection(section)) continue;
+    var keysObj = obj[section];
+    if (!keysObj || typeof keysObj !== 'object' || Array.isArray(keysObj)) continue;
+    if (lines.length) lines.push('');
+    lines.push('[' + formatTomlKey(section) + ']');
+    var keys = Object.keys(keysObj).sort();
+    for (var j = 0; j < keys.length; j++) {
+      var key = keys[j];
+      var raw = keysObj[key];
+      if (raw == null) continue;
+      if (Array.isArray(raw)) {
+        if (!raw.length) continue;
+        var items = raw.map(function (item) {
+          if (typeof item === 'number' && isFinite(item)) return String(item);
+          return '"' + escapeTomlBasicString(String(item == null ? '' : item)) + '"';
+        });
+        lines.push(formatTomlKey(key) + ' = [' + items.join(', ') + ']');
+        continue;
+      }
+      var value = typeof raw === 'string' ? raw : String(raw);
+      if (!value && value !== '0') continue;
+      if (typeof raw === 'number' && isFinite(raw)) {
+        lines.push(formatTomlKey(key) + ' = ' + String(raw));
+        continue;
+      }
+      lines.push(formatTomlKey(key) + ' = "' + escapeTomlBasicString(value) + '"');
+    }
+  }
+  return lines.length ? lines.join('\n') + '\n' : '';
+}
+
+function sanitizeExportFilename(name) {
+  var s = String(name || 'profile')
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!s) s = 'profile';
+  if (s.length > 80) s = s.slice(0, 80);
+  return s;
+}
+
+function downloadTextFile(filename, text, mime) {
+  var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () {
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function buildDeviceCfgImportPreview(text, existingVariables) {
@@ -311,92 +574,508 @@ function mergeDeviceCfgPreviewIntoVariables(existingVariables, previewRows) {
   return out;
 }
 
-function statusLabelDeviceCfg(status) {
-  if (status === 'add') return '新增';
-  if (status === 'update') return '覆盖';
-  return '跳过';
-}
-
 function closeDeviceCfgImportModal() {
   const modal = document.getElementById('device-cfg-import-modal');
   if (modal) modal.hidden = true;
-  pendingDeviceCfgPreview = null;
+  pendingProfileImport = null;
 }
 
-function openDeviceCfgImportPreview(text) {
-  const current = collectSettingsFromDom();
-  const preview = buildDeviceCfgImportPreview(text, current.variables);
-  pendingDeviceCfgPreview = preview;
+function openProfileImportPreview(text, kind, sourceFilename) {
+  const parsed = textToSettingJson(text, sourceFilename);
+  pendingProfileImport = {
+    kind: kind,
+    setting: parsed.setting,
+    rows: parsed.rows,
+    sourceFilename: sourceFilename || '',
+  };
+  const title = document.getElementById('profile-import-modal-title');
+  if (title) {
+    title.textContent =
+      kind === 'calibration' ? '导入为校准配置档' : '导入为设备配置档';
+  }
   const summary = document.getElementById('device-cfg-import-summary');
   if (summary) {
     summary.textContent =
-      '将新增' +
-      preview.summary.added +
-      ' 个、覆盖' +
-      preview.summary.updated +
-      ' 个；另跳过' +
-      preview.summary.skipped +
-      ' 行（非地址键或空值）。合并后请点保存。';
+      '将写入 ' +
+      parsed.rows.length +
+      ' 个键（空值已跳过）；保存为独立配置档，不写入手工变量。';
   }
+  const nameInput = document.getElementById('profile-import-name');
+  if (nameInput) {
+    var base = (sourceFilename || '').replace(/\.ini$/i, '').trim();
+    nameInput.value = base || (kind === 'calibration' ? 'Calibration' : 'Device');
+  }
+  const activateEl = document.getElementById('profile-import-activate');
+  if (activateEl) activateEl.checked = true;
   const tbody = document.getElementById('device-cfg-import-body');
   if (tbody) {
     tbody.innerHTML = '';
-    if (!preview.rows.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">没有可导入的地址变量</td></tr>';
+    if (!parsed.rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">没有可导入的键值</td></tr>';
     } else {
-      preview.rows.forEach(function (row) {
+      parsed.rows.slice(0, 200).forEach(function (row) {
         const tr = document.createElement('tr');
         tr.innerHTML =
-          '<td>' +
-          statusLabelDeviceCfg(row.status) +
+          '<td class="mono">' +
+          escapeHtml(row.section) +
           '</td>' +
           '<td class="mono">' +
-          escapeHtml(row.name) +
+          escapeHtml(row.key) +
           '</td>' +
           '<td class="mono">' +
           escapeHtml(row.value) +
           '</td>' +
-          '<td class="mono">' +
-          escapeHtml('[' + row.section + '] ' + row.key) +
-          '</td>';
+          '<td class="mono">${' +
+          escapeHtml(row.flatName) +
+          '}</td>';
         tbody.appendChild(tr);
       });
+      if (parsed.rows.length > 200) {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td colspan="4" class="muted-hint">…另有 ' +
+          (parsed.rows.length - 200) +
+          ' 行未展示</td>';
+        tbody.appendChild(tr);
+      }
     }
   }
   const applyBtn = document.getElementById('device-cfg-import-apply-btn');
-  if (applyBtn) applyBtn.disabled = !preview.rows.length;
+  if (applyBtn) applyBtn.disabled = !parsed.rows.length;
   const modal = document.getElementById('device-cfg-import-modal');
   if (modal) modal.hidden = false;
 }
 
-function applyDeviceCfgImportPreview() {
-  if (!pendingDeviceCfgPreview || !pendingDeviceCfgPreview.rows.length) {
+/** @deprecated use openProfileImportPreview */
+function openDeviceCfgImportPreview(text) {
+  openProfileImportPreview(text, 'device', '');
+}
+
+async function applyDeviceCfgImportPreview() {
+  if (!pendingProfileImport || !pendingProfileImport.rows.length) {
     closeDeviceCfgImportModal();
     return;
   }
-  const current = collectSettingsFromDom();
-  const mergedVars = mergeDeviceCfgPreviewIntoVariables(
-    current.variables,
-    pendingDeviceCfgPreview.rows
-  );
-  agentSettings = {
-    units: current.units,
-    variables: mergedVars,
+  const nameEl = document.getElementById('profile-import-name');
+  const name = (nameEl && nameEl.value.trim()) || '';
+  if (!name) {
+    showSettingsMsg('请填写配置档名称', false);
+    return;
+  }
+  const activateEl = document.getElementById('profile-import-activate');
+  const activate = !activateEl || activateEl.checked;
+  const kind = pendingProfileImport.kind === 'calibration' ? 'calibration' : 'device';
+  const apiKind = kind === 'calibration' ? 'calibration-profiles' : 'device-profiles';
+  const body = {
+    name: name,
+    setting: pendingProfileImport.setting,
+    source_filename: pendingProfileImport.sourceFilename || '',
+    activate: activate,
   };
-  renderSettingsUnits();
-  renderSettingsVars();
-  markSettingsDirty();
-  const n =
-    pendingDeviceCfgPreview.summary.added + pendingDeviceCfgPreview.summary.updated;
-  closeDeviceCfgImportModal();
-  showSettingsMsg('已合并' + n + ' 个变量到编辑区，请保存', true);
+  try {
+    const resp = await fetch('/api/' + apiKind, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      const err = (data.error && (data.error.message || data.error)) || resp.status;
+      throw new Error(String(err));
+    }
+    closeDeviceCfgImportModal();
+    await refreshConfigProfiles();
+    showSettingsMsg('已创建配置档「' + name + '」' + (activate ? '并设为当前' : ''), true);
+  } catch (e) {
+    showSettingsMsg('创建配置档失败: ' + e.message, false);
+  }
+}
+
+function normalizeConfigProfile(p) {
+  return {
+    id: p.id || '',
+    name: p.name || '',
+    setting: p.setting && typeof p.setting === 'object' ? p.setting : {},
+    is_active: !!p.is_active,
+    source_filename: p.source_filename || '',
+    updated_at: p.updated_at || '',
+  };
+}
+
+async function refreshConfigProfiles() {
+  const [devResp, calResp] = await Promise.all([
+    fetch('/api/device-profiles'),
+    fetch('/api/calibration-profiles'),
+  ]);
+  const devData = await devResp.json().catch(function () {
+    return [];
+  });
+  const calData = await calResp.json().catch(function () {
+    return [];
+  });
+  if (!devResp.ok) {
+    throw new Error(
+      String((devData && devData.error && (devData.error.message || devData.error)) || devResp.status)
+    );
+  }
+  if (!calResp.ok) {
+    throw new Error(
+      String((calData && calData.error && (calData.error.message || calData.error)) || calResp.status)
+    );
+  }
+  deviceProfiles = (Array.isArray(devData) ? devData : []).map(normalizeConfigProfile);
+  calibrationProfiles = (Array.isArray(calData) ? calData : []).map(normalizeConfigProfile);
+  renderDeviceProfiles();
+  renderCalibrationProfiles();
+}
+
+function getActiveConfigProfile(kind) {
+  const list = kind === 'calibration' ? calibrationProfiles : deviceProfiles;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].is_active) return list[i];
+  }
+  return null;
+}
+
+function renderActiveProfileFlat(kind) {
+  const tbodyId =
+    kind === 'calibration' ? 'settings-calibration-flat-body' : 'settings-device-flat-body';
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const active = getActiveConfigProfile(kind);
+  if (!active) {
+    tbody.innerHTML =
+      '<tr><td colspan="3" class="empty">无当前启用配置档</td></tr>';
+    return;
+  }
+  const rows = settingToFlatPreviewRows(active.setting);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">当前档暂无键值</td></tr>';
+    return;
+  }
+  rows.forEach(function (row) {
+    const tr = document.createElement('tr');
+    tr.dataset.section = row.section;
+    tr.dataset.key = row.key;
+    tr.dataset.flatName = row.flatName;
+    tr.innerHTML =
+      '<td class="mono settings-flat-name">${' +
+      escapeHtml(row.flatName) +
+      '}</td>' +
+      '<td><input type="text" class="settings-flat-value mono" value="' +
+      escapeHtml(row.value) +
+      '"></td>' +
+      '<td><input type="text" class="settings-flat-desc" maxlength="200" value="' +
+      escapeHtml(row.description || '') +
+      '"></td>';
+    tbody.appendChild(tr);
+  });
+}
+
+function collectFlatRowsFromDom(kind) {
+  const tbodyId =
+    kind === 'calibration' ? 'settings-calibration-flat-body' : 'settings-device-flat-body';
+  const tbody = document.getElementById(tbodyId);
+  const out = [];
+  if (!tbody) return out;
+  tbody.querySelectorAll('tr').forEach(function (tr) {
+    if (!tr.dataset.section || !tr.dataset.key) return;
+    const valEl = tr.querySelector('.settings-flat-value');
+    const descEl = tr.querySelector('.settings-flat-desc');
+    out.push({
+      section: tr.dataset.section,
+      key: tr.dataset.key,
+      flatName: tr.dataset.flatName || '',
+      value: valEl ? valEl.value : '',
+      description: descEl ? descEl.value.trim() : '',
+    });
+  });
+  return out;
+}
+
+function flatRowsToSetting(rows, previousSetting) {
+  const setting = {};
+  const descs = {};
+  (rows || []).forEach(function (row) {
+    if (!row.section || !row.key) return;
+    const value = editTextToSettingValue(row.value);
+    if (value === '' || value == null) return;
+    if (Array.isArray(value) && !value.length) return;
+    if (!setting[row.section]) setting[row.section] = {};
+    setting[row.section][row.key] = value;
+    if (row.flatName && row.description) {
+      descs[row.flatName] = row.description;
+    }
+  });
+  // Keep unrelated meta / unknown sections from previous (except rebuilt descs)
+  if (previousSetting && typeof previousSetting === 'object') {
+    Object.keys(previousSetting).forEach(function (sec) {
+      if (isProfileMetaSection(sec) && sec !== PROFILE_META_DESCRIPTIONS) {
+        setting[sec] = previousSetting[sec];
+      }
+    });
+  }
+  if (Object.keys(descs).length) {
+    setting[PROFILE_META_DESCRIPTIONS] = descs;
+  }
+  return setting;
+}
+
+async function saveActiveProfileFlat(kind) {
+  const active = getActiveConfigProfile(kind);
+  if (!active || !active.id) {
+    showSettingsMsg('没有当前启用的' + (kind === 'calibration' ? '校准' : '设备') + '配置档', false);
+    return;
+  }
+  const rows = collectFlatRowsFromDom(kind);
+  const setting = flatRowsToSetting(rows, active.setting);
+  const apiKind = kind === 'calibration' ? 'calibration-profiles' : 'device-profiles';
+  try {
+    const resp = await fetch('/api/' + apiKind + '/' + encodeURIComponent(active.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: active.name,
+        setting: setting,
+        source_filename: active.source_filename || '',
+      }),
+    });
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      throw new Error(
+        String((data.error && (data.error.message || data.error)) || resp.status)
+      );
+    }
+    await refreshConfigProfiles();
+    showSettingsMsg(
+      '已保存「' + active.name + '」展开变量（' + rows.length + ' 项）',
+      true
+    );
+  } catch (e) {
+    showSettingsMsg('保存配置档变量失败: ' + e.message, false);
+  }
+}
+
+function renderProfileList(tbodyId, countId, profiles, kind) {
+  const tbody = document.getElementById(tbodyId);
+  const countEl = document.getElementById(countId);
+  if (countEl) countEl.textContent = String((profiles || []).length);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!profiles.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无配置档</td></tr>';
+    return;
+  }
+  profiles.forEach(function (p) {
+    const tr = document.createElement('tr');
+    tr.dataset.profileId = p.id;
+    const activeLabel = p.is_active ? '<span class="settings-profile-active">当前</span>' : '—';
+    tr.innerHTML =
+      '<td class="mono">' +
+      escapeHtml(p.name) +
+      '</td>' +
+      '<td>' +
+      activeLabel +
+      '</td>' +
+      '<td class="mono">' +
+      escapeHtml(p.source_filename || '—') +
+      '</td>' +
+      '<td class="settings-row-actions"></td>';
+    const actions = tr.querySelector('.settings-row-actions');
+    if (!p.is_active) {
+      const actBtn = document.createElement('button');
+      actBtn.type = 'button';
+      actBtn.className = 'btn-sm';
+      actBtn.textContent = '启用';
+      actBtn.addEventListener('click', function () {
+        activateConfigProfile(kind, p.id);
+      });
+      actions.appendChild(actBtn);
+    }
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'btn-sm';
+    viewBtn.textContent = '查看';
+    viewBtn.addEventListener('click', function () {
+      openProfileViewModal(p);
+    });
+    actions.appendChild(viewBtn);
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn-sm btn-danger';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', function () {
+      deleteConfigProfile(kind, p);
+    });
+    actions.appendChild(delBtn);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDeviceProfiles() {
+  renderProfileList(
+    'settings-device-profiles-body',
+    'settings-device-profiles-count',
+    deviceProfiles,
+    'device'
+  );
+  renderActiveProfileFlat('device');
+}
+
+function renderCalibrationProfiles() {
+  renderProfileList(
+    'settings-calibration-profiles-body',
+    'settings-calibration-profiles-count',
+    calibrationProfiles,
+    'calibration'
+  );
+  renderActiveProfileFlat('calibration');
+}
+
+let pendingViewedProfile = null;
+
+function openProfileViewModal(p) {
+  pendingViewedProfile = p
+    ? {
+        name: p.name || 'profile',
+        setting: p.setting && typeof p.setting === 'object' ? p.setting : {},
+        is_active: !!p.is_active,
+        source_filename: p.source_filename || '',
+      }
+    : null;
+  const title = document.getElementById('profile-view-title');
+  const pre = document.getElementById('profile-view-toml');
+  const modal = document.getElementById('profile-view-modal');
+  if (title) {
+    title.textContent =
+      (pendingViewedProfile ? pendingViewedProfile.name : '配置档') +
+      (pendingViewedProfile && pendingViewedProfile.is_active ? '（当前）' : '');
+  }
+  if (pre) {
+    try {
+      pre.textContent = settingJsonToToml(
+        pendingViewedProfile ? pendingViewedProfile.setting : {}
+      );
+    } catch (e) {
+      pre.textContent = '';
+    }
+  }
+  const exportBtn = document.getElementById('profile-view-export-btn');
+  if (exportBtn) {
+    exportBtn.disabled = !(
+      pendingViewedProfile &&
+      pre &&
+      String(pre.textContent || '').trim()
+    );
+  }
+  if (modal) modal.hidden = false;
+}
+
+function closeProfileViewModal() {
+  const modal = document.getElementById('profile-view-modal');
+  if (modal) modal.hidden = true;
+  pendingViewedProfile = null;
+}
+
+function exportViewedProfileToml() {
+  if (!pendingViewedProfile) return;
+  var toml = settingJsonToToml(pendingViewedProfile.setting || {});
+  if (!String(toml || '').trim()) {
+    showSettingsMsg('当前配置档为空，无法导出', false);
+    return;
+  }
+  var base = sanitizeExportFilename(pendingViewedProfile.name);
+  downloadTextFile(base + '.toml', toml, 'application/toml;charset=utf-8');
+  showSettingsMsg('已导出 ' + base + '.toml', true);
+}
+
+async function activateConfigProfile(kind, id) {
+  const apiKind = kind === 'calibration' ? 'calibration-profiles' : 'device-profiles';
+  try {
+    const resp = await fetch('/api/' + apiKind + '/' + encodeURIComponent(id) + '/activate', {
+      method: 'POST',
+    });
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      throw new Error(
+        String((data.error && (data.error.message || data.error)) || resp.status)
+      );
+    }
+    await refreshConfigProfiles();
+    showSettingsMsg('已切换当前' + (kind === 'calibration' ? '校准' : '设备') + '配置档', true);
+  } catch (e) {
+    showSettingsMsg('启用失败: ' + e.message, false);
+  }
+}
+
+async function deleteConfigProfile(kind, p) {
+  if (!p || !p.id) return;
+  if (!window.confirm('删除配置档「' + p.name + '」？')) return;
+  const apiKind = kind === 'calibration' ? 'calibration-profiles' : 'device-profiles';
+  try {
+    const resp = await fetch('/api/' + apiKind + '/' + encodeURIComponent(p.id), {
+      method: 'DELETE',
+    });
+    if (!resp.ok && resp.status !== 204) {
+      const data = await resp.json().catch(function () {
+        return {};
+      });
+      throw new Error(
+        String((data.error && (data.error.message || data.error)) || resp.status)
+      );
+    }
+    await refreshConfigProfiles();
+    showSettingsMsg('已删除「' + p.name + '」', true);
+  } catch (e) {
+    showSettingsMsg('删除失败: ' + e.message, false);
+  }
+}
+
+async function createEmptyConfigProfile(kind) {
+  const label = kind === 'calibration' ? '校准' : '设备';
+  const name = window.prompt('新建' + label + '配置档名称', label === '校准' ? 'Calibration' : 'DUT');
+  if (!name || !String(name).trim()) return;
+  const apiKind = kind === 'calibration' ? 'calibration-profiles' : 'device-profiles';
+  const activate = !(
+    (kind === 'calibration' ? calibrationProfiles : deviceProfiles) || []
+  ).some(function (p) {
+    return p.is_active;
+  });
+  try {
+    const resp = await fetch('/api/' + apiKind, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: String(name).trim(),
+        setting: {},
+        source_filename: '',
+        activate: activate,
+      }),
+    });
+    const data = await resp.json().catch(function () {
+      return {};
+    });
+    if (!resp.ok) {
+      throw new Error(
+        String((data.error && (data.error.message || data.error)) || resp.status)
+      );
+    }
+    await refreshConfigProfiles();
+    showSettingsMsg('已新建「' + String(name).trim() + '」', true);
+  } catch (e) {
+    showSettingsMsg('新建失败: ' + e.message, false);
+  }
 }
 
 function cloneSettingsData(data) {
   return {
-    units: (data.units || []).map(function (u) {
-      return { symbol: u.symbol || '', description: u.description || '' };
-    }),
     variables: (data.variables || []).map(function (v) {
       return {
         name: v.name || '',
@@ -404,7 +1083,22 @@ function cloneSettingsData(data) {
         description: v.description || '',
       };
     }),
+    array_expand_mode: normalizeArrayExpandMode(data && data.array_expand_mode),
   };
+}
+
+function normalizeArrayExpandMode(mode) {
+  return mode === 'json' ? 'json' : 'semicolon';
+}
+
+function getArrayExpandModeFromDom() {
+  const el = document.getElementById('settings-array-expand-mode');
+  return normalizeArrayExpandMode(el && el.value);
+}
+
+function setArrayExpandModeInDom(mode) {
+  const el = document.getElementById('settings-array-expand-mode');
+  if (el) el.value = normalizeArrayExpandMode(mode);
 }
 
 function settingsSnapshotKey(data) {
@@ -430,9 +1124,7 @@ function markSettingsSynced(extra) {
 }
 
 function updateSettingsCounts() {
-  const unitsCount = document.getElementById('settings-units-count');
   const varsCount = document.getElementById('settings-vars-count');
-  if (unitsCount) unitsCount.textContent = String((agentSettings.units || []).length);
   if (varsCount) varsCount.textContent = String((agentSettings.variables || []).length);
 }
 
@@ -476,6 +1168,23 @@ function queueSettingsUndo(label, applyUndo) {
   }, 8000);
 }
 
+async function fetchCenterUnits() {
+  const resp = await fetch('/api/units');
+  const data = await resp.json().catch(function () {
+    return {};
+  });
+  if (!resp.ok) {
+    const err = (data.error && (data.error.message || data.error)) || resp.status;
+    throw new Error(String(err));
+  }
+  centerUnits = Array.isArray(data.units)
+    ? data.units.map(normalizeSettingsUnit).filter(function (u) {
+        return u.symbol;
+      })
+    : [];
+  return centerUnits;
+}
+
 async function fetchAgentSettings() {
   const resp = await fetch('/api/settings');
   const data = await resp.json().catch(function () { return {}; });
@@ -484,9 +1193,27 @@ async function fetchAgentSettings() {
     throw new Error(String(err));
   }
   agentSettings = {
-    units: Array.isArray(data.units) ? data.units.map(normalizeSettingsUnit).filter(function (u) { return u.symbol; }) : [],
+    units: [],
     variables: Array.isArray(data.variables) ? data.variables.map(normalizeSettingsVar) : [],
+    array_expand_mode: normalizeArrayExpandMode(data.array_expand_mode),
   };
+  setArrayExpandModeInDom(agentSettings.array_expand_mode);
+  if (Array.isArray(data.device_profiles)) {
+    deviceProfiles = data.device_profiles.map(normalizeConfigProfile);
+  }
+  if (Array.isArray(data.calibration_profiles)) {
+    calibrationProfiles = data.calibration_profiles.map(normalizeConfigProfile);
+  }
+  // Prefer dedicated units API; fall back to settings.units if present (compat).
+  try {
+    await fetchCenterUnits();
+  } catch (e) {
+    if (Array.isArray(data.units) && data.units.length) {
+      centerUnits = data.units.map(normalizeSettingsUnit).filter(function (u) {
+        return u.symbol;
+      });
+    }
+  }
   return agentSettings;
 }
 
@@ -497,82 +1224,7 @@ function bindSettingsDirty(el) {
 }
 
 function renderSettingsUnits() {
-  const tbody = document.getElementById('settings-units-body');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  updateSettingsCounts();
-  if (!agentSettings.units.length) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 3;
-    td.className = 'settings-empty';
-    td.innerHTML = '<div>暂无单位</div>';
-    const actions = document.createElement('div');
-    actions.className = 'settings-empty-actions';
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn-sm';
-    addBtn.textContent = '添加单位';
-    addBtn.addEventListener('click', addSettingsUnit);
-    const restoreBtn = document.createElement('button');
-    restoreBtn.type = 'button';
-    restoreBtn.className = 'btn-sm';
-    restoreBtn.textContent = '恢复光模块默认';
-    restoreBtn.addEventListener('click', restoreDefaultUnits);
-    actions.appendChild(addBtn);
-    actions.appendChild(restoreBtn);
-    td.appendChild(actions);
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-  agentSettings.units.forEach(function (unit, idx) {
-    const tr = document.createElement('tr');
-    const symTd = document.createElement('td');
-    const symInput = document.createElement('input');
-    symInput.type = 'text';
-    symInput.className = 'mono settings-unit-symbol';
-    symInput.maxLength = 32;
-    symInput.value = unit.symbol || '';
-    symInput.setAttribute('aria-label', '单位');
-    symInput.addEventListener('change', function () {
-      agentSettings.units[idx].symbol = symInput.value.trim();
-    });
-    bindSettingsDirty(symInput);
-    symTd.appendChild(symInput);
-
-    const descTd = document.createElement('td');
-    const descInput = document.createElement('input');
-    descInput.type = 'text';
-    descInput.className = 'settings-unit-desc';
-    descInput.maxLength = 200;
-    descInput.placeholder = '说明';
-    descInput.value = unit.description || '';
-    descInput.title = unit.description || '';
-    descInput.setAttribute('aria-label', '单位说明');
-    descInput.addEventListener('change', function () {
-      agentSettings.units[idx].description = descInput.value;
-      descInput.title = descInput.value;
-    });
-    bindSettingsDirty(descInput);
-    descTd.appendChild(descInput);
-
-    const rmTd = document.createElement('td');
-    rmTd.className = 'settings-col-actions';
-    const rm = document.createElement('button');
-    rm.type = 'button';
-    rm.className = 'btn-sm';
-    rm.textContent = '删';
-    rm.addEventListener('click', function () {
-      deleteSettingsUnit(idx);
-    });
-    rmTd.appendChild(rm);
-
-    tr.appendChild(symTd);
-    tr.appendChild(descTd);
-    tr.appendChild(rmTd);
-    tbody.appendChild(tr);
-  });
+  /* units edited on Center WebUI only */
 }
 
 function appendSettingsSectionRow(tbody, label, colspan) {
@@ -632,8 +1284,8 @@ function renderSettingsVars() {
     const nameTd = document.createElement('td');
     if (system) {
       const wrap = document.createElement('span');
-      wrap.className = 'mono settings-var-name';
-      wrap.textContent = v.name || '';
+      wrap.className = 'mono settings-var-name-display';
+      wrap.textContent = '${' + (v.name || '') + '}';
       const tag = document.createElement('span');
       tag.className = 'settings-system-tag';
       tag.textContent = '系统';
@@ -645,6 +1297,11 @@ function renderSettingsVars() {
       hidden.value = v.name || '';
       nameTd.appendChild(hidden);
     } else {
+      const nameWrap = document.createElement('div');
+      nameWrap.className = 'settings-var-name-wrap';
+      const prefix = document.createElement('span');
+      prefix.className = 'mono settings-var-dollar';
+      prefix.textContent = '${';
       const nameInput = document.createElement('input');
       nameInput.type = 'text';
       nameInput.className = 'mono settings-var-name';
@@ -654,7 +1311,13 @@ function renderSettingsVars() {
         agentSettings.variables[idx].name = nameInput.value.trim();
       });
       bindSettingsDirty(nameInput);
-      nameTd.appendChild(nameInput);
+      const suffix = document.createElement('span');
+      suffix.className = 'mono settings-var-dollar';
+      suffix.textContent = '}';
+      nameWrap.appendChild(prefix);
+      nameWrap.appendChild(nameInput);
+      nameWrap.appendChild(suffix);
+      nameTd.appendChild(nameWrap);
     }
 
     const valTd = document.createElement('td');
@@ -727,18 +1390,8 @@ function renderSettingsVars() {
   }
 }
 
-function deleteSettingsUnit(idx) {
-  const removed = agentSettings.units[idx];
-  if (!removed) return;
-  if (!window.confirm('删除单位「' + (removed.symbol || '') + '」？')) return;
-  agentSettings.units.splice(idx, 1);
-  markSettingsDirty();
-  renderSettingsUnits();
-  queueSettingsUndo('已删除单位 ' + (removed.symbol || ''), function () {
-    agentSettings.units.splice(idx, 0, removed);
-    markSettingsDirty();
-    renderSettingsUnits();
-  });
+function deleteSettingsUnit(_idx) {
+  /* units edited on Center WebUI only */
 }
 
 function deleteSettingsVar(idx) {
@@ -766,16 +1419,7 @@ function defaultOpticalUnits() {
 }
 
 function restoreDefaultUnits() {
-  if (!window.confirm('用光模块常用单位覆盖当前单位列表？自定义单位将被替换。')) return;
-  const prev = cloneSettingsData(agentSettings).units;
-  agentSettings.units = defaultOpticalUnits();
-  markSettingsDirty();
-  renderSettingsUnits();
-  queueSettingsUndo('已恢复默认单位', function () {
-    agentSettings.units = prev;
-    markSettingsDirty();
-    renderSettingsUnits();
-  });
+  /* units edited on Center WebUI only */
 }
 
 function seedSystemVariables() {
@@ -798,17 +1442,29 @@ function seedSystemVariables() {
 async function loadAgentSettingsPage() {
   try {
     await fetchAgentSettings();
-    renderSettingsUnits();
     renderSettingsVars();
+    renderDeviceProfiles();
+    renderCalibrationProfiles();
     markSettingsSynced('已同步');
     showSettingsMsg(
-      '已加载：' + agentSettings.units.length + ' 个单位，' + agentSettings.variables.length + ' 个变量',
+      '已加载：' +
+        agentSettings.variables.length +
+        ' 个变量，' +
+        deviceProfiles.length +
+        ' 设备档，' +
+        calibrationProfiles.length +
+        ' 校准档；单位 ' +
+        centerUnits.length +
+        ' 个（中心）',
       true
     );
   } catch (e) {
-    agentSettings = { units: [], variables: [] };
-    renderSettingsUnits();
+    agentSettings = { units: [], variables: [], array_expand_mode: 'semicolon' };
+    deviceProfiles = [];
+    calibrationProfiles = [];
     renderSettingsVars();
+    renderDeviceProfiles();
+    renderCalibrationProfiles();
     settingsDirty = false;
     setSettingsSyncStatus('is-error', '加载失败');
     showSettingsMsg('加载失败: ' + e.message, false);
@@ -816,16 +1472,7 @@ async function loadAgentSettingsPage() {
 }
 
 function addSettingsUnit() {
-  agentSettings.units.push({ symbol: '', description: '' });
-  markSettingsDirty();
-  renderSettingsUnits();
-  const inputs = document.querySelectorAll('#settings-units-body .settings-unit-symbol');
-  if (inputs.length) {
-    const last = inputs[inputs.length - 1];
-    last.focus();
-    const scroll = document.querySelector('#settings-units-card .settings-table-scroll');
-    if (scroll) scroll.scrollTop = scroll.scrollHeight;
-  }
+  /* units edited on Center WebUI only */
 }
 
 function addSettingsVar() {
@@ -835,24 +1482,12 @@ function addSettingsVar() {
   const names = document.querySelectorAll('#settings-vars-body input.settings-var-name:not([type="hidden"])');
   if (names.length) {
     names[names.length - 1].focus();
-    const scroll = document.querySelector('#settings-vars-card .settings-table-scroll');
+    const scroll = document.querySelector('#settings-vars-section .settings-table-scroll');
     if (scroll) scroll.scrollTop = scroll.scrollHeight;
   }
 }
 
 function collectSettingsFromDom() {
-  const units = [];
-  document.querySelectorAll('#settings-units-body tr').forEach(function (tr) {
-    const symEl = tr.querySelector('.settings-unit-symbol');
-    const descEl = tr.querySelector('.settings-unit-desc');
-    if (!symEl) return;
-    const symbol = symEl.value.trim();
-    if (!symbol) return;
-    units.push({
-      symbol: symbol,
-      description: descEl ? descEl.value.trim() : '',
-    });
-  });
   const variables = [];
   document.querySelectorAll('#settings-vars-body tr').forEach(function (tr) {
     if (tr.classList.contains('settings-section-row')) return;
@@ -868,19 +1503,14 @@ function collectSettingsFromDom() {
       description: descEl ? descEl.value.trim() : '',
     });
   });
-  return { units: units, variables: variables };
+  return {
+    variables: variables,
+    array_expand_mode: getArrayExpandModeFromDom(),
+  };
 }
 
 function validateSettingsPayload(payload) {
   const nameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  const seenUnits = {};
-  for (let i = 0; i < payload.units.length; i++) {
-    const symbol = payload.units[i].symbol;
-    if (symbol.length > 32) return '单位过长: ' + symbol;
-    if ((payload.units[i].description || '').length > 200) return '单位说明过长: ' + symbol;
-    if (seenUnits[symbol]) return '重复单位: ' + symbol;
-    seenUnits[symbol] = true;
-  }
   const seen = {};
   for (let i = 0; i < payload.variables.length; i++) {
     const name = payload.variables[i].name;
@@ -914,11 +1544,19 @@ async function saveAgentSettings() {
       return;
     }
     agentSettings = {
-      units: Array.isArray(data.units) ? data.units.map(normalizeSettingsUnit) : payload.units,
+      units: [],
       variables: Array.isArray(data.variables) ? data.variables.map(normalizeSettingsVar) : payload.variables,
+      array_expand_mode: normalizeArrayExpandMode(
+        data.array_expand_mode != null ? data.array_expand_mode : payload.array_expand_mode
+      ),
     };
+    setArrayExpandModeInDom(agentSettings.array_expand_mode);
+    if (Array.isArray(data.units) && data.units.length) {
+      centerUnits = data.units.map(normalizeSettingsUnit).filter(function (u) {
+        return u.symbol;
+      });
+    }
     clearSettingsUndo();
-    renderSettingsUnits();
     renderSettingsVars();
     markSettingsSynced('已同步');
     const now = new Date();
@@ -926,8 +1564,14 @@ async function saveAgentSettings() {
     const mm = String(now.getMinutes()).padStart(2, '0');
     const ss = String(now.getSeconds()).padStart(2, '0');
     showSettingsMsg(
-      '已保存到中心 · ' + agentSettings.units.length + ' 单位 / ' +
-        agentSettings.variables.length + ' 变量 · ' + hh + ':' + mm + ':' + ss,
+      '已保存到中心 · ' +
+        agentSettings.variables.length +
+        ' 变量 · ' +
+        hh +
+        ':' +
+        mm +
+        ':' +
+        ss,
       true
     );
   } catch (e) {
@@ -1201,7 +1845,7 @@ function attachVarPickersIn(root) {
 }
 
 async function ensureAgentSettingsLoaded() {
-  if (agentSettings && (agentSettings.units.length || agentSettings.variables.length)) return;
+  if (agentSettings && agentSettings.variables.length && centerUnits.length) return;
   try {
     await fetchAgentSettings();
   } catch (e) {
@@ -2418,7 +3062,7 @@ function renderSpecModalRows(limits, outputNames) {
     blankUnit.value = '';
     blankUnit.textContent = '（无）';
     unitSelect.appendChild(blankUnit);
-    const units = (agentSettings.units || []).map(normalizeSettingsUnit).filter(function (u) { return u.symbol; });
+    const units = (centerUnits || []).map(normalizeSettingsUnit).filter(function (u) { return u.symbol; });
     const currentUnit = lim.unit || '';
     if (currentUnit && unitSymbols(units).indexOf(currentUnit) < 0) {
       units.unshift({ symbol: currentUnit, description: '' });
@@ -2439,7 +3083,7 @@ function renderSpecModalRows(limits, outputNames) {
     unitInput.className = 'spec-unit mono';
     unitInput.placeholder = '单位';
     unitInput.hidden = true;
-    if (currentUnit && unitSymbols(agentSettings.units || []).indexOf(currentUnit) < 0) {
+    if (currentUnit && unitSymbols(centerUnits || []).indexOf(currentUnit) < 0) {
       unitSelect.value = '__custom__';
       unitInput.hidden = false;
       unitInput.value = currentUnit;
@@ -4948,28 +5592,38 @@ if (appAlertModal) {
 }
 
 const settingsSaveBtn = document.getElementById('settings-save-btn');
-const settingsUnitAddBtn = document.getElementById('settings-unit-add-btn');
 const settingsVarAddBtn = document.getElementById('settings-var-add-btn');
-const settingsRestoreUnitsBtn = document.getElementById('settings-restore-units-btn');
 const settingsImportDeviceCfgBtn = document.getElementById('settings-import-device-cfg-btn');
 const settingsDeviceCfgFile = document.getElementById('settings-device-cfg-file');
+const settingsImportCalibrationCfgBtn = document.getElementById('settings-import-calibration-cfg-btn');
+const settingsCalibrationCfgFile = document.getElementById('settings-calibration-cfg-file');
+const settingsDeviceProfileNewBtn = document.getElementById('settings-device-profile-new-btn');
+const settingsCalibrationProfileNewBtn = document.getElementById('settings-calibration-profile-new-btn');
 const deviceCfgImportCancelBtn = document.getElementById('device-cfg-import-cancel-btn');
 const deviceCfgImportApplyBtn = document.getElementById('device-cfg-import-apply-btn');
+const profileViewCloseBtn = document.getElementById('profile-view-close-btn');
+const profileViewExportBtn = document.getElementById('profile-view-export-btn');
 if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', saveAgentSettings);
-if (settingsUnitAddBtn) settingsUnitAddBtn.addEventListener('click', addSettingsUnit);
 if (settingsVarAddBtn) settingsVarAddBtn.addEventListener('click', addSettingsVar);
-if (settingsRestoreUnitsBtn) settingsRestoreUnitsBtn.addEventListener('click', restoreDefaultUnits);
-if (settingsImportDeviceCfgBtn && settingsDeviceCfgFile) {
-  settingsImportDeviceCfgBtn.addEventListener('click', function () {
-    settingsDeviceCfgFile.value = '';
-    settingsDeviceCfgFile.click();
+const settingsArrayExpandMode = document.getElementById('settings-array-expand-mode');
+if (settingsArrayExpandMode) {
+  settingsArrayExpandMode.addEventListener('change', function () {
+    agentSettings.array_expand_mode = getArrayExpandModeFromDom();
+    markSettingsDirty();
   });
-  settingsDeviceCfgFile.addEventListener('change', function () {
-    const file = settingsDeviceCfgFile.files && settingsDeviceCfgFile.files[0];
+}
+function wireIniFileImport(btn, fileInput, kind) {
+  if (!btn || !fileInput) return;
+  btn.addEventListener('click', function () {
+    fileInput.value = '';
+    fileInput.click();
+  });
+  fileInput.addEventListener('change', function () {
+    const file = fileInput.files && fileInput.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = function () {
-      openDeviceCfgImportPreview(String(reader.result || ''));
+      openProfileImportPreview(String(reader.result || ''), kind, file.name || '');
     };
     reader.onerror = function () {
       showSettingsMsg('读取文件失败', false);
@@ -4977,11 +5631,47 @@ if (settingsImportDeviceCfgBtn && settingsDeviceCfgFile) {
     reader.readAsText(file);
   });
 }
+wireIniFileImport(settingsImportDeviceCfgBtn, settingsDeviceCfgFile, 'device');
+wireIniFileImport(settingsImportCalibrationCfgBtn, settingsCalibrationCfgFile, 'calibration');
+const settingsDeviceFlatSaveBtn = document.getElementById('settings-device-flat-save-btn');
+const settingsCalibrationFlatSaveBtn = document.getElementById('settings-calibration-flat-save-btn');
+if (settingsDeviceFlatSaveBtn) {
+  settingsDeviceFlatSaveBtn.addEventListener('click', function () {
+    saveActiveProfileFlat('device');
+  });
+}
+if (settingsCalibrationFlatSaveBtn) {
+  settingsCalibrationFlatSaveBtn.addEventListener('click', function () {
+    saveActiveProfileFlat('calibration');
+  });
+}
+if (settingsDeviceProfileNewBtn) {
+  settingsDeviceProfileNewBtn.addEventListener('click', function () {
+    createEmptyConfigProfile('device');
+  });
+}
+if (settingsCalibrationProfileNewBtn) {
+  settingsCalibrationProfileNewBtn.addEventListener('click', function () {
+    createEmptyConfigProfile('calibration');
+  });
+}
 if (deviceCfgImportCancelBtn) {
   deviceCfgImportCancelBtn.addEventListener('click', closeDeviceCfgImportModal);
 }
 if (deviceCfgImportApplyBtn) {
   deviceCfgImportApplyBtn.addEventListener('click', applyDeviceCfgImportPreview);
+}
+if (profileViewCloseBtn) {
+  profileViewCloseBtn.addEventListener('click', closeProfileViewModal);
+}
+if (profileViewExportBtn) {
+  profileViewExportBtn.addEventListener('click', exportViewedProfileToml);
+}
+const profileViewModal = document.getElementById('profile-view-modal');
+if (profileViewModal) {
+  profileViewModal.addEventListener('click', function (ev) {
+    if (ev.target === profileViewModal) closeProfileViewModal();
+  });
 }
 window.addEventListener('beforeunload', function (ev) {
   if (!settingsDirty) return;

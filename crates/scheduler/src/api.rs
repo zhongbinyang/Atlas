@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use common::{ErrorBody, RegisterAgentRequest};
@@ -476,6 +476,31 @@ pub fn router(state: AppState) -> Router {
             "/api/agents/{id}/settings",
             get(get_agent_settings).put(put_agent_settings),
         )
+        .route("/api/units", get(get_center_units).put(put_center_units))
+        .route(
+            "/api/agents/{id}/device-profiles",
+            get(list_device_profiles).post(create_device_profile),
+        )
+        .route(
+            "/api/agents/{id}/device-profiles/{profile_id}",
+            put(update_device_profile).delete(delete_device_profile),
+        )
+        .route(
+            "/api/agents/{id}/device-profiles/{profile_id}/activate",
+            post(activate_device_profile),
+        )
+        .route(
+            "/api/agents/{id}/calibration-profiles",
+            get(list_calibration_profiles).post(create_calibration_profile),
+        )
+        .route(
+            "/api/agents/{id}/calibration-profiles/{profile_id}",
+            put(update_calibration_profile).delete(delete_calibration_profile),
+        )
+        .route(
+            "/api/agents/{id}/calibration-profiles/{profile_id}/activate",
+            post(activate_calibration_profile),
+        )
         .with_state(state)
 }
 
@@ -563,8 +588,18 @@ pub struct AgentSettingsView {
     #[serde(default, deserialize_with = "deserialize_units_flex")]
     pub units: Vec<crate::store::AgentUnit>,
     pub variables: Vec<crate::store::AgentVariable>,
+    #[serde(default)]
+    pub array_expand_mode: common::ArrayExpandMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_profiles: Vec<AgentConfigProfileView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calibration_profiles: Vec<AgentConfigProfileView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_calibration_id: Option<String>,
 }
 
 fn deserialize_units_flex<'de, D>(
@@ -578,10 +613,7 @@ where
     Ok(common::parse_units_json(&raw))
 }
 
-fn validate_agent_settings(
-    units: &[crate::store::AgentUnit],
-    variables: &[crate::store::AgentVariable],
-) -> Option<String> {
+fn validate_units(units: &[crate::store::AgentUnit]) -> Option<String> {
     let mut seen_units = std::collections::HashSet::new();
     for u in units {
         let t = u.symbol.trim();
@@ -601,6 +633,10 @@ fn validate_agent_settings(
     if units.len() > 200 {
         return Some("too many units (max 200)".into());
     }
+    None
+}
+
+fn validate_agent_variables(variables: &[crate::store::AgentVariable]) -> Option<String> {
     let mut seen_names = std::collections::HashSet::new();
     for v in variables {
         let name = v.name.trim();
@@ -613,17 +649,13 @@ fn validate_agent_settings(
         if v.description.len() > 200 {
             return Some(format!("variable description too long for {name} (max 200)"));
         }
-        if !name
-            .chars()
-            .enumerate()
-            .all(|(i, c)| {
-                if i == 0 {
-                    c.is_ascii_alphabetic() || c == '_'
-                } else {
-                    c.is_ascii_alphanumeric() || c == '_'
-                }
-            })
-        {
+        if !name.chars().enumerate().all(|(i, c)| {
+            if i == 0 {
+                c.is_ascii_alphabetic() || c == '_'
+            } else {
+                c.is_ascii_alphanumeric() || c == '_'
+            }
+        }) {
             return Some(format!("invalid variable name: {name}"));
         }
         if !seen_names.insert(name.to_string()) {
@@ -634,6 +666,67 @@ fn validate_agent_settings(
         return Some("too many variables (max 500)".into());
     }
     None
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CenterUnitsView {
+    #[serde(default, deserialize_with = "deserialize_units_flex")]
+    pub units: Vec<crate::store::AgentUnit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+async fn get_center_units(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.get_center_units().await {
+        Ok(u) => (
+            StatusCode::OK,
+            Json(CenterUnitsView {
+                units: u.units,
+                updated_at: u.updated_at,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get center units: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn put_center_units(
+    State(s): State<AppState>,
+    Json(body): Json<CenterUnitsView>,
+) -> impl IntoResponse {
+    let units: Vec<crate::store::AgentUnit> = body
+        .units
+        .into_iter()
+        .map(|u| crate::store::AgentUnit {
+            symbol: u.symbol.trim().to_string(),
+            description: u.description.trim().to_string(),
+        })
+        .filter(|u| !u.symbol.is_empty())
+        .collect();
+    if let Some(msg) = validate_units(&units) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody { error: msg }),
+        )
+            .into_response();
+    }
+    match s.store.upsert_center_units(&units).await {
+        Ok(u) => (
+            StatusCode::OK,
+            Json(CenterUnitsView {
+                units: u.units,
+                updated_at: u.updated_at,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("upsert center units: {e}");
+            db_error().into_response()
+        }
+    }
 }
 
 async fn get_agent_settings(
@@ -656,21 +749,63 @@ async fn get_agent_settings(
         }
         Ok(Some(_)) => {}
     }
-    match s.store.get_agent_settings(&id).await {
-        Ok(settings) => (
-            StatusCode::OK,
-            Json(AgentSettingsView {
-                units: settings.units,
-                variables: settings.variables,
-                updated_at: settings.updated_at,
-            }),
-        )
-            .into_response(),
+    let settings = match s.store.get_agent_settings(&id).await {
+        Ok(settings) => settings,
         Err(e) => {
             tracing::error!("get agent settings: {e}");
-            db_error().into_response()
+            return db_error().into_response();
         }
-    }
+    };
+    // Attach global units read-only for compatibility with older Agent UIs.
+    let global_units = match s.store.get_center_units().await {
+        Ok(u) => u.units,
+        Err(e) => {
+            tracing::error!("get center units for settings: {e}");
+            return db_error().into_response();
+        }
+    };
+    let device_profiles = match s.store.list_device_profiles(&id).await {
+        Ok(list) => list
+            .into_iter()
+            .map(AgentConfigProfileView::from)
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::error!("list device profiles for settings: {e}");
+            return db_error().into_response();
+        }
+    };
+    let calibration_profiles = match s.store.list_calibration_profiles(&id).await {
+        Ok(list) => list
+            .into_iter()
+            .map(AgentConfigProfileView::from)
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::error!("list calibration profiles for settings: {e}");
+            return db_error().into_response();
+        }
+    };
+    let active_device_id = device_profiles
+        .iter()
+        .find(|p| p.is_active)
+        .map(|p| p.id.clone());
+    let active_calibration_id = calibration_profiles
+        .iter()
+        .find(|p| p.is_active)
+        .map(|p| p.id.clone());
+    (
+        StatusCode::OK,
+        Json(AgentSettingsView {
+            units: global_units,
+            variables: settings.variables,
+            array_expand_mode: settings.array_expand_mode,
+            updated_at: settings.updated_at,
+            device_profiles,
+            calibration_profiles,
+            active_device_id,
+            active_calibration_id,
+        }),
+    )
+        .into_response()
 }
 
 async fn put_agent_settings(
@@ -694,15 +829,7 @@ async fn put_agent_settings(
         }
         Ok(Some(_)) => {}
     }
-    let units: Vec<crate::store::AgentUnit> = body
-        .units
-        .into_iter()
-        .map(|u| crate::store::AgentUnit {
-            symbol: u.symbol.trim().to_string(),
-            description: u.description.trim().to_string(),
-        })
-        .filter(|u| !u.symbol.is_empty())
-        .collect();
+    let array_expand_mode = body.array_expand_mode;
     let variables: Vec<crate::store::AgentVariable> = body
         .variables
         .into_iter()
@@ -713,25 +840,477 @@ async fn put_agent_settings(
         })
         .filter(|v| !v.name.is_empty())
         .collect();
-    if let Some(msg) = validate_agent_settings(&units, &variables) {
+    if let Some(msg) = validate_agent_variables(&variables) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody { error: msg }),
         )
             .into_response();
     }
-    match s.store.upsert_agent_settings(&id, &units, &variables).await {
-        Ok(settings) => (
-            StatusCode::OK,
-            Json(AgentSettingsView {
-                units: settings.units,
-                variables: settings.variables,
-                updated_at: settings.updated_at,
+    match s
+        .store
+        .upsert_agent_settings(&id, &variables, array_expand_mode)
+        .await
+    {
+        Ok(settings) => {
+            let global_units = match s.store.get_center_units().await {
+                Ok(u) => u.units,
+                Err(e) => {
+                    tracing::error!("get center units after settings put: {e}");
+                    return db_error().into_response();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(AgentSettingsView {
+                    units: global_units,
+                    variables: settings.variables,
+                    array_expand_mode: settings.array_expand_mode,
+                    updated_at: settings.updated_at,
+                    device_profiles: Vec::new(),
+                    calibration_profiles: Vec::new(),
+                    active_device_id: None,
+                    active_calibration_id: None,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("upsert agent settings: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfigProfileView {
+    pub id: String,
+    pub agent_id: String,
+    pub name: String,
+    pub setting: serde_json::Value,
+    pub is_active: bool,
+    pub source_filename: String,
+    pub updated_at: String,
+}
+
+impl From<crate::store::AgentConfigProfile> for AgentConfigProfileView {
+    fn from(p: crate::store::AgentConfigProfile) -> Self {
+        let setting = serde_json::from_str(&p.setting_json)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        Self {
+            id: p.id,
+            agent_id: p.agent_id,
+            name: p.name,
+            setting,
+            is_active: p.is_active,
+            source_filename: p.source_filename,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CreateAgentConfigProfileRequest {
+    pub name: String,
+    #[serde(default)]
+    pub setting: serde_json::Value,
+    #[serde(default)]
+    pub source_filename: String,
+    #[serde(default)]
+    pub activate: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UpdateAgentConfigProfileRequest {
+    pub name: String,
+    #[serde(default)]
+    pub setting: serde_json::Value,
+    #[serde(default)]
+    pub source_filename: String,
+}
+
+fn validate_profile_name(name: &str) -> Option<&'static str> {
+    let t = name.trim();
+    if t.is_empty() {
+        return Some("name is required");
+    }
+    if t.len() > 128 {
+        return Some("name too long (max 128)");
+    }
+    None
+}
+
+fn setting_json_string(setting: &serde_json::Value) -> Result<String, String> {
+    if !setting.is_object() && !setting.is_null() {
+        return Err("setting must be a JSON object".into());
+    }
+    let v = if setting.is_null() {
+        serde_json::json!({})
+    } else {
+        setting.clone()
+    };
+    serde_json::to_string(&v).map_err(|e| e.to_string())
+}
+
+async fn ensure_agent_exists(
+    s: &AppState,
+    id: &str,
+) -> Result<(), axum::response::Response> {
+    match s.store.get_agent(id).await {
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response()),
+        Err(e) => {
+            tracing::error!("get agent: {e}");
+            Err(db_error().into_response())
+        }
+        Ok(Some(_)) => Ok(()),
+    }
+}
+
+async fn list_device_profiles(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = ensure_agent_exists(&s, &id).await {
+        return resp;
+    }
+    match s.store.list_device_profiles(&id).await {
+        Ok(list) => {
+            let views: Vec<AgentConfigProfileView> =
+                list.into_iter().map(AgentConfigProfileView::from).collect();
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list device profiles: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_calibration_profiles(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = ensure_agent_exists(&s, &id).await {
+        return resp;
+    }
+    match s.store.list_calibration_profiles(&id).await {
+        Ok(list) => {
+            let views: Vec<AgentConfigProfileView> =
+                list.into_iter().map(AgentConfigProfileView::from).collect();
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list calibration profiles: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_device_profile(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateAgentConfigProfileRequest>,
+) -> impl IntoResponse {
+    create_config_profile_handler(&s, &id, body, true).await
+}
+
+async fn create_calibration_profile(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateAgentConfigProfileRequest>,
+) -> impl IntoResponse {
+    create_config_profile_handler(&s, &id, body, false).await
+}
+
+async fn create_config_profile_handler(
+    s: &AppState,
+    agent_id: &str,
+    body: CreateAgentConfigProfileRequest,
+    is_device: bool,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_agent_exists(s, agent_id).await {
+        return resp;
+    }
+    if let Some(msg) = validate_profile_name(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: msg.into(),
+            }),
+        )
+            .into_response();
+    }
+    let setting_json = match setting_json_string(&body.setting) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+    let result = if is_device {
+        s.store
+            .create_device_profile(
+                agent_id,
+                body.name.trim(),
+                &setting_json,
+                body.source_filename.trim(),
+                body.activate,
+            )
+            .await
+    } else {
+        s.store
+            .create_calibration_profile(
+                agent_id,
+                body.name.trim(),
+                &setting_json,
+                body.source_filename.trim(),
+                body.activate,
+            )
+            .await
+    };
+    match result {
+        Ok(p) => (StatusCode::OK, Json(AgentConfigProfileView::from(p))).into_response(),
+        Err(e) => {
+            tracing::error!("create config profile: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn update_device_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+    Json(body): Json<UpdateAgentConfigProfileRequest>,
+) -> impl IntoResponse {
+    update_config_profile_handler(&s, &id, &profile_id, body, true).await
+}
+
+async fn update_calibration_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+    Json(body): Json<UpdateAgentConfigProfileRequest>,
+) -> impl IntoResponse {
+    update_config_profile_handler(&s, &id, &profile_id, body, false).await
+}
+
+async fn update_config_profile_handler(
+    s: &AppState,
+    agent_id: &str,
+    profile_id: &str,
+    body: UpdateAgentConfigProfileRequest,
+    is_device: bool,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_agent_exists(s, agent_id).await {
+        return resp;
+    }
+    if let Some(msg) = validate_profile_name(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: msg.into(),
+            }),
+        )
+            .into_response();
+    }
+    let setting_json = match setting_json_string(&body.setting) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+    let existing = if is_device {
+        s.store.get_device_profile(profile_id).await
+    } else {
+        s.store.get_calibration_profile(profile_id).await
+    };
+    match existing {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "profile not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(Some(p)) if p.agent_id != agent_id => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "profile not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get profile: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+    let result = if is_device {
+        s.store
+            .update_device_profile(
+                profile_id,
+                body.name.trim(),
+                &setting_json,
+                body.source_filename.trim(),
+            )
+            .await
+    } else {
+        s.store
+            .update_calibration_profile(
+                profile_id,
+                body.name.trim(),
+                &setting_json,
+                body.source_filename.trim(),
+            )
+            .await
+    };
+    match result {
+        Ok(Some(p)) => (StatusCode::OK, Json(AgentConfigProfileView::from(p))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "profile not found".into(),
             }),
         )
             .into_response(),
         Err(e) => {
-            tracing::error!("upsert agent settings: {e}");
+            tracing::error!("update profile: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_device_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    delete_config_profile_handler(&s, &id, &profile_id, true).await
+}
+
+async fn delete_calibration_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    delete_config_profile_handler(&s, &id, &profile_id, false).await
+}
+
+async fn delete_config_profile_handler(
+    s: &AppState,
+    agent_id: &str,
+    profile_id: &str,
+    is_device: bool,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_agent_exists(s, agent_id).await {
+        return resp;
+    }
+    let existing = if is_device {
+        s.store.get_device_profile(profile_id).await
+    } else {
+        s.store.get_calibration_profile(profile_id).await
+    };
+    match existing {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "profile not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(Some(p)) if p.agent_id != agent_id => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "profile not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get profile: {e}");
+            return db_error().into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+    let result = if is_device {
+        s.store.delete_device_profile(profile_id).await
+    } else {
+        s.store.delete_calibration_profile(profile_id).await
+    };
+    match result {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "profile not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete profile: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn activate_device_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    activate_config_profile_handler(&s, &id, &profile_id, true).await
+}
+
+async fn activate_calibration_profile(
+    State(s): State<AppState>,
+    Path((id, profile_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    activate_config_profile_handler(&s, &id, &profile_id, false).await
+}
+
+async fn activate_config_profile_handler(
+    s: &AppState,
+    agent_id: &str,
+    profile_id: &str,
+    is_device: bool,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_agent_exists(s, agent_id).await {
+        return resp;
+    }
+    let result = if is_device {
+        s.store.activate_device_profile(agent_id, profile_id).await
+    } else {
+        s.store
+            .activate_calibration_profile(agent_id, profile_id)
+            .await
+    };
+    match result {
+        Ok(Some(p)) => (StatusCode::OK, Json(AgentConfigProfileView::from(p))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "profile not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("activate profile: {e}");
             db_error().into_response()
         }
     }
