@@ -79,6 +79,7 @@ flowchart LR
 | `center_units` | 全局共享单位表（中心 WebUI 维护，所有机台 Spec 复用） |
 | `agent_device_profiles` | 每台机多套设备配置档（`setting_json`，至多一条 `is_active`） |
 | `agent_calibration_profiles` | 每台机多套校准配置档（同上） |
+| `agent_channels` | 每台机通道定义（`channel_index` / `name` / `enabled` / `overlay_json`） |
 
 ---
 
@@ -440,9 +441,11 @@ Query：`agent_id?` · `kind?`
 | `breakpoint` | 已废弃：PUT 可传但忽略并落库为 `false` |
 | `fail_policy` | 仅步骤：`stop`（默认）/ `continue` |
 | `limits` | 仅步骤：Spec 数组，默认 `[]` |
+| `resources` | 仅步骤：逻辑资源名字符串数组（如 `["station.dca"]`），默认 `[]`；空 = 无锁、跨通道可并行。名称须匹配 `^[A-Za-z][A-Za-z0-9_.-]{0,63}$` |
 | `note` | 备注 |
 
-执行时 Agent 跳过组头；步骤有效启用 = `step.enabled && group.enabled`。
+执行时 Agent 跳过组头；步骤有效启用 = `step.enabled && group.enabled`。  
+步骤执行前按 `resources[]` 在 Agent 进程内 acquire 命名锁（FIFO，默认超时 300s）；共用仪表填相同资源名即可串行，通道私有步骤留空即可并行。
 
 ### Spec（`limits` 元素）
 
@@ -497,6 +500,28 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 
 校准同理：`/api/agents/{id}/calibration-profiles…`
 
+## 1.8.2 通道 overlays
+
+**GET** `/api/agents/{id}/channels` · 使用方：**Agent 进程**  
+**PUT** `/api/agents/{id}/channels` · 使用方：**Agent 进程** — 全量替换
+
+```json
+{
+  "channels": [
+    {
+      "channel_index": 0,
+      "name": "CH0",
+      "enabled": true,
+      "overlay": { "EVB_Setting_IP_Add": "10.0.0.1", "Port": "1" }
+    }
+  ]
+}
+```
+
+- `overlay`：扁平 JSON 对象，值须为字符串（v1）。
+- 变量合并优先级（高→低）：**通道 overlay > 手工 variables > 当前设备档 > 当前校准档**；运行时另注入 `Channel` / `ChannelIndex`。
+- 空列表或无已启用通道时，序列执行使用合成 CH0。
+
 创建 Body：
 
 ```json
@@ -546,6 +571,8 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-agent |
 | GET | `/api/settings` | **Agent WebUI** | → 中心 settings GET（含 profiles；units 只读） |
 | PUT | `/api/settings` | **Agent WebUI** | → 中心 settings PUT（仅 variables） |
+| GET | `/api/channels` | **Agent WebUI** | → 中心 `GET /api/agents/{id}/channels` |
+| PUT | `/api/channels` | **Agent WebUI** | → 中心 `PUT /api/agents/{id}/channels`（全量替换） |
 | GET | `/api/units` | **Agent WebUI** | → 中心 `GET /api/units`（Spec 下拉） |
 | GET/POST | `/api/device-profiles` | **Agent WebUI** | → 中心 device-profiles |
 | PUT/DELETE | `/api/device-profiles/{id}` | **Agent WebUI** | |
@@ -620,7 +647,7 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 
 **GET** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
 **PUT** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
-Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分组、折叠、改名、整组启停。
+Body 形状见第一部分 1.7（含 `group` 组头与步骤 `resources[]`）。WebUI 支持插入分组、折叠、改名、整组启停、步骤资源标签编辑。
 
 ## 2.6 序列执行
 
@@ -667,10 +694,10 @@ Body 形状见第一部分 1.7（含 `group` 组头）。WebUI 支持插入分�
 }
 ```
 
-顶层 `steps` / `current_*` 为第一通道的兼容镜像（Task 7 起 UI 应以 `channels` 为准）。  
+顶层 `steps` / `current_*` 为第一通道的兼容镜像；**Agent WebUI 以 `channels[]` 渲染进度矩阵**（行=通道，列=步骤）。  
 在步骤持有 `resources[]` 时，Agent 会先 acquire 再执行该步；等待锁期间 progress 仍显示该步为当前步，**不会**单独下发 `waiting_resource` 状态（超时记 `status=error`；取消记 `status=aborted`）。  
 **POST** `/api/sequence/run/continue` · **410 Gone**（断点已移除）  
-**POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI** — 对共享 `watch` cancel 置位；响应 `{ "ok": true, "aborting": true }`。各通道在步间或等锁时停止；原始 `POST /run` 返回最终多通道结果。无进行中会话时 **409**。
+**POST** `/api/sequence/run/abort` · 使用方：**Agent WebUI** — 对共享 `watch` cancel 置位；响应 `{ "ok": true, "aborting": true }`。各通道在步间或等锁时停止；原始 `POST /run` 返回最终多通道结果。无进行中会话时 **409**。运行中「中止」按钮可用。
 
 ## 2.7 序列模板
 
@@ -692,6 +719,12 @@ Body 见第一部分 1.8（PUT 仅 variables）。
 **GET/POST** `/api/calibration-profiles` · 同上  
 
 配置页可将 `Device_CFG.ini` / `Calibration*.ini` **整份导入为配置档**（嵌套 `setting` JSON），再启用一套；运行时 flatten 进 `${Section_Key}`，不写入手工变量。Agent 不读取磁盘 INI 路径。白名单→variables 的旧导入路径已降级为兼容辅助，主路径为 profile。
+
+### 通道（代理）
+
+**GET/PUT** `/api/channels` · 使用方：**Agent WebUI** → 中心 `/api/agents/{id}/channels`  
+
+配置页「通道」表格编辑 `channel_index` / `name` / `enabled` / 扁平 overlay 键值；保存为全量 `PUT { "channels": [...] }`。序列页勾选已启用通道，请求体可带 `channel_indexes`。
 
 ## 2.9 Delay
 

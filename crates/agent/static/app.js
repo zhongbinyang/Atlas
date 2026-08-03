@@ -153,6 +153,12 @@ let settingsUndoTimer = null;
 let pendingProfileImport = null;
 let deviceProfiles = [];
 let calibrationProfiles = [];
+/** @type {{ channel_index: number, name: string, enabled: boolean, overlay: Record<string,string>, id?: string }[]} */
+let agentChannels = [];
+/** Selected channel_indexes for the next run (null = all enabled). */
+let seqSelectedChannelIndexes = null;
+/** Latest multi-channel progress/result for matrix rendering. */
+let seqChannelProgress = [];
 
 function isSystemVarName(name) {
   return name === 'Hostname' || name === 'IP';
@@ -1427,6 +1433,7 @@ function seedSystemVariables() {
 async function loadAgentSettingsPage() {
   try {
     await fetchAgentSettings();
+    await loadAgentChannels();
     renderSettingsVars();
     renderDeviceProfiles();
     renderCalibrationProfiles();
@@ -1438,7 +1445,9 @@ async function loadAgentSettingsPage() {
         deviceProfiles.length +
         ' 设备档，' +
         calibrationProfiles.length +
-        ' 校准档；单位 ' +
+        ' 校准档，' +
+        agentChannels.length +
+        ' 通道；单位 ' +
         centerUnits.length +
         ' 个（中心）',
       true
@@ -1454,6 +1463,455 @@ async function loadAgentSettingsPage() {
     setSettingsSyncStatus('is-error', '加载失败');
     showSettingsMsg('加载失败: ' + e.message, false);
   }
+}
+
+function showChannelsMsg(text, ok) {
+  const msg = document.getElementById('settings-channels-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = ok ? 'msg ok' : 'msg err';
+}
+
+function overlayObjectFromChannel(ch) {
+  const out = {};
+  const raw = ch && ch.overlay != null ? ch.overlay : {};
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    Object.keys(raw).forEach(function (k) {
+      if (!k) return;
+      const v = raw[k];
+      out[k] = v == null ? '' : String(v);
+    });
+  }
+  return out;
+}
+
+function nextChannelIndex() {
+  let max = -1;
+  for (let i = 0; i < agentChannels.length; i++) {
+    const idx = Number(agentChannels[i].channel_index);
+    if (Number.isFinite(idx) && idx > max) max = idx;
+  }
+  return max + 1;
+}
+
+async function loadAgentChannels() {
+  try {
+    const resp = await fetch('/api/channels');
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      agentChannels = [];
+      renderAgentChannels();
+      renderSeqChannelPick();
+      showChannelsMsg('加载通道失败: ' + err, false);
+      return;
+    }
+    const list = Array.isArray(data.channels) ? data.channels : [];
+    agentChannels = list.map(function (ch) {
+      return {
+        id: ch.id,
+        channel_index: Number(ch.channel_index) || 0,
+        name: ch.name || ('CH' + (Number(ch.channel_index) || 0)),
+        enabled: ch.enabled !== false,
+        overlay: overlayObjectFromChannel(ch),
+      };
+    });
+    agentChannels.sort(function (a, b) {
+      return a.channel_index - b.channel_index;
+    });
+    renderAgentChannels();
+    renderSeqChannelPick();
+  } catch (e) {
+    agentChannels = [];
+    renderAgentChannels();
+    renderSeqChannelPick();
+    showChannelsMsg('加载通道失败: ' + e.message, false);
+  }
+}
+
+function collectChannelsFromDom() {
+  const rows = document.querySelectorAll('#settings-channels-body tr.settings-channel-row');
+  const channels = [];
+  const seenIndex = {};
+  rows.forEach(function (tr) {
+    const indexEl = tr.querySelector('.settings-channel-index');
+    const nameEl = tr.querySelector('.settings-channel-name');
+    const enabledEl = tr.querySelector('.settings-channel-enabled');
+    if (!indexEl || !nameEl) return;
+    const channel_index = parseInt(String(indexEl.value || '').trim(), 10);
+    const name = String(nameEl.value || '').trim();
+    if (!name || !Number.isFinite(channel_index) || channel_index < 0) return;
+    if (seenIndex[channel_index]) {
+      throw new Error('通道 index 重复: ' + channel_index);
+    }
+    seenIndex[channel_index] = true;
+    const overlay = {};
+    tr.querySelectorAll('.settings-channel-overlay-row').forEach(function (ovRow) {
+      const kEl = ovRow.querySelector('.settings-channel-overlay-key');
+      const vEl = ovRow.querySelector('.settings-channel-overlay-value');
+      if (!kEl) return;
+      const key = String(kEl.value || '').trim();
+      if (!key) return;
+      overlay[key] = vEl ? String(vEl.value || '') : '';
+    });
+    channels.push({
+      channel_index: channel_index,
+      name: name,
+      enabled: !!(enabledEl && enabledEl.checked),
+      overlay: overlay,
+    });
+  });
+  return channels;
+}
+
+function renderChannelOverlayEditor(host, overlay) {
+  host.innerHTML = '';
+  host.className = 'settings-channel-overlay';
+  const pairs = overlay && typeof overlay === 'object' ? Object.keys(overlay) : [];
+  if (!pairs.length) {
+    // keep at least one empty row for editing
+    pairs.push('');
+  }
+  for (let i = 0; i < pairs.length; i++) {
+    const key = pairs[i];
+    const row = document.createElement('div');
+    row.className = 'settings-channel-overlay-row';
+    const kInput = document.createElement('input');
+    kInput.type = 'text';
+    kInput.className = 'settings-channel-overlay-key mono';
+    kInput.placeholder = '键';
+    kInput.value = key;
+    const vInput = document.createElement('input');
+    vInput.type = 'text';
+    vInput.className = 'settings-channel-overlay-value mono';
+    vInput.placeholder = '值';
+    vInput.value = key ? String(overlay[key] ?? '') : '';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn-sm';
+    rm.textContent = '×';
+    rm.title = '删除键';
+    rm.addEventListener('click', function () {
+      row.remove();
+      if (!host.querySelector('.settings-channel-overlay-row')) {
+        renderChannelOverlayEditor(host, {});
+      }
+    });
+    row.appendChild(kInput);
+    row.appendChild(vInput);
+    row.appendChild(rm);
+    host.appendChild(row);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'btn-sm settings-channel-overlay-add';
+  addBtn.textContent = '+ 键';
+  addBtn.addEventListener('click', function () {
+    const row = document.createElement('div');
+    row.className = 'settings-channel-overlay-row';
+    row.innerHTML =
+      '<input type="text" class="settings-channel-overlay-key mono" placeholder="键">' +
+      '<input type="text" class="settings-channel-overlay-value mono" placeholder="值">' +
+      '<button type="button" class="btn-sm" title="删除键">×</button>';
+    const rm = row.querySelector('button');
+    rm.addEventListener('click', function () {
+      row.remove();
+      if (!host.querySelector('.settings-channel-overlay-row')) {
+        renderChannelOverlayEditor(host, {});
+      }
+    });
+    host.insertBefore(row, addBtn);
+  });
+  host.appendChild(addBtn);
+}
+
+function renderAgentChannels() {
+  const tbody = document.getElementById('settings-channels-body');
+  const countEl = document.getElementById('settings-channels-count');
+  if (countEl) countEl.textContent = String(agentChannels.length);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!agentChannels.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="empty">暂无通道；可添加后保存，或留空让运行使用合成 CH0</td></tr>';
+    return;
+  }
+  for (let i = 0; i < agentChannels.length; i++) {
+    const ch = agentChannels[i];
+    const tr = document.createElement('tr');
+    tr.className = 'settings-channel-row';
+    tr.setAttribute('data-channel-pos', String(i));
+
+    const indexTd = document.createElement('td');
+    const indexInput = document.createElement('input');
+    indexInput.type = 'number';
+    indexInput.min = '0';
+    indexInput.step = '1';
+    indexInput.className = 'settings-channel-index mono';
+    indexInput.value = String(ch.channel_index);
+    indexTd.appendChild(indexInput);
+
+    const nameTd = document.createElement('td');
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'settings-channel-name';
+    nameInput.value = ch.name || '';
+    nameTd.appendChild(nameInput);
+
+    const enabledTd = document.createElement('td');
+    const enabledCb = document.createElement('input');
+    enabledCb.type = 'checkbox';
+    enabledCb.className = 'settings-channel-enabled';
+    enabledCb.checked = ch.enabled !== false;
+    enabledTd.appendChild(enabledCb);
+
+    const overlayTd = document.createElement('td');
+    const overlayHost = document.createElement('div');
+    renderChannelOverlayEditor(overlayHost, ch.overlay || {});
+    overlayTd.appendChild(overlayHost);
+
+    const actionsTd = document.createElement('td');
+    const rmBtn = document.createElement('button');
+    rmBtn.type = 'button';
+    rmBtn.className = 'btn-sm';
+    rmBtn.textContent = '删除';
+    rmBtn.addEventListener('click', function () {
+      try {
+        agentChannels = collectChannelsFromDom();
+      } catch (e) {
+        /* keep current */
+      }
+      agentChannels.splice(i, 1);
+      renderAgentChannels();
+      renderSeqChannelPick();
+    });
+    actionsTd.appendChild(rmBtn);
+
+    tr.appendChild(indexTd);
+    tr.appendChild(nameTd);
+    tr.appendChild(enabledTd);
+    tr.appendChild(overlayTd);
+    tr.appendChild(actionsTd);
+    tbody.appendChild(tr);
+  }
+}
+
+function addAgentChannelRow() {
+  try {
+    if (document.querySelector('#settings-channels-body tr.settings-channel-row')) {
+      agentChannels = collectChannelsFromDom();
+    }
+  } catch (e) {
+    showChannelsMsg(e.message, false);
+    return;
+  }
+  const idx = nextChannelIndex();
+  agentChannels.push({
+    channel_index: idx,
+    name: 'CH' + idx,
+    enabled: true,
+    overlay: {},
+  });
+  renderAgentChannels();
+  renderSeqChannelPick();
+}
+
+async function saveAgentChannels() {
+  let channels;
+  try {
+    channels = collectChannelsFromDom();
+  } catch (e) {
+    showChannelsMsg(e.message, false);
+    return;
+  }
+  try {
+    const resp = await fetch('/api/channels', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels: channels }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showChannelsMsg('保存通道失败: ' + err, false);
+      return;
+    }
+    const list = Array.isArray(data.channels) ? data.channels : channels;
+    agentChannels = list.map(function (ch) {
+      return {
+        id: ch.id,
+        channel_index: Number(ch.channel_index) || 0,
+        name: ch.name || ('CH' + (Number(ch.channel_index) || 0)),
+        enabled: ch.enabled !== false,
+        overlay: overlayObjectFromChannel(ch),
+      };
+    });
+    agentChannels.sort(function (a, b) {
+      return a.channel_index - b.channel_index;
+    });
+    renderAgentChannels();
+    renderSeqChannelPick();
+    showChannelsMsg('已保存 ' + agentChannels.length + ' 个通道', true);
+  } catch (e) {
+    showChannelsMsg('保存通道失败: ' + e.message, false);
+  }
+}
+
+function enabledAgentChannels() {
+  return agentChannels.filter(function (ch) {
+    return ch.enabled !== false;
+  });
+}
+
+function renderSeqChannelPick() {
+  const host = document.getElementById('seq-channel-pick');
+  if (!host) return;
+  const enabled = enabledAgentChannels();
+  host.innerHTML = '';
+  if (!enabled.length) {
+    host.innerHTML = '<span class="muted-hint">通道: CH0（合成）</span>';
+    seqSelectedChannelIndexes = null;
+    return;
+  }
+  const label = document.createElement('span');
+  label.className = 'seq-channel-pick-label';
+  label.textContent = '通道';
+  host.appendChild(label);
+  const selected = {};
+  if (Array.isArray(seqSelectedChannelIndexes) && seqSelectedChannelIndexes.length) {
+    seqSelectedChannelIndexes.forEach(function (i) {
+      selected[i] = true;
+    });
+  } else {
+    enabled.forEach(function (ch) {
+      selected[ch.channel_index] = true;
+    });
+  }
+  enabled.forEach(function (ch) {
+    const wrap = document.createElement('label');
+    wrap.className = 'seq-channel-pick-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'seq-channel-cb';
+    cb.value = String(ch.channel_index);
+    cb.checked = !!selected[ch.channel_index];
+    cb.disabled = seqRunning;
+    cb.addEventListener('change', function () {
+      const picked = [];
+      host.querySelectorAll('.seq-channel-cb:checked').forEach(function (el) {
+        picked.push(parseInt(el.value, 10));
+      });
+      seqSelectedChannelIndexes = picked.length ? picked : [];
+    });
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(' ' + (ch.name || ('CH' + ch.channel_index))));
+    host.appendChild(wrap);
+  });
+}
+
+function selectedChannelIndexesForRun() {
+  const enabled = enabledAgentChannels();
+  if (!enabled.length) return null;
+  const boxes = document.querySelectorAll('#seq-channel-pick .seq-channel-cb');
+  if (!boxes.length) return null;
+  const picked = [];
+  boxes.forEach(function (cb) {
+    if (cb.checked) picked.push(parseInt(cb.value, 10));
+  });
+  if (!picked.length) return [];
+  if (picked.length === enabled.length) return null; // omit = all enabled
+  return picked;
+}
+
+function normalizeResourceName(raw) {
+  const name = String(raw || '').trim();
+  if (!name) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)) return null;
+  return name;
+}
+
+function renderStepResourcesEditor(host, item, index) {
+  if (!host) return;
+  host.innerHTML = '';
+  host.className = 'step-resources';
+  const help = document.createElement('p');
+  help.className = 'muted-hint step-resources-help';
+  help.textContent = '共用仪表填相同资源名，例如 station.dca；通道私有步骤留空即可并行。';
+  host.appendChild(help);
+
+  const tags = document.createElement('div');
+  tags.className = 'step-resources-tags';
+  const resources = Array.isArray(item.resources) ? item.resources.slice() : [];
+  function refreshTags() {
+    tags.innerHTML = '';
+    resources.forEach(function (name, ri) {
+      const tag = document.createElement('span');
+      tag.className = 'step-resource-tag';
+      tag.textContent = name + ' ';
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'btn-sm step-resource-remove';
+      x.textContent = '×';
+      x.disabled = seqRunning;
+      x.addEventListener('click', async function () {
+        resources.splice(ri, 1);
+        item.resources = resources.slice();
+        refreshTags();
+        await saveQueue();
+      });
+      tag.appendChild(x);
+      tags.appendChild(tag);
+    });
+    if (!resources.length) {
+      const empty = document.createElement('span');
+      empty.className = 'muted-hint';
+      empty.textContent = '无资源锁（可并行）';
+      tags.appendChild(empty);
+    }
+  }
+  refreshTags();
+  host.appendChild(tags);
+
+  const addRow = document.createElement('div');
+  addRow.className = 'step-resources-add';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'step-resources-input mono';
+  input.setAttribute('list', 'resource-presets');
+  input.placeholder = '资源名，如 station.dca';
+  input.disabled = seqRunning;
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'btn-sm';
+  addBtn.textContent = '添加资源';
+  addBtn.disabled = seqRunning;
+  async function tryAdd() {
+    const name = normalizeResourceName(input.value);
+    if (!name) {
+      showSeqMsg('资源名无效（需匹配 ^[A-Za-z][A-Za-z0-9_.-]{0,63}$）', false);
+      return;
+    }
+    if (resources.indexOf(name) >= 0) {
+      input.value = '';
+      return;
+    }
+    resources.push(name);
+    item.resources = resources.slice();
+    input.value = '';
+    refreshTags();
+    await saveQueue();
+  }
+  addBtn.addEventListener('click', tryAdd);
+  input.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      tryAdd();
+    }
+  });
+  addRow.appendChild(input);
+  addRow.appendChild(addBtn);
+  host.appendChild(addRow);
 }
 
 function addSettingsUnit() {
@@ -2680,6 +3138,9 @@ function setSeqControlsDisabled(disabled) {
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
     el.disabled = disabled;
   });
+  document.querySelectorAll('#seq-channel-pick .seq-channel-cb').forEach(function (el) {
+    el.disabled = disabled;
+  });
   document.querySelectorAll('#seq-selected-body tr.seq-row[data-index]').forEach(function (row) {
     row.draggable = !disabled;
   });
@@ -2856,34 +3317,171 @@ function applyStepResults(steps) {
   }
 }
 
+function channelProgressFromEnvelope(prog) {
+  if (!prog) return [];
+  if (Array.isArray(prog.channels) && prog.channels.length) {
+    return prog.channels.map(function (ch) {
+      return {
+        channel_index: ch.channel_index,
+        name: ch.name || ch.channel_name || ('CH' + ch.channel_index),
+        steps: Array.isArray(ch.steps) ? ch.steps : [],
+        overall: ch.overall != null ? ch.overall : null,
+        current_position: ch.current_position,
+        current_name: ch.current_name,
+        running: !!prog.running,
+      };
+    });
+  }
+  // Legacy flat progress → single synthetic channel
+  return [
+    {
+      channel_index: 0,
+      name: 'CH0',
+      steps: Array.isArray(prog.steps) ? prog.steps : [],
+      overall: prog.overall != null ? prog.overall : null,
+      current_position: prog.current_position,
+      current_name: prog.current_name,
+      running: !!prog.running,
+    },
+  ];
+}
+
+function applyMultiChannelProgress(prog) {
+  seqChannelProgress = channelProgressFromEnvelope(prog);
+  // Queue step rows mirror first channel (legacy-compatible).
+  const first = seqChannelProgress[0];
+  if (first) {
+    applyStepResults(first.steps);
+    if (first.current_position != null && first.running) {
+      const pos = first.current_position;
+      if (!seqStepResults[pos]) {
+        seqStepResults[pos] = {
+          position: pos,
+          name: first.current_name || '',
+          ok: true,
+          status: 'running',
+          measured: null,
+          limits: null,
+          result: null,
+          error: null,
+        };
+      }
+    }
+  } else {
+    applyStepResults([]);
+  }
+  renderSeqProgressMatrix();
+  renderSeqSelected();
+}
+
 function applySequenceProgress(prog) {
   if (!prog) return;
-  applyStepResults(prog.steps);
-  if (prog.current_position != null && prog.running) {
-    const pos = prog.current_position;
-    if (!seqStepResults[pos]) {
-      seqStepResults[pos] = {
-        position: pos,
-        name: prog.current_name || '',
-        ok: true,
-        status: 'running',
-        measured: null,
-        limits: null,
-        result: null,
-        error: null,
-      };
-    }
+  applyMultiChannelProgress(prog);
+  if (prog.overall) updateSeqOverall(prog);
+}
+
+function renderSeqProgressMatrix() {
+  const host = document.getElementById('seq-progress-matrix');
+  if (!host) return;
+  if (!seqChannelProgress.length) {
+    host.innerHTML = '';
+    host.hidden = true;
+    return;
   }
-  renderSeqSelected();
+  host.hidden = false;
+  const stepCols = [];
+  const seen = {};
+  seqChannelProgress.forEach(function (ch) {
+    (ch.steps || []).forEach(function (st) {
+      const pos = st.position != null ? st.position : null;
+      const key = pos != null ? 'p' + pos : 'n' + (st.name || '');
+      if (seen[key]) return;
+      seen[key] = true;
+      stepCols.push({
+        key: key,
+        position: pos,
+        name: st.name || (pos != null ? '步骤 ' + (pos + 1) : '—'),
+      });
+    });
+  });
+  // Also include queue steps not yet in results
+  seqSelected.forEach(function (item, i) {
+    if (item.template_source === 'group') return;
+    const pos = item.position != null ? item.position : i;
+    const key = 'p' + pos;
+    if (seen[key]) return;
+    seen[key] = true;
+    stepCols.push({ key: key, position: pos, name: item.name || '步骤 ' + (i + 1) });
+  });
+  stepCols.sort(function (a, b) {
+    const ap = a.position != null ? a.position : 9999;
+    const bp = b.position != null ? b.position : 9999;
+    return ap - bp;
+  });
+
+  let html = '<table class="seq-progress-table"><thead><tr><th>通道</th>';
+  stepCols.forEach(function (col) {
+    html += '<th title="' + escapeHtml(col.name) + '">' + escapeHtml(col.name) + '</th>';
+  });
+  html += '<th>总体</th></tr></thead><tbody>';
+  seqChannelProgress.forEach(function (ch) {
+    const byPos = {};
+    (ch.steps || []).forEach(function (st, si) {
+      const pos = st.position != null ? st.position : si;
+      byPos[pos] = st;
+    });
+    html +=
+      '<tr><td class="mono">' +
+      escapeHtml(String(ch.name || ('CH' + ch.channel_index))) +
+      '</td>';
+    stepCols.forEach(function (col) {
+      let st = col.position != null ? byPos[col.position] : null;
+      if (
+        !st &&
+        ch.running &&
+        ch.current_position != null &&
+        col.position === ch.current_position
+      ) {
+        st = { status: 'running', name: ch.current_name };
+      }
+      const status = st && st.status ? st.status : '—';
+      const cls =
+        status === 'pass' || status === 'ok'
+          ? 'seq-matrix-pass'
+          : status === 'fail' || status === 'failed' || status === 'error' || status === 'aborted'
+            ? 'seq-matrix-fail'
+            : status === 'running'
+              ? 'seq-matrix-running'
+              : '';
+      html +=
+        '<td class="' +
+        cls +
+        '">' +
+        escapeHtml(formatStepStatus(status === '—' ? '' : status)) +
+        '</td>';
+    });
+    html +=
+      '<td class="mono">' +
+      escapeHtml(ch.overall != null ? String(ch.overall) : '—') +
+      '</td></tr>';
+  });
+  html += '</tbody></table>';
+  host.innerHTML = html;
 }
 
 function clearSequenceResultsUi() {
   seqStepResults = {};
+  seqChannelProgress = [];
   updateSeqOverall({});
   const resultsEl = document.getElementById('seq-results');
   if (resultsEl) {
     resultsEl.innerHTML = '';
     resultsEl.hidden = true;
+  }
+  const matrix = document.getElementById('seq-progress-matrix');
+  if (matrix) {
+    matrix.innerHTML = '';
+    matrix.hidden = true;
   }
   renderSeqSelected();
 }
@@ -3210,7 +3808,12 @@ document.getElementById('spec-save-btn').addEventListener('click', async functio
 });
 
 async function loadSequencePage() {
-  await Promise.all([loadSeqRegistered(), loadQueue(), loadSequenceTemplates()]);
+  await Promise.all([
+    loadSeqRegistered(),
+    loadQueue(),
+    loadSequenceTemplates(),
+    loadAgentChannels(),
+  ]);
   updateSequenceTemplateBinding();
 }
 
@@ -3999,6 +4602,11 @@ function renderSeqSelected() {
     detailActions.appendChild(failWrap);
     panel.appendChild(detailActions);
 
+    const resourcesHost = document.createElement('div');
+    resourcesHost.className = 'step-resources';
+    renderStepResourcesEditor(resourcesHost, item, i);
+    panel.appendChild(resourcesHost);
+
     const measured = document.createElement('div');
     measured.className = 'seq-detail-measured mono';
     measured.textContent = '实测: ' + (stepResult ? formatMeasuredSummary(stepResult.measured) : '—');
@@ -4082,6 +4690,7 @@ async function saveQueue() {
         fail_policy: item.fail_policy === 'continue' ? 'continue' : 'stop',
         limits: Array.isArray(item.limits) ? item.limits : [],
         note: item.note || '',
+        resources: Array.isArray(item.resources) ? item.resources : [],
       };
     }),
   };
@@ -4212,7 +4821,7 @@ async function addToQueue(template) {
     showSeqMsg('模板缺少 ID', false);
     return;
   }
-  const newItem = {
+    const newItem = {
     template_source: template._source === 'general' ? 'general' : 'labview',
     vi_template_id: template._source === 'general' ? null : templateId,
     general_template_id: template._source === 'general' ? templateId : null,
@@ -4225,6 +4834,7 @@ async function addToQueue(template) {
     fail_policy: 'stop',
     limits: [],
     note: '',
+    resources: [],
   };
   const at = insertIndexForNewStep();
   seqSelected.splice(at, 0, newItem);
@@ -4396,19 +5006,70 @@ function renderSeqResults(data) {
   const container = document.getElementById('seq-results');
   if (!container) return;
   container.innerHTML = '';
-  if (!data || !data.steps || !data.steps.length) {
+  const channels = Array.isArray(data && data.channels) ? data.channels : null;
+  let stepCount = 0;
+  if (channels && channels.length) {
+    channels.forEach(function (ch) {
+      const resp = ch.response || ch;
+      if (resp && Array.isArray(resp.steps)) stepCount += resp.steps.length;
+    });
+  } else if (data && Array.isArray(data.steps)) {
+    stepCount = data.steps.length;
+  }
+  if (!stepCount && !(channels && channels.length)) {
     container.hidden = true;
     return;
   }
   container.hidden = false;
-  container.textContent = '本次共 ' + data.steps.length + ' 步结果，已写入步骤行；点「详情」查看实测与原始返回。'
+  const chLabel = channels && channels.length ? channels.length + ' 通道 · ' : '';
+  container.textContent =
+    '本次 ' +
+    chLabel +
+    '共 ' +
+    stepCount +
+    ' 步结果；进度矩阵按通道展示，步骤行显示首通道结果。'
     + ((lastAgentStatus && lastAgentStatus.log_dir)
       ? ('详细日志: ' + lastAgentStatus.log_dir + '\\sequence_runs')
       : '详细日志已写入 Agent 日志目录 sequence_runs');
 }
 
+function multiEnvelopeToProgress(data) {
+  if (!data) return { running: false, channels: [] };
+  if (Array.isArray(data.channels) && data.channels.length) {
+    return {
+      running: false,
+      overall: data.overall,
+      channels: data.channels.map(function (ch) {
+        const resp = ch.response || {};
+        return {
+          channel_index: ch.channel_index,
+          name: ch.channel_name || ch.name || ('CH' + ch.channel_index),
+          steps: Array.isArray(resp.steps) ? resp.steps : Array.isArray(ch.steps) ? ch.steps : [],
+          overall: resp.overall != null ? resp.overall : ch.overall,
+          current_position: null,
+          current_name: null,
+        };
+      }),
+    };
+  }
+  return {
+    running: false,
+    overall: data.overall,
+    channels: [
+      {
+        channel_index: 0,
+        name: 'CH0',
+        steps: Array.isArray(data.steps) ? data.steps : [],
+        overall: data.overall,
+      },
+    ],
+    steps: data.steps,
+  };
+}
+
 function handleSequenceResponse(data) {
-  applyStepResults(data.steps);
+  const envelope = multiEnvelopeToProgress(data);
+  applyMultiChannelProgress(envelope);
   updateSeqOverall(data);
   if (data.sn) {
     const snEl = document.getElementById('seq-sn');
@@ -4420,8 +5081,16 @@ function handleSequenceResponse(data) {
     showSeqMsg('已中止', false);
     return 'aborted';
   }
-  if (data.stopped) {
-    showSeqMsg('执行中止于第 ' + ((data.failed_at != null ? data.failed_at : 0) + 1) + ' 步', false);
+  // Per-channel stopped is inside response; station overall covers multi-channel.
+  const firstResp =
+    Array.isArray(data.channels) && data.channels[0]
+      ? data.channels[0].response || data.channels[0]
+      : data;
+  if (firstResp && firstResp.stopped && !Array.isArray(data.channels)) {
+    showSeqMsg(
+      '执行中止于第 ' + ((firstResp.failed_at != null ? firstResp.failed_at : 0) + 1) + ' 步',
+      false
+    );
     return 'stopped';
   }
   if (data.overall === 'pass' || data.overall === 'ok') {
@@ -4485,6 +5154,11 @@ async function loadSequenceTemplateToQueue(tpl) {
 
 async function runSequence() {
   if (seqRunning || !seqSelected.length) return;
+  const channel_indexes = selectedChannelIndexesForRun();
+  if (Array.isArray(channel_indexes) && channel_indexes.length === 0) {
+    showSeqMsg('请至少选择一个通道', false);
+    return;
+  }
   setSeqControlsDisabled(true);
   clearSequenceResultsUi();
   document.getElementById('seq-results').innerHTML = '';
@@ -4495,6 +5169,7 @@ async function runSequence() {
   if (snRaw) payload.sn = snRaw;
   if (woRaw) payload.work_order = woRaw;
   if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
+  if (Array.isArray(channel_indexes)) payload.channel_indexes = channel_indexes;
   startSequenceProgressPoll();
   try {
     const resp = await fetch('/api/sequence/run', {
@@ -4520,6 +5195,7 @@ async function runSequence() {
   } finally {
     stopSequenceProgressPoll();
     setSeqControlsDisabled(false);
+    renderSeqChannelPick();
     renderSeqRegistered();
   }
 }
@@ -5510,6 +6186,8 @@ if (appAlertModal) {
 
 const settingsSaveBtn = document.getElementById('settings-save-btn');
 const settingsVarAddBtn = document.getElementById('settings-var-add-btn');
+const settingsChannelAddBtn = document.getElementById('settings-channel-add-btn');
+const settingsChannelsSaveBtn = document.getElementById('settings-channels-save-btn');
 const settingsImportDeviceCfgBtn = document.getElementById('settings-import-device-cfg-btn');
 const settingsDeviceCfgFile = document.getElementById('settings-device-cfg-file');
 const settingsImportCalibrationCfgBtn = document.getElementById('settings-import-calibration-cfg-btn');
@@ -5522,6 +6200,8 @@ const profileViewCloseBtn = document.getElementById('profile-view-close-btn');
 const profileViewExportBtn = document.getElementById('profile-view-export-btn');
 if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', saveAgentSettings);
 if (settingsVarAddBtn) settingsVarAddBtn.addEventListener('click', addSettingsVar);
+if (settingsChannelAddBtn) settingsChannelAddBtn.addEventListener('click', addAgentChannelRow);
+if (settingsChannelsSaveBtn) settingsChannelsSaveBtn.addEventListener('click', saveAgentChannels);
 const settingsArrayExpandMode = document.getElementById('settings-array-expand-mode');
 if (settingsArrayExpandMode) {
   settingsArrayExpandMode.addEventListener('change', function () {

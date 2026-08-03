@@ -145,6 +145,57 @@ fn machine_info_is_collapsed_in_topbar_before_register() {
 }
 
 #[test]
+fn settings_and_sequence_expose_channels_and_step_resources() {
+    assert!(
+        APP.contains("loadAgentChannels") && APP.contains("saveAgentChannels"),
+        "settings must load/save channel overlays via helpers"
+    );
+    assert!(
+        APP.contains("resources") || INDEX.contains("step-resources"),
+        "sequence step editor must bind resources"
+    );
+    assert!(
+        INDEX.contains("id=\"settings-channels-section\"")
+            && INDEX.contains("id=\"settings-channels-body\"")
+            && INDEX.contains("id=\"settings-channels-save-btn\"")
+            && INDEX.contains("id=\"settings-channel-add-btn\"")
+            && APP.contains("/api/channels")
+            && APP.contains("renderAgentChannels")
+            && APP.contains("collectChannelsFromDom"),
+        "config page must expose 通道 section with save → PUT /api/channels"
+    );
+    assert!(
+        INDEX.contains("id=\"resource-presets\"")
+            && INDEX.contains("station.dca")
+            && INDEX.contains("station.osa")
+            && INDEX.contains("ch.evb")
+            && APP.contains("renderStepResourcesEditor")
+            && APP.contains("normalizeResourceName"),
+        "step resources UI needs presets datalist and tag editor"
+    );
+    assert!(
+        INDEX.contains("id=\"seq-channel-pick\"")
+            && INDEX.contains("id=\"seq-progress-matrix\"")
+            && APP.contains("channel_indexes")
+            && APP.contains("applyMultiChannelProgress")
+            && APP.contains("renderSeqProgressMatrix")
+            && APP.contains("handleSequenceResponse")
+            && APP.contains("data.channels"),
+        "run panel must pick channels and render multi-channel progress matrix"
+    );
+    assert!(
+        INDEX.contains("共用仪表填相同资源名")
+            || APP.contains("共用仪表填相同资源名"),
+        "help text must explain shared resource names vs empty parallel steps"
+    );
+    assert!(
+        APP.contains("abortBtn.disabled = !disabled")
+            || APP.contains("abortBtn.disabled = !seqRunning"),
+        "abort must be enabled while sequence is running"
+    );
+}
+
+#[test]
 fn settings_page_exposes_units_and_variables() {
     assert!(
         INDEX.contains("data-page=\"settings\"") && INDEX.contains("id=\"page-settings\""),

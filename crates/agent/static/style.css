@@ -373,6 +373,141 @@ body {
   min-width: 10rem;
 }
 
+.seq-channel-pick {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.seq-channel-pick-label {
+  font-weight: 600;
+}
+
+.seq-channel-pick-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.seq-progress-matrix {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+}
+
+.seq-progress-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.seq-progress-table th,
+.seq-progress-table td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.55rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.seq-progress-table th:first-child,
+.seq-progress-table td:first-child {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--panel);
+}
+
+.seq-matrix-pass {
+  color: #1b7a3d;
+  font-weight: 600;
+}
+
+.seq-matrix-fail {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.seq-matrix-running {
+  color: #b54708;
+  font-weight: 600;
+}
+
+.step-resources {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--border);
+}
+
+.step-resources-help,
+.seq-resources-help {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.step-resources-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.step-resource-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 70%, var(--panel));
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.step-resources-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.step-resources-input {
+  min-width: 12rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
+.settings-channel-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 14rem;
+}
+
+.settings-channel-overlay-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.settings-channel-overlay-key,
+.settings-channel-overlay-value {
+  min-width: 5.5rem;
+  flex: 1 1 5.5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+}
+
+.settings-col-index {
+  width: 4.5rem;
+}
+
 #seq-overall {
   margin-left: auto;
   font-size: 0.85rem;

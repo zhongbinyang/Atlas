@@ -428,14 +428,47 @@
             <li>手工变量按<strong>本机台</strong>保存在中心；改完后需点<strong>保存</strong>。</li>
             <li><strong>单位</strong>由中心 WebUI「单位」页全局维护，本页不可编辑；Spec 下拉自动读取。</li>
             <li>设备 / 校准可各保存多套配置档，各自启用一套；展开区可编辑当前档的 <code class="mono">${Section_Key}</code> 值与说明。</li>
-            <li>展开优先级：手工变量 &gt; 当前设备档 &gt; 当前校准档；<code class="mono">Hostname</code> / <code class="mono">IP</code> 仍随本机刷新。</li>
+            <li>展开优先级：通道 overlay &gt; 手工变量 &gt; 当前设备档 &gt; 当前校准档；<code class="mono">Hostname</code> / <code class="mono">IP</code> 仍随本机刷新。</li>
             <li>配置档中的数组在 <code class="mono">${…}</code> 展开时可选择<strong>兼容分号</strong>或<strong>原始 JSON</strong>（顶栏「数组展开」，需保存）。</li>
             <li>支持导入 <code class="mono">.ini</code> / <code class="mono">.toml</code> 为配置档；查看可导出 TOML。</li>
             <li>入参等处输入 <code class="mono">/</code> 打开变量选择器。</li>
+            <li><strong>通道</strong>：每台机可配置多个通道及扁平 overlay；序列运行时对各已启用通道并行执行，共用仪表用步骤资源名互斥。</li>
           </ul>
         </details>
 
         <div class="settings-stack">
+          <details class="settings-section" id="settings-channels-section" open>
+            <summary class="settings-section-summary">
+              <span class="settings-section-title">通道</span>
+              <span id="settings-channels-count" class="settings-count">0</span>
+            </summary>
+            <div class="settings-section-body">
+              <div class="settings-section-toolbar">
+                <button type="button" id="settings-channel-add-btn" class="btn-sm">+ 添加通道</button>
+                <button type="button" id="settings-channels-save-btn" class="btn-sm btn-primary">保存通道</button>
+              </div>
+              <p class="muted-hint settings-card-hint">
+                通道 overlay 为扁平键值（字符串）；运行时自动注入 <code class="mono">Channel</code> / <code class="mono">ChannelIndex</code>。
+                空列表时序列仍用合成 CH0。
+              </p>
+              <div class="settings-table-scroll">
+                <table class="settings-table" id="settings-channels-table">
+                  <thead>
+                    <tr>
+                      <th class="settings-col-index">Index</th>
+                      <th class="settings-col-name">名称</th>
+                      <th>启用</th>
+                      <th class="settings-col-value">Overlay（键 / 值）</th>
+                      <th class="settings-col-actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="settings-channels-body"></tbody>
+                </table>
+              </div>
+              <p id="settings-channels-msg" class="msg" hidden></p>
+            </div>
+          </details>
+
           <details class="settings-section" id="settings-device-section" open>
             <summary class="settings-section-summary">
               <span class="settings-section-title">设备配置</span>
@@ -589,8 +622,14 @@
 
         <section class="seq-queue-section">
           <h3>执行顺序</h3>
-          <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略，并查看实测与原始返回</p>
+          <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略 / 资源，并查看实测与原始返回</p>
+          <p class="muted-hint seq-resources-help">共用仪表填相同资源名，例如 station.dca；通道私有步骤留空即可并行。</p>
           <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
+          <datalist id="resource-presets">
+            <option value="station.dca"></option>
+            <option value="station.osa"></option>
+            <option value="ch.evb"></option>
+          </datalist>
           <div class="seq-queue-toolbar">
             <button type="button" id="seq-insert-group" class="btn-sm">新建分组</button>
             <button type="button" id="seq-group-selected" class="btn-sm" disabled title="将勾选的步骤编成一组">编成一组</button>
@@ -645,11 +684,13 @@
           </div>
         </details>
 
+        <div id="seq-progress-matrix" class="seq-progress-matrix" hidden></div>
         <div id="seq-results" class="seq-results-hint" hidden></div>
       </section>
       <div class="seq-run-bar seq-run-bar-fixed">
         <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
         <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
+        <div id="seq-channel-pick" class="seq-channel-pick" aria-label="选择运行通道"></div>
         <button id="seq-save-template-btn" type="button">保存为模板</button>
         <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
         <button id="seq-abort-btn" type="button" disabled>中止</button>
