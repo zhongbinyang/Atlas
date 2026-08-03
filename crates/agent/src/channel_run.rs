@@ -35,6 +35,8 @@ pub struct ChannelRunRequest {
     pub work_order: Option<String>,
     pub progress: Arc<SequenceProgressSlot>,
     pub cancel: watch::Receiver<bool>,
+    /// TaskSlot generation for this run (scopes progress clear / writes).
+    pub run_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +123,10 @@ where
         .iter()
         .map(|c| (c.channel_index, c.name.clone()))
         .collect();
-    req.progress.begin_channels(&channel_meta).await;
+    let run_generation = req.run_generation;
+    req.progress
+        .begin_channels(run_generation, &channel_meta)
+        .await;
 
     let items = Arc::new(req.items);
     let base_vars = Arc::new(req.base_vars);
@@ -151,6 +156,7 @@ where
                 vars,
                 progress: Some(progress),
                 progress_channel: Some((ch.channel_index, ch.name.clone())),
+                progress_generation: run_generation,
                 resource_locks: Some(locks),
                 resource_owner: format!("ch-{}", ch.channel_index),
                 resource_timeout: timeout,
@@ -224,7 +230,9 @@ where
             )
         })
         .collect();
-    progress.finish_channels(&steps_for_progress).await;
+    progress
+        .finish_channels(run_generation, &steps_for_progress)
+        .await;
 
     MultiChannelSequenceResponse {
         channels: channel_results,
@@ -401,6 +409,7 @@ mod tests {
             work_order: Some("WO1".into()),
             progress,
             cancel: rx,
+            run_generation: 1,
         };
 
         let resp = run_multi_channel_with(req, move |_item, vars| {
@@ -485,6 +494,7 @@ mod tests {
             work_order: None,
             progress,
             cancel: rx,
+            run_generation: 1,
         };
 
         let resp = run_multi_channel_with(req, move |item, _vars| {

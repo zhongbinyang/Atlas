@@ -76,6 +76,8 @@ pub struct SequenceRunOpts {
     pub progress: Option<Arc<SequenceProgressSlot>>,
     /// When set, progress updates target this channel in the multi-channel snapshot.
     pub progress_channel: Option<(usize, String)>,
+    /// Must match [`SequenceProgressSlot`] generation for writes to apply.
+    pub progress_generation: u64,
     /// Shared resource lock manager (None = no locking).
     pub resource_locks: Option<Arc<ResourceLockManager>>,
     /// Owner label for acquired locks (e.g. `"ch-0"`).
@@ -94,6 +96,7 @@ impl Default for SequenceRunOpts {
             vars: Default::default(),
             progress: None,
             progress_channel: None,
+            progress_generation: 0,
             resource_locks: None,
             resource_owner: "ch-0".into(),
             resource_timeout: Duration::from_secs(300),
@@ -440,19 +443,23 @@ where
     let vars = opts.vars.clone();
     let progress = opts.progress.clone();
     let progress_channel = opts.progress_channel.clone();
+    let progress_generation = opts.progress_generation;
     let mut sn = opts.sn;
     let work_order = opts.work_order;
 
     async fn publish_steps(
         progress: &Option<Arc<SequenceProgressSlot>>,
         progress_channel: &Option<(usize, String)>,
+        progress_generation: u64,
         steps: &[SequenceStepResult],
     ) {
         if let Some(p) = progress {
             if let Some((idx, _)) = progress_channel {
-                p.set_channel_steps(*idx, steps.to_vec()).await;
+                p.set_channel_steps_if(progress_generation, *idx, steps.to_vec())
+                    .await;
             } else {
-                p.set_steps(steps.to_vec()).await;
+                p.set_channel_steps_if(progress_generation, 0, steps.to_vec())
+                    .await;
             }
         }
     }
@@ -460,14 +467,22 @@ where
     async fn publish_current(
         progress: &Option<Arc<SequenceProgressSlot>>,
         progress_channel: &Option<(usize, String)>,
+        progress_generation: u64,
         position: usize,
         name: &str,
     ) {
         if let Some(p) = progress {
             if let Some((idx, _)) = progress_channel {
-                p.set_channel_current(*idx, position, name.to_string()).await;
+                p.set_channel_current_if(
+                    progress_generation,
+                    *idx,
+                    position,
+                    name.to_string(),
+                )
+                .await;
             } else {
-                p.set_current(position, name.to_string()).await;
+                p.set_channel_current_if(progress_generation, 0, position, name.to_string())
+                    .await;
             }
         }
     }
@@ -492,13 +507,20 @@ where
                 result: None,
                 error: None,
             });
-            publish_steps(&progress, &progress_channel, &steps).await;
+            publish_steps(&progress, &progress_channel, progress_generation, &steps).await;
             continue;
         }
 
         let _ = item.breakpoint;
 
-        publish_current(&progress, &progress_channel, item.position, &item.name).await;
+        publish_current(
+            &progress,
+            &progress_channel,
+            progress_generation,
+            item.position,
+            &item.name,
+        )
+        .await;
 
         // Progress stays at current step name while waiting for locks (no waiting_resource hint yet).
         let step_outcome = with_step_resources(
@@ -530,7 +552,7 @@ where
                     result: None,
                     error: Some(resource_lock_error_message(&lock_err)),
                 });
-                publish_steps(&progress, &progress_channel, &steps).await;
+                publish_steps(&progress, &progress_channel, progress_generation, &steps).await;
 
                 if cancelled {
                     aborted = true;
@@ -579,7 +601,7 @@ where
                         }
                     }),
                 });
-                publish_steps(&progress, &progress_channel, &steps).await;
+                publish_steps(&progress, &progress_channel, progress_generation, &steps).await;
 
                 if should_stop_on_status(&status, &item.fail_policy) {
                     stopped = true;
@@ -600,7 +622,7 @@ where
                     result: None,
                     error: Some(err),
                 });
-                publish_steps(&progress, &progress_channel, &steps).await;
+                publish_steps(&progress, &progress_channel, progress_generation, &steps).await;
 
                 if should_stop_on_status("error", &item.fail_policy) {
                     stopped = true;
@@ -620,10 +642,20 @@ where
     if let Some(p) = &progress {
         if let Some((idx, name)) = &progress_channel {
             // Multi-channel: leave running=true until orchestrator finishes all workers.
-            p.set_channel_overall(*idx, name.clone(), steps.clone(), overall.clone())
-                .await;
+            p.set_channel_overall_if(
+                progress_generation,
+                *idx,
+                name.clone(),
+                steps.clone(),
+                overall.clone(),
+            )
+            .await;
         } else {
-            p.finish(steps.clone()).await;
+            p.finish_channels(
+                progress_generation,
+                &[(0, "CH0".into(), steps.clone(), overall.clone())],
+            )
+            .await;
         }
     }
 

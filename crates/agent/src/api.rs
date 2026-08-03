@@ -461,23 +461,34 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 }
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
-    // Invalidate the active generation first so a finishing run cannot release a newer hold.
-    let released_gen = s.slot.force_release().await;
-    let was_busy = released_gen.is_some();
-    if let Some(gen) = released_gen {
-        // Cancel only the force-released generation (do not touch a newer run's cancel).
-        let _ = signal_sequence_cancel_if(&s, gen).await;
-        clear_sequence_cancel_if(&s, gen).await;
-    }
-    s.sequence_progress.clear().await;
+    // Keep the slot busy until cancel is published and this generation's progress
+    // is cleared, so a concurrent new run cannot start / have its progress wiped.
+    let Some(gen) = s.slot.current_generation_if_busy().await else {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "released": false,
+                "message": "当前已空闲",
+            })),
+        )
+            .into_response();
+    };
+
+    let _ = signal_sequence_cancel_if(&s, gen).await;
+    let _ = s.sequence_progress.clear_if(gen).await;
+    clear_sequence_cancel_if(&s, gen).await;
+    let released = s.slot.force_release_if(gen).await;
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "ok": true,
-            "released": was_busy,
-            "message": if was_busy { "已强制释放占用" } else { "当前已空闲" },
+            "released": released,
+            "message": if released { "已强制释放占用" } else { "当前已空闲" },
         })),
     )
+        .into_response()
 }
 
 async fn labview_register_template(
@@ -1808,6 +1819,7 @@ async fn labview_run_sequence(
         work_order,
         progress: s.sequence_progress.clone(),
         cancel: cancel_rx,
+        run_generation: slot_gen,
     };
 
     let resp = run_multi_channel(&s.labview_cli, &s.labview_getinfo, run_req).await;
@@ -2616,6 +2628,60 @@ mod tests {
         clear_sequence_cancel_if(&state, gen_b).await;
         assert!(state.slot.release(gen_b).await);
         assert!(state.sequence_cancel.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn force_release_publishes_cancel_before_slot_free_and_scopes_progress() {
+        let state = test_state();
+        let gen_a = state.slot.try_acquire("sequence").await.unwrap();
+        let rx_a = install_sequence_cancel(&state, gen_a).await;
+        state
+            .sequence_progress
+            .begin_channels(gen_a, &[(0, "A".into())])
+            .await;
+
+        // Simulate the critical section of force-release without freeing the slot yet:
+        // cancel + progress clear must happen while still busy.
+        assert_eq!(
+            state.slot.current_generation_if_busy().await,
+            Some(gen_a)
+        );
+        assert!(state.slot.is_busy().await);
+        assert!(signal_sequence_cancel_if(&state, gen_a).await);
+        assert!(*rx_a.borrow(), "cancel must be visible before slot free");
+        assert!(state.sequence_progress.clear_if(gen_a).await);
+        assert!(!state.sequence_progress.snapshot().await.running);
+
+        // New run cannot acquire until force_release_if.
+        assert_eq!(
+            state.slot.try_acquire("sequence").await.unwrap_err(),
+            "busy"
+        );
+        clear_sequence_cancel_if(&state, gen_a).await;
+        assert!(state.slot.force_release_if(gen_a).await);
+
+        // Newer run B's progress must survive a stale clear_if(A).
+        let gen_b = state.slot.try_acquire("sequence").await.unwrap();
+        state
+            .sequence_progress
+            .begin_channels(gen_b, &[(0, "B".into())])
+            .await;
+        assert!(!state.sequence_progress.clear_if(gen_a).await);
+        assert_eq!(state.sequence_progress.snapshot().await.channels[0].name, "B");
+
+        // Full HTTP force-release path also cancels B and frees the slot.
+        let rx_b = install_sequence_cancel(&state, gen_b).await;
+        let app = router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/slot/force-release")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(*rx_b.borrow());
+        assert!(!state.slot.is_busy().await);
+        assert!(!state.sequence_progress.snapshot().await.running);
     }
 
     #[tokio::test]
