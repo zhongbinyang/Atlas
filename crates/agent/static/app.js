@@ -3138,6 +3138,15 @@ function setSeqControlsDisabled(disabled) {
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
     el.disabled = disabled;
   });
+  // Step editor text fields (resources, group titles, etc.) stay in the DOM after render —
+  // must flip disabled here when the run ends (render often happened while seqRunning=true).
+  document
+    .querySelectorAll(
+      '#seq-selected-body .step-resources-input, #seq-selected-body input[type="text"], #seq-selected-body input[type="number"], #seq-selected-body textarea'
+    )
+    .forEach(function (el) {
+      el.disabled = disabled;
+    });
   document.querySelectorAll('#seq-channel-pick .seq-channel-cb').forEach(function (el) {
     el.disabled = disabled;
   });
@@ -5067,6 +5076,41 @@ function multiEnvelopeToProgress(data) {
   };
 }
 
+/** Station overall is often "fail" on abort; detect via per-channel aborted/stopped. */
+function sequenceWasAborted(data) {
+  if (!data) return false;
+  if (String(data.overall || '').toLowerCase() === 'aborted') return true;
+  function stepsHaveAborted(steps) {
+    if (!Array.isArray(steps)) return false;
+    for (let i = 0; i < steps.length; i++) {
+      if (String((steps[i] && steps[i].status) || '').toLowerCase() === 'aborted') {
+        return true;
+      }
+    }
+    return false;
+  }
+  function channelLooksAborted(ch) {
+    if (!ch) return false;
+    const resp = ch.response || ch;
+    const ov = String(
+      (resp && resp.overall != null ? resp.overall : ch.overall) || ''
+    ).toLowerCase();
+    if (ov === 'aborted') return true;
+    if (stepsHaveAborted((resp && resp.steps) || ch.steps)) return true;
+    // Cancel path sets stopped + aborted overall; if overall missing, stopped+aborted step counts.
+    if (resp && resp.stopped && (ov === 'aborted' || stepsHaveAborted(resp.steps))) {
+      return true;
+    }
+    return false;
+  }
+  if (Array.isArray(data.channels)) {
+    for (let i = 0; i < data.channels.length; i++) {
+      if (channelLooksAborted(data.channels[i])) return true;
+    }
+  }
+  return stepsHaveAborted(data.steps);
+}
+
 function handleSequenceResponse(data) {
   const envelope = multiEnvelopeToProgress(data);
   applyMultiChannelProgress(envelope);
@@ -5077,18 +5121,30 @@ function handleSequenceResponse(data) {
   }
   renderSeqResults(data);
   renderSeqSelected();
-  if (data.overall === 'aborted') {
+  if (sequenceWasAborted(data)) {
     showSeqMsg('已中止', false);
     return 'aborted';
   }
-  // Per-channel stopped is inside response; station overall covers multi-channel.
-  const firstResp =
-    Array.isArray(data.channels) && data.channels[0]
-      ? data.channels[0].response || data.channels[0]
-      : data;
-  if (firstResp && firstResp.stopped && !Array.isArray(data.channels)) {
+  // Per-channel fail_policy stop (not abort).
+  if (Array.isArray(data.channels) && data.channels.length) {
+    for (let i = 0; i < data.channels.length; i++) {
+      const resp = data.channels[i].response || data.channels[i];
+      if (resp && resp.stopped) {
+        const at = resp.failed_at != null ? resp.failed_at : 0;
+        const chName =
+          data.channels[i].channel_name ||
+          data.channels[i].name ||
+          'CH' + data.channels[i].channel_index;
+        showSeqMsg(
+          '通道 ' + chName + ' 中止于第 ' + (at + 1) + ' 步 · 总体: ' + (data.overall || '—'),
+          false
+        );
+        return 'stopped';
+      }
+    }
+  } else if (data.stopped) {
     showSeqMsg(
-      '执行中止于第 ' + ((firstResp.failed_at != null ? firstResp.failed_at : 0) + 1) + ' 步',
+      '执行中止于第 ' + ((data.failed_at != null ? data.failed_at : 0) + 1) + ' 步',
       false
     );
     return 'stopped';

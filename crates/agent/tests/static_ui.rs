@@ -193,6 +193,12 @@ fn settings_and_sequence_expose_channels_and_step_resources() {
             || APP.contains("abortBtn.disabled = !seqRunning"),
         "abort must be enabled while sequence is running"
     );
+    assert!(
+        APP.contains("sequenceWasAborted")
+            && APP.contains("showSeqMsg('已中止'")
+            && APP.contains(".step-resources-input"),
+        "abort toast must detect per-channel abort; resource inputs re-enabled after run"
+    );
 }
 
 #[test]
