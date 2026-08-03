@@ -501,6 +501,10 @@ pub fn router(state: AppState) -> Router {
             "/api/agents/{id}/calibration-profiles/{profile_id}/activate",
             post(activate_calibration_profile),
         )
+        .route(
+            "/api/agents/{id}/channels",
+            get(list_agent_channels).put(put_agent_channels),
+        )
         .with_state(state)
 }
 
@@ -950,6 +954,147 @@ fn setting_json_string(setting: &serde_json::Value) -> Result<String, String> {
         setting.clone()
     };
     serde_json::to_string(&v).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentChannelView {
+    pub id: String,
+    pub agent_id: String,
+    pub channel_index: i32,
+    pub name: String,
+    pub enabled: bool,
+    pub overlay: serde_json::Value,
+    pub updated_at: String,
+}
+
+impl From<crate::store::AgentChannel> for AgentChannelView {
+    fn from(c: crate::store::AgentChannel) -> Self {
+        Self {
+            id: c.id,
+            agent_id: c.agent_id,
+            channel_index: c.channel_index,
+            name: c.name,
+            enabled: c.enabled,
+            overlay: c.overlay,
+            updated_at: c.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentChannelUpsertRequest {
+    pub channel_index: i32,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub overlay: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplaceAgentChannelsRequest {
+    pub channels: Vec<AgentChannelUpsertRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentChannelsListResponse {
+    pub channels: Vec<AgentChannelView>,
+}
+
+fn validate_channel_overlay(overlay: &serde_json::Value) -> Option<String> {
+    let obj = match overlay {
+        serde_json::Value::Null => return None,
+        serde_json::Value::Object(map) => map,
+        _ => return Some("overlay must be a JSON object".into()),
+    };
+    for (k, v) in obj {
+        if !v.is_string() {
+            return Some(format!("overlay[{k}] must be a string"));
+        }
+    }
+    None
+}
+
+async fn list_agent_channels(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(resp) = ensure_agent_exists(&s, &id).await {
+        return resp;
+    }
+    match s.store.list_agent_channels(&id).await {
+        Ok(list) => {
+            let channels: Vec<AgentChannelView> =
+                list.into_iter().map(AgentChannelView::from).collect();
+            (StatusCode::OK, Json(AgentChannelsListResponse { channels })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list agent channels: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn put_agent_channels(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReplaceAgentChannelsRequest>,
+) -> impl IntoResponse {
+    if let Err(resp) = ensure_agent_exists(&s, &id).await {
+        return resp;
+    }
+    let mut items = Vec::with_capacity(body.channels.len());
+    for (i, ch) in body.channels.into_iter().enumerate() {
+        let name = ch.name.trim().to_string();
+        if name.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: format!("channels[{i}].name is required"),
+                }),
+            )
+                .into_response();
+        }
+        if let Some(msg) = validate_channel_overlay(&ch.overlay) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: format!("channels[{i}].{msg}"),
+                }),
+            )
+                .into_response();
+        }
+        let overlay = if ch.overlay.is_null() {
+            serde_json::json!({})
+        } else {
+            ch.overlay
+        };
+        items.push(crate::store::AgentChannelUpsert {
+            channel_index: ch.channel_index,
+            name,
+            enabled: ch.enabled,
+            overlay,
+        });
+    }
+    match s.store.replace_agent_channels(&id, items).await {
+        Ok(list) => {
+            let channels: Vec<AgentChannelView> =
+                list.into_iter().map(AgentChannelView::from).collect();
+            (StatusCode::OK, Json(AgentChannelsListResponse { channels })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("replace agent channels: {e}");
+            let msg = e.to_string();
+            if msg.contains("overlay") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody { error: msg }),
+                )
+                    .into_response();
+            }
+            db_error().into_response()
+        }
+    }
 }
 
 async fn ensure_agent_exists(

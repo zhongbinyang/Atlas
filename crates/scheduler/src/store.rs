@@ -85,6 +85,66 @@ impl AgentConfigProfileRow {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentChannel {
+    pub id: String,
+    pub agent_id: String,
+    pub channel_index: i32,
+    pub name: String,
+    pub enabled: bool,
+    pub overlay: serde_json::Value,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentChannelUpsert {
+    pub channel_index: i32,
+    pub name: String,
+    pub enabled: bool,
+    pub overlay: serde_json::Value,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentChannelRow {
+    id: String,
+    agent_id: String,
+    channel_index: i32,
+    name: String,
+    enabled: bool,
+    overlay_json: String,
+    updated_at: String,
+}
+
+impl AgentChannelRow {
+    fn into_channel(self) -> AgentChannel {
+        let overlay = serde_json::from_str(&self.overlay_json)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        AgentChannel {
+            id: self.id,
+            agent_id: self.agent_id,
+            channel_index: self.channel_index,
+            name: self.name,
+            enabled: self.enabled,
+            overlay,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+fn overlay_json_string(overlay: &serde_json::Value) -> Result<String, String> {
+    let obj = match overlay {
+        serde_json::Value::Null => return Ok("{}".into()),
+        serde_json::Value::Object(map) => map,
+        _ => return Err("overlay must be a JSON object".into()),
+    };
+    for (k, v) in obj {
+        if !v.is_string() {
+            return Err(format!("overlay[{k}] must be a string"));
+        }
+    }
+    serde_json::to_string(overlay).map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AgentSettingsRow {
     #[allow(dead_code)]
@@ -867,6 +927,67 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| r.into_profile()))
+    }
+
+    pub async fn list_agent_channels(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AgentChannel>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, AgentChannelRow>(
+            r#"
+            SELECT id, agent_id, channel_index, name, enabled, overlay_json, updated_at
+            FROM agent_channels
+            WHERE agent_id = $1
+            ORDER BY channel_index ASC
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_channel()).collect())
+    }
+
+    pub async fn replace_agent_channels(
+        &self,
+        agent_id: &str,
+        items: Vec<AgentChannelUpsert>,
+    ) -> Result<Vec<AgentChannel>, sqlx::Error> {
+        let mut normalized = Vec::with_capacity(items.len());
+        for item in items {
+            let overlay_json = overlay_json_string(&item.overlay)
+                .map_err(|msg| sqlx::Error::Protocol(msg))?;
+            normalized.push((item, overlay_json));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM agent_channels WHERE agent_id = $1")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let now = Utc::now().to_rfc3339();
+        for (item, overlay_json) in &normalized {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                r#"
+                INSERT INTO agent_channels
+                  (id, agent_id, channel_index, name, enabled, overlay_json, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(&id)
+            .bind(agent_id)
+            .bind(item.channel_index)
+            .bind(&item.name)
+            .bind(item.enabled)
+            .bind(overlay_json)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        self.list_agent_channels(agent_id).await
     }
 
     pub async fn create_template(
@@ -2367,6 +2488,7 @@ impl ScreenshotRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     async fn test_store() -> crate::db::GuardedStore {
         crate::db::GuardedStore::new().await
@@ -3045,5 +3167,43 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
         assert_eq!(reloaded[0].template_source, "group");
         assert_eq!(reloaded[0].template_name, "预处理");
+    }
+
+    async fn seed_agent(store: &crate::db::GuardedStore) -> String {
+        store
+            .upsert_agent("channel-agent", "10.0.0.99", 26631)
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn replace_agent_channels_roundtrip() {
+        let store = test_store().await;
+        let agent_id = seed_agent(&store).await;
+        store
+            .replace_agent_channels(
+                &agent_id,
+                vec![
+                    AgentChannelUpsert {
+                        channel_index: 0,
+                        name: "CH1".into(),
+                        enabled: true,
+                        overlay: json!({"Port": "1"}),
+                    },
+                    AgentChannelUpsert {
+                        channel_index: 1,
+                        name: "CH2".into(),
+                        enabled: true,
+                        overlay: json!({"Port": "2"}),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        let list = store.list_agent_channels(&agent_id).await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].overlay["Port"], "1");
+        assert_eq!(list[1].name, "CH2");
     }
 }

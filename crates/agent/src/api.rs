@@ -146,6 +146,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/settings", get(agent_settings_get).put(agent_settings_put))
         .route("/api/units", get(agent_units_get))
         .route(
+            "/api/channels",
+            get(agent_channels_get).put(agent_channels_put),
+        )
+        .route(
             "/api/device-profiles",
             get(device_profiles_list).post(device_profiles_create),
         )
@@ -680,6 +684,33 @@ async fn agent_settings_put(
     match crate::register::put_agent_settings(&s.http_client, &s.center_url, &agent_id, &body).await
     {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn agent_channels_get(State(s): State<AppState>) -> impl IntoResponse {
+    let agent_id = match resolve_agent_id_for_proxy(&s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::get_agent_channels(&s.http_client, &s.center_url, &agent_id).await {
+        Ok((status, body)) => (status, Json(body)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
+    }
+}
+
+async fn agent_channels_put(
+    State(s): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let agent_id = match resolve_agent_id_for_proxy(&s).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    match crate::register::put_agent_channels(&s.http_client, &s.center_url, &agent_id, &body)
+        .await
+    {
+        Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: e })).into_response(),
     }
 }

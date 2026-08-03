@@ -529,6 +529,48 @@ pub async fn put_vi_run_queue(
     Ok((status, value))
 }
 
+pub async fn get_agent_channels(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/agents/{}/channels",
+        center_url.trim_end_matches('/'),
+        agent_id
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn put_agent_channels(
+    client: &reqwest::Client,
+    center_url: &str,
+    agent_id: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/agents/{}/channels",
+        center_url.trim_end_matches('/'),
+        agent_id
+    );
+    let resp = client
+        .put(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
 pub async fn list_sequence_templates(
     client: &reqwest::Client,
     center_url: &str,
