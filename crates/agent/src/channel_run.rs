@@ -139,6 +139,8 @@ where
 
     let mut handles = Vec::with_capacity(channels.len());
     for ch in channels {
+        let channel_index = ch.channel_index;
+        let channel_name = ch.name.clone();
         let items = items.clone();
         let base_vars = base_vars.clone();
         let locks = locks.clone();
@@ -147,46 +149,52 @@ where
         let sn = sn_opt.clone();
         let work_order = wo_opt.clone();
         let run_one = run_one.clone();
-        handles.push(tokio::spawn(async move {
-            let vars = apply_channel_overlay(&base_vars, ch.channel_index, &ch.name, &ch.overlay);
-            let vars_for_step = vars.clone();
-            let opts = SequenceRunOpts {
-                sn,
-                work_order,
-                vars,
-                progress: Some(progress),
-                progress_channel: Some((ch.channel_index, ch.name.clone())),
-                progress_generation: run_generation,
-                resource_locks: Some(locks),
-                resource_owner: format!("ch-{}", ch.channel_index),
-                resource_timeout: timeout,
-                cancel: Some(cancel),
-            };
-            let response = run_sequence_from_with_opts(&items, 0, opts, Vec::new(), move |item| {
-                let run_one = run_one.clone();
-                let vars_for_step = vars_for_step.clone();
-                let item = item.clone();
-                async move { run_one(&item, &vars_for_step).await }
-            })
-            .await;
-            ChannelSequenceResponse {
-                channel_index: ch.channel_index,
-                channel_name: ch.name,
-                run_generation,
-                response,
-            }
-        }));
+        handles.push((
+            channel_index,
+            channel_name,
+            tokio::spawn(async move {
+                let vars =
+                    apply_channel_overlay(&base_vars, ch.channel_index, &ch.name, &ch.overlay);
+                let vars_for_step = vars.clone();
+                let opts = SequenceRunOpts {
+                    sn,
+                    work_order,
+                    vars,
+                    progress: Some(progress),
+                    progress_channel: Some((ch.channel_index, ch.name.clone())),
+                    progress_generation: run_generation,
+                    resource_locks: Some(locks),
+                    resource_owner: format!("ch-{}", ch.channel_index),
+                    resource_timeout: timeout,
+                    cancel: Some(cancel),
+                };
+                let response =
+                    run_sequence_from_with_opts(&items, 0, opts, Vec::new(), move |item| {
+                        let run_one = run_one.clone();
+                        let vars_for_step = vars_for_step.clone();
+                        let item = item.clone();
+                        async move { run_one(&item, &vars_for_step).await }
+                    })
+                    .await;
+                ChannelSequenceResponse {
+                    channel_index: ch.channel_index,
+                    channel_name: ch.name,
+                    run_generation,
+                    response,
+                }
+            }),
+        ));
     }
 
     let mut channel_results = Vec::with_capacity(handles.len());
-    for (i, h) in handles.into_iter().enumerate() {
+    for (channel_index, channel_name, h) in handles {
         match h.await {
             Ok(r) => channel_results.push(r),
             Err(join_err) => {
                 tracing::error!(error = %join_err, "channel worker panicked");
                 channel_results.push(ChannelSequenceResponse {
-                    channel_index: i,
-                    channel_name: format!("ch-{i}"),
+                    channel_index,
+                    channel_name,
                     run_generation,
                     response: SequenceResponse {
                         stopped: true,
@@ -457,6 +465,28 @@ mod tests {
         let snapshot = progress.snapshot().await;
         assert_eq!(snapshot.channels.len(), 2);
         assert!(snapshot.channels.iter().all(|channel| !channel.running));
+    }
+
+    #[tokio::test]
+    async fn panicked_nonzero_channel_keeps_its_response_and_finishes_progress() {
+        let progress = SequenceProgressSlot::new();
+        let req = request_for_channel(2, 42, progress.clone(), ResourceLockManager::new());
+
+        let response = run_multi_channel_with(req, |_item, _vars| async move {
+            panic!("worker panic");
+        })
+        .await;
+
+        assert_eq!(response.channels.len(), 1);
+        assert_eq!(response.channels[0].channel_index, 2);
+        assert_eq!(response.channels[0].channel_name, "CH2");
+        assert_eq!(response.channels[0].run_generation, 42);
+        assert_eq!(response.channels[0].response.overall, "error");
+
+        let snapshot = progress.snapshot().await;
+        assert_eq!(snapshot.channels.len(), 1);
+        assert_eq!(snapshot.channels[0].channel_index, 2);
+        assert!(!snapshot.channels[0].running);
     }
 
     fn request_for_channel(
