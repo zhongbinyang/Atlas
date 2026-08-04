@@ -17,7 +17,9 @@ const INDEX_SOURCE = fs.readFileSync(
 
 function functionSource(name) {
   const marker = 'function ' + name + '(';
-  const start = APP_SOURCE.indexOf(marker);
+  const markerStart = APP_SOURCE.indexOf(marker);
+  const asyncStart = APP_SOURCE.lastIndexOf('async ', markerStart);
+  const start = asyncStart >= 0 && asyncStart + 6 === markerStart ? asyncStart : markerStart;
   assert.notEqual(start, -1, 'missing ' + name + ' in app.js');
   const bodyStart = APP_SOURCE.indexOf('{', start);
   let depth = 0;
@@ -140,6 +142,159 @@ test('workbench text synchronization only assigns when visible text changes', ()
   assert.equal(value, '已变化');
 });
 
+test('sequence result labels are consistent Chinese operator statuses', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('formatSequenceOverall'), context);
+
+  assert.deepEqual(
+    ['pass', 'ok', 'fail', 'error', 'aborted', 'running', 'waiting_resource', ''].map(
+      context.formatSequenceOverall
+    ),
+    ['通过', '通过', '失败', '错误', '已中止', '执行中', '等待资源', '待执行']
+  );
+});
+
+test('first sequence issue identifies the earliest abnormal channel step', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('findFirstSequenceIssue'), context);
+
+  assert.equal(
+    JSON.stringify(context.findFirstSequenceIssue([
+      {
+        channel_index: 0,
+        steps: [
+          { position: 0, status: 'pass' },
+          { position: 1, status: 'skipped' },
+        ],
+      },
+      {
+        channel_index: 1,
+        steps: [
+          { position: 0, status: 'pass' },
+          { position: 3, status: 'error' },
+          { position: 4, status: 'fail' },
+        ],
+      },
+    ])),
+    JSON.stringify({ channel_index: 1, position: 3 })
+  );
+  assert.equal(
+    context.findFirstSequenceIssue([
+      { channel_index: 0, steps: [{ position: 0, status: 'ok' }] },
+    ]),
+    null
+  );
+});
+
+test('sequence request failures leave running state on busy and network errors', async () => {
+  for (const scenario of ['busy', 'network']) {
+    let failureStates = 0;
+    const results = { innerHTML: '' };
+    const context = {
+      seqRunning: false,
+      seqSelected: [{}],
+      seqActiveTemplateId: null,
+      selectedChannelIndexesForRun() { return null; },
+      setSeqControlsDisabled() {},
+      clearSequenceResultsUi() {},
+      document: {
+        getElementById(id) {
+          assert.equal(id, 'seq-results');
+          return results;
+        },
+      },
+      updateSeqOverall() {},
+      showSeqMsg() {},
+      startSequenceProgressPoll() {},
+      stopSequenceProgressPoll() {},
+      formatBusyConflictMessage() { return '机台忙碌'; },
+      setSeqRequestFailureState() { failureStates += 1; },
+      renderSeqChannelPick() {},
+      renderSeqRegistered() {},
+      fetch: scenario === 'busy'
+        ? async () => ({
+            ok: false,
+            status: 409,
+            async json() { return { can_force_release: false }; },
+          })
+        : async () => { throw new Error('offline'); },
+    };
+    vm.createContext(context);
+    vm.runInContext(functionSource('runSequence'), context);
+
+    await context.runSequence();
+
+    assert.equal(failureStates, 1, scenario + ' must replace the running summary');
+  }
+});
+
+test('stale sequence progress response is ignored after poll generation changes', async () => {
+  let intervalCallback = null;
+  let resolveJson = null;
+  let applied = 0;
+  const context = {
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
+    stopSequenceProgressPoll() {
+      context.seqProgressGeneration += 1;
+    },
+    setInterval(callback) {
+      intervalCallback = callback;
+      return 42;
+    },
+    async fetch() {
+      return {
+        ok: true,
+        json() {
+          return new Promise((resolve) => { resolveJson = resolve; });
+        },
+      };
+    },
+    applySequenceProgress() { applied += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+
+  context.startSequenceProgressPoll();
+  const pending = intervalCallback();
+  while (!resolveJson) await Promise.resolve();
+  context.seqProgressGeneration += 1;
+  resolveJson({ running: true });
+  await pending;
+
+  assert.equal(applied, 0);
+});
+
+test('failure report is visible before render performs focus scrolling', () => {
+  const report = { hidden: true };
+  const reportOpen = { hidden: true };
+  let hiddenWhenRendered = null;
+  const context = {
+    seqChannelProgress: [{ channel_index: 1, steps: [{ position: 3, status: 'fail' }] }],
+    seqReportFocusChannelIndex: null,
+    seqReportFocusPosition: null,
+    document: {
+      getElementById(id) {
+        if (id === 'seq-run-report') return report;
+        if (id === 'seq-run-report-open') return reportOpen;
+        return null;
+      },
+    },
+    findFirstSequenceIssue() { return { channel_index: 1, position: 3 }; },
+    renderSeqRunReport() { hiddenWhenRendered = report.hidden; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('setSeqReportVisibilityForResult'), context);
+
+  context.setSeqReportVisibilityForResult({ overall: 'fail' });
+
+  assert.equal(hiddenWhenRendered, false);
+  assert.equal(context.seqReportFocusChannelIndex, 1);
+  assert.equal(context.seqReportFocusPosition, 3);
+});
+
 test('VI status copy distinguishes not run, run awaiting Name, and ready to register', () => {
   const context = {};
   vm.createContext(context);
@@ -241,6 +396,9 @@ test('rendered scalar and structured parameters have standard and accessible nam
     },
     escapeHtml(value) {
       return String(value == null ? '' : value);
+    },
+    attachVarPickersIn(root) {
+      assert.equal(root, tbody);
     },
   };
   vm.createContext(context);

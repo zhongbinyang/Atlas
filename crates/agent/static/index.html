@@ -699,7 +699,17 @@
           <button type="button" id="seq-goto-edit-btn" class="btn-sm">← 去编排</button>
         </div>
 
-        <div class="seq-run-summary muted-hint" id="seq-run-queue-summary">当前队列：—</div>
+        <section id="seq-run-status-card" class="seq-run-status-card" data-state="idle" aria-live="polite">
+          <div class="seq-run-status-main">
+            <span class="seq-run-status-kicker">运行状态</span>
+            <strong id="seq-run-status-label" class="seq-run-status-label">待执行</strong>
+          </div>
+          <div class="seq-run-status-copy">
+            <div class="seq-run-summary" id="seq-run-queue-summary">当前队列：—</div>
+            <div id="seq-run-meta" class="seq-run-meta muted-hint">通道：—</div>
+          </div>
+          <button type="button" id="seq-run-report-open" class="btn-sm" hidden>查看完整报告</button>
+        </section>
         <p id="seq-run-msg" class="msg" hidden></p>
 
         <section id="seq-results-section" class="seq-results-section">
@@ -711,7 +721,7 @@
               <p class="muted-hint seq-run-report-lead">按通道查看完整步骤结果；点击矩阵单元格可跳转到对应通道与步骤。</p>
               <button type="button" id="seq-run-report-close" class="btn-sm">收起</button>
             </div>
-            <div id="seq-run-report-tabs" class="seq-run-report-tabs" role="tablist" aria-label="通道报告"></div>
+            <div id="seq-run-report-tabs" class="seq-run-report-tabs" role="group" aria-label="通道报告"></div>
             <div id="seq-run-report-body" class="seq-run-report-body"></div>
             <p id="seq-run-report-loghint" class="muted-hint seq-run-report-loghint"></p>
           </section>
@@ -719,12 +729,14 @@
         </section>
       </section>
       <div class="seq-run-bar seq-run-bar-fixed">
-        <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
-        <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
-        <div id="seq-channel-pick" class="seq-channel-pick" aria-label="选择运行通道"></div>
-        <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
-        <button id="seq-abort-btn" type="button" disabled>中止</button>
-        <span id="seq-overall"></span>
+        <div class="seq-run-bar-selection">
+          <div id="seq-channel-pick" class="seq-channel-pick" aria-label="选择运行通道"></div>
+        </div>
+        <div class="seq-run-bar-actions">
+          <span id="seq-overall" aria-live="polite"></span>
+          <button id="seq-run-btn" type="button" class="btn-primary">开始运行</button>
+          <button id="seq-abort-btn" type="button" disabled>中止</button>
+        </div>
       </div>
     </div>
   </main>

@@ -2,14 +2,6 @@ const STYLE: &str = include_str!("../static/style.css");
 const INDEX: &str = include_str!("../static/index.html");
 const APP: &str = include_str!("../static/app.js");
 
-fn rule_body<'a>(rules: &'a str, selector: &str) -> &'a str {
-    rules
-        .split_once(selector)
-        .and_then(|(_, after_selector)| after_selector.split_once('}'))
-        .map(|(body, _)| body)
-        .unwrap_or_else(|| panic!("missing {selector} rule"))
-}
-
 fn has_exact_selector(rules: &str, selector: &str) -> bool {
     let expected = format!("{selector} {{");
     rules.lines().any(|line| line.trim() == expected)
@@ -48,12 +40,45 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         "the run bar must return to document flow on small screens"
     );
     assert!(
-        rule_body(mobile_rules, ".seq-run-bar input[type=\"text\"] {").contains("min-width: 0;"),
-        "SN and work-order fields must be able to shrink on small screens"
+        mobile_rules
+            .contains(".seq-run-bar-selection,\n  .seq-run-bar-actions {\n    flex: 1 1 100%;"),
+        "the grouped run controls must stack safely on small screens"
     );
     assert!(
         mobile_rules.contains("#seq-overall {\n    margin-left: 0;\n    flex: 1 1 100%;"),
         "the overall status must wrap below controls on small screens"
+    );
+}
+
+#[test]
+fn sequence_run_page_uses_operator_first_layout() {
+    assert!(
+        !INDEX.contains("id=\"seq-sn\"")
+            && !INDEX.contains("id=\"seq-work-order\"")
+            && !APP.contains("payload.sn")
+            && !APP.contains("payload.work_order"),
+        "the current run page must not expose or submit SN/work-order fields"
+    );
+    assert!(
+        INDEX.contains("id=\"seq-run-status-card\"")
+            && INDEX.contains("id=\"seq-run-status-label\"")
+            && INDEX.contains("id=\"seq-run-meta\"")
+            && INDEX.contains("id=\"seq-run-report-open\""),
+        "the run page needs a compact status summary with an explicit report action"
+    );
+    assert!(
+        INDEX.contains("class=\"seq-run-bar-selection\"")
+            && INDEX.contains("class=\"seq-run-bar-actions\"")
+            && STYLE.contains(".seq-progress-table th:last-child")
+            && STYLE.contains(".seq-run-bar-selection")
+            && STYLE.contains(".seq-run-bar-actions"),
+        "the matrix edges and fixed run bar must use the grouped operator layout"
+    );
+    assert!(
+        APP.contains("formatSequenceOverall")
+            && APP.contains("findFirstSequenceIssue")
+            && APP.contains("setSeqReportVisibilityForResult"),
+        "sequence status and failure-first report visibility must be explicit helpers"
     );
 }
 

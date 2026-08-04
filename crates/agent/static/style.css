@@ -231,7 +231,61 @@ body {
 }
 
 .seq-run-summary {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.seq-run-status-card {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(12rem, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem 1.15rem;
   margin: 0 0 0.75rem;
+  padding: 0.8rem 1rem;
+  border-left: 4px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 86%, var(--panel));
+}
+
+.seq-run-status-card[data-state="pass"] {
+  border-left-color: var(--ok);
+}
+
+.seq-run-status-card[data-state="fail"] {
+  border-left-color: var(--err);
+}
+
+.seq-run-status-card[data-state="running"] {
+  border-left-color: #b54708;
+}
+
+.seq-run-status-main,
+.seq-run-status-copy {
+  min-width: 0;
+}
+
+.seq-run-status-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.seq-run-status-kicker {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.seq-run-status-label {
+  font-size: 1.25rem;
+  line-height: 1.15;
+}
+
+.seq-run-meta {
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
 }
 
 .seq-panel h3 {
@@ -380,20 +434,25 @@ body {
   box-shadow: 0 -6px 18px rgba(21, 32, 43, 0.12);
 }
 
-.seq-run-bar label {
+.seq-run-bar-selection,
+.seq-run-bar-actions {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
+  min-width: 0;
 }
 
-.seq-run-bar input[type="text"] {
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  min-width: 10rem;
+.seq-run-bar-selection {
+  flex: 1 1 24rem;
+  max-height: 3.5rem;
+  overflow: auto;
+}
+
+.seq-run-bar-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-left: auto;
 }
 
 .seq-channel-pick {
@@ -455,6 +514,27 @@ body {
   position: sticky;
   left: 0;
   background: var(--panel);
+  z-index: 2;
+}
+
+.seq-progress-table th:last-child,
+.seq-progress-table td:last-child {
+  position: sticky;
+  right: 0;
+  background: var(--panel);
+  z-index: 2;
+  box-shadow: -1px 0 0 var(--border);
+}
+
+.seq-progress-table thead th {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seq-progress-table thead th:first-child,
+.seq-progress-table thead th:last-child {
+  z-index: 3;
 }
 
 .seq-matrix-pass {
@@ -489,11 +569,9 @@ body {
 }
 
 .seq-run-report {
-  margin: 1rem 0 5.5rem;
-  padding: 0.85rem 1rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
+  margin: 0.75rem 0 5.5rem;
+  padding: 0.85rem 0 0;
+  border-top: 1px solid var(--border);
 }
 
 .seq-run-report-header {
@@ -544,6 +622,33 @@ body {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
+}
+
+.seq-run-report-table th:nth-child(1),
+.seq-run-report-table td:nth-child(1) {
+  width: 3rem;
+}
+
+.seq-run-report-table th:nth-child(2),
+.seq-run-report-table td:nth-child(2) {
+  width: 14rem;
+}
+
+.seq-run-report-table th:nth-child(3),
+.seq-run-report-table td:nth-child(3) {
+  width: 5.5rem;
+}
+
+.seq-run-report-table th:nth-child(5),
+.seq-run-report-table td:nth-child(5),
+.seq-run-report-table th:nth-child(6),
+.seq-run-report-table td:nth-child(6) {
+  width: 6.5rem;
+}
+
+.seq-run-report-table th:nth-child(7),
+.seq-run-report-table td:nth-child(7) {
+  width: 4.5rem;
 }
 
 .seq-run-report-table th,
@@ -1408,14 +1513,28 @@ th {
     box-shadow: none;
   }
 
-  .seq-run-bar label {
-    flex: 1 1 12rem;
-    min-width: 0;
+  .seq-run-status-card {
+    grid-template-columns: 1fr auto;
   }
 
-  .seq-run-bar input[type="text"] {
-    flex: 1 1 8rem;
-    min-width: 0;
+  .seq-run-status-copy {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .seq-run-bar-selection,
+  .seq-run-bar-actions {
+    flex: 1 1 100%;
+  }
+
+  .seq-run-bar-selection {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .seq-run-bar-actions {
+    justify-content: flex-start;
+    margin-left: 0;
   }
 
   #seq-overall {

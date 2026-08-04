@@ -1775,6 +1775,7 @@ function renderSeqChannelPick() {
   if (!enabled.length) {
     host.innerHTML = '<span class="muted-hint">通道: CH0（合成）</span>';
     seqSelectedChannelIndexes = null;
+    syncSeqRunSummary();
     return;
   }
   const label = document.createElement('span');
@@ -1806,11 +1807,13 @@ function renderSeqChannelPick() {
         picked.push(parseInt(el.value, 10));
       });
       seqSelectedChannelIndexes = picked.length ? picked : [];
+      syncSeqRunSummary();
     });
     wrap.appendChild(cb);
     wrap.appendChild(document.createTextNode(' ' + (ch.name || ('CH' + ch.channel_index))));
     host.appendChild(wrap);
   });
+  syncSeqRunSummary();
 }
 
 function selectedChannelIndexesForRun() {
@@ -3056,6 +3059,7 @@ let seqSelected = [];
 let seqRunning = false;
 let seqStepResults = {};
 let seqProgressPollTimer = null;
+let seqProgressGeneration = 0;
 let seqDragIndex = null;
 let seqFocusIndex = null;
 let seqCheckedIndexes = {};
@@ -3087,11 +3091,48 @@ function updateSeqRunQueueSummary() {
   }
   if (!seqSelected.length) {
     el.textContent = '当前队列：空（请先到「序列编排」添加步骤）';
+    syncSeqRunSummary();
     return;
   }
   const bind = document.getElementById('seq-template-bind');
   const bindText = bind && bind.textContent ? ' · ' + bind.textContent : '';
   el.textContent = '当前队列：' + steps + ' 步' + bindText;
+  syncSeqRunSummary();
+}
+
+function syncSeqRunSummary(data) {
+  const meta = document.getElementById('seq-run-meta');
+  if (meta) {
+    const enabled = enabledAgentChannels();
+    if (!enabled.length) {
+      meta.textContent = '通道：CH0（合成）';
+    } else {
+      const boxes = document.querySelectorAll('#seq-channel-pick .seq-channel-cb');
+      let picked = 0;
+      boxes.forEach(function (cb) {
+        if (cb.checked) picked += 1;
+      });
+      meta.textContent = '通道：已选 ' + picked + ' / ' + enabled.length;
+    }
+  }
+  if (data !== undefined) {
+    const overall = data && data.overall ? data.overall : '';
+    const label = document.getElementById('seq-run-status-label');
+    const card = document.getElementById('seq-run-status-card');
+    const normalized = String(overall || '').toLowerCase();
+    if (label) label.textContent = formatSequenceOverall(normalized);
+    if (card) {
+      const state =
+        normalized === 'pass' || normalized === 'ok'
+          ? 'pass'
+          : normalized === 'running' || normalized === 'waiting_resource'
+            ? 'running'
+            : normalized === 'fail' || normalized === 'failed' || normalized === 'error' || normalized === 'aborted'
+              ? 'fail'
+              : 'idle';
+      card.setAttribute('data-state', state);
+    }
+  }
 }
 
 function showPage(page) {
@@ -3163,13 +3204,9 @@ function setSeqControlsDisabled(disabled) {
   seqRunning = disabled;
   const runBtn = document.getElementById('seq-run-btn');
   const abortBtn = document.getElementById('seq-abort-btn');
-  const snEl = document.getElementById('seq-sn');
-  const woEl = document.getElementById('seq-work-order');
   if (runBtn) runBtn.disabled = disabled || !seqSelected.length;
   // Abort is usable while a sequence POST is in flight (shared cancel watch).
   if (abortBtn) abortBtn.disabled = !disabled;
-  if (snEl) snEl.disabled = disabled;
-  if (woEl) woEl.disabled = disabled;
   const insertGroupBtn = document.getElementById('seq-insert-group');
   if (insertGroupBtn) insertGroupBtn.disabled = disabled;
   updateGroupSelectedBtn();
@@ -3213,12 +3250,51 @@ function formatStepStatus(status) {
   const map = {
     pass: '通过',
     fail: '失败',
-    ok: 'OK',
+    failed: '失败',
+    ok: '通过',
     error: '错误',
     skipped: '跳过',
     running: '执行中',
+    waiting_resource: '等待资源',
+    aborted: '已中止',
   };
   return map[status] || status || '—';
+}
+
+function formatSequenceOverall(overall) {
+  const normalized = String(overall || '').toLowerCase();
+  const map = {
+    pass: '通过',
+    ok: '通过',
+    fail: '失败',
+    failed: '失败',
+    error: '错误',
+    aborted: '已中止',
+    running: '执行中',
+    waiting_resource: '等待资源',
+    stopped: '失败',
+  };
+  return map[normalized] || (normalized ? String(overall) : '待执行');
+}
+
+function findFirstSequenceIssue(channels) {
+  if (!Array.isArray(channels)) return null;
+  const issueStatuses = { fail: true, failed: true, error: true, aborted: true };
+  for (let ci = 0; ci < channels.length; ci++) {
+    const channel = channels[ci] || {};
+    const steps = Array.isArray(channel.steps) ? channel.steps : [];
+    for (let si = 0; si < steps.length; si++) {
+      const step = steps[si] || {};
+      const status = String(step.status || '').toLowerCase();
+      if (issueStatuses[status]) {
+        return {
+          channel_index: channel.channel_index,
+          position: step.position != null ? step.position : si,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function formatMeasuredSummary(measured) {
@@ -3349,17 +3425,20 @@ function syncSpecRowOpUi(tr) {
 
 function updateSeqOverall(data) {
   const el = document.getElementById('seq-overall');
-  if (!el) return;
   const parts = [];
-  if (data && data.overall) parts.push('总体: ' + data.overall);
-  if (data && data.sn) parts.push('SN: ' + data.sn);
-  el.textContent = parts.join(' · ');
-  el.classList.remove('seq-overall-pass', 'seq-overall-fail');
+  if (data && data.overall) parts.push('总体：' + formatSequenceOverall(data.overall));
+  if (el) el.textContent = parts.join(' · ');
+  if (el) el.classList.remove('seq-overall-pass', 'seq-overall-fail');
   const overall = data && data.overall ? String(data.overall).toLowerCase() : '';
-  if (overall === 'pass' || overall === 'ok') el.classList.add('seq-overall-pass');
-  else if (overall === 'fail' || overall === 'failed' || overall === 'aborted' || overall === 'error') {
+  if (el && (overall === 'pass' || overall === 'ok')) el.classList.add('seq-overall-pass');
+  else if (el && (overall === 'fail' || overall === 'failed' || overall === 'aborted' || overall === 'error')) {
     el.classList.add('seq-overall-fail');
   }
+  syncSeqRunSummary(data || {});
+}
+
+function setSeqRequestFailureState() {
+  updateSeqOverall({ overall: 'error' });
 }
 
 function applyStepResults(steps) {
@@ -3470,7 +3549,8 @@ function renderSeqProgressMatrix() {
   stepCols.forEach(function (col) {
     const th = document.createElement('th');
     th.title = col.name;
-    th.textContent = col.name;
+    const number = col.position != null ? String(col.position + 1).padStart(2, '0') : '—';
+    th.textContent = number + ' ' + col.name;
     headRow.appendChild(th);
   });
   headRow.appendChild(document.createElement('th')).textContent = '总体';
@@ -3513,7 +3593,7 @@ function renderSeqProgressMatrix() {
           ? 'seq-matrix-pass'
           : status === 'fail' || status === 'failed' || status === 'error' || status === 'aborted'
             ? 'seq-matrix-fail'
-            : status === 'running'
+            : status === 'running' || status === 'waiting_resource'
               ? 'seq-matrix-running'
               : '';
       if (cls) td.className = cls;
@@ -3534,7 +3614,7 @@ function renderSeqProgressMatrix() {
     });
     const overallTd = document.createElement('td');
     overallTd.className = 'mono';
-    overallTd.textContent = ch.overall != null ? String(ch.overall) : '—';
+    overallTd.textContent = ch.overall != null ? formatSequenceOverall(ch.overall) : '—';
     tr.appendChild(overallTd);
     tbody.appendChild(tr);
   });
@@ -3560,11 +3640,41 @@ function clearSequenceResultsUi() {
   }
   const report = document.getElementById('seq-run-report');
   if (report) report.hidden = true;
+  const reportOpen = document.getElementById('seq-run-report-open');
+  if (reportOpen) reportOpen.hidden = true;
   const tabs = document.getElementById('seq-run-report-tabs');
   if (tabs) tabs.innerHTML = '';
   const body = document.getElementById('seq-run-report-body');
   if (body) body.innerHTML = '';
   renderSeqSelected();
+}
+
+function setSeqReportVisibilityForResult(data) {
+  const report = document.getElementById('seq-run-report');
+  const reportOpen = document.getElementById('seq-run-report-open');
+  if (!report || !seqChannelProgress.length) {
+    if (report) report.hidden = true;
+    if (reportOpen) reportOpen.hidden = true;
+    return;
+  }
+  if (reportOpen) reportOpen.hidden = false;
+  const issue = findFirstSequenceIssue(seqChannelProgress);
+  const overall = String((data && data.overall) || '').toLowerCase();
+  const abnormalOverall =
+    overall === 'fail' || overall === 'failed' || overall === 'error' || overall === 'aborted';
+  if (!issue && !abnormalOverall) {
+    report.hidden = true;
+    return;
+  }
+  if (issue) {
+    seqReportFocusChannelIndex = issue.channel_index;
+    seqReportFocusPosition = issue.position;
+  } else {
+    seqReportFocusChannelIndex = seqChannelProgress[0].channel_index;
+    seqReportFocusPosition = null;
+  }
+  report.hidden = false;
+  renderSeqRunReport();
 }
 
 function openSeqRunReport(channelIndex, position) {
@@ -3600,7 +3710,6 @@ function renderSeqRunReport() {
     if (logHint) logHint.textContent = '';
     return;
   }
-  report.hidden = false;
   if (
     seqReportFocusChannelIndex == null ||
     !findReportChannel(seqReportFocusChannelIndex)
@@ -3614,12 +3723,7 @@ function renderSeqRunReport() {
     btn.className =
       'seq-run-report-tab' +
       (ch.channel_index === seqReportFocusChannelIndex ? ' active' : '');
-    btn.setAttribute('role', 'tab');
-    btn.setAttribute(
-      'aria-selected',
-      ch.channel_index === seqReportFocusChannelIndex ? 'true' : 'false'
-    );
-    const ov = ch.overall != null ? String(ch.overall) : '—';
+    const ov = ch.overall != null ? formatSequenceOverall(ch.overall) : '—';
     btn.textContent =
       (ch.name || 'CH' + ch.channel_index) + ' · ' + ov;
     btn.addEventListener('click', function () {
@@ -3639,7 +3743,7 @@ function renderSeqRunReport() {
     '通道 ' +
     (ch.name || 'CH' + ch.channel_index) +
     ' · 总体 ' +
-    (ch.overall != null ? ch.overall : '—') +
+    (ch.overall != null ? formatSequenceOverall(ch.overall) : '—') +
     (ch.running && ch.current_name
       ? ' · 当前: ' + ch.current_name
       : '');
@@ -3754,11 +3858,13 @@ function renderSeqRunReport() {
 
 function startSequenceProgressPoll() {
   stopSequenceProgressPoll();
+  const generation = seqProgressGeneration;
   seqProgressPollTimer = setInterval(async function () {
     try {
       const resp = await fetch('/api/sequence/run/progress');
       if (!resp.ok) return;
       const prog = await resp.json();
+      if (generation !== seqProgressGeneration) return;
       applySequenceProgress(prog);
     } catch (e) {
       /* ignore transient poll errors */
@@ -3767,6 +3873,7 @@ function startSequenceProgressPoll() {
 }
 
 function stopSequenceProgressPoll() {
+  seqProgressGeneration += 1;
   if (seqProgressPollTimer != null) {
     clearInterval(seqProgressPollTimer);
     seqProgressPollTimer = null;
@@ -5346,11 +5453,8 @@ function handleSequenceResponse(data) {
   const envelope = multiEnvelopeToProgress(data);
   applyMultiChannelProgress(envelope);
   updateSeqOverall(data);
-  if (data.sn) {
-    const snEl = document.getElementById('seq-sn');
-    if (snEl) snEl.value = data.sn;
-  }
   renderSeqResults(data);
+  setSeqReportVisibilityForResult(data);
   renderSeqSelected();
   if (sequenceWasAborted(data)) {
     showSeqMsg('已中止', false);
@@ -5367,7 +5471,12 @@ function handleSequenceResponse(data) {
           data.channels[i].name ||
           'CH' + data.channels[i].channel_index;
         showSeqMsg(
-          '通道 ' + chName + ' 中止于第 ' + (at + 1) + ' 步 · 总体: ' + (data.overall || '—'),
+          '通道 ' +
+            chName +
+            ' 中止于第 ' +
+            (at + 1) +
+            ' 步 · 总体：' +
+            formatSequenceOverall(data.overall),
           false
         );
         return 'stopped';
@@ -5382,9 +5491,17 @@ function handleSequenceResponse(data) {
   }
   if (data.overall === 'pass' || data.overall === 'ok') {
     showSeqMsg('全部执行成功', true);
+    const runMsg = document.getElementById('seq-run-msg');
+    if (runMsg) {
+      runMsg.hidden = true;
+      runMsg.textContent = '';
+    }
     return 'done';
   }
-  showSeqMsg('执行完成 · 总体: ' + (data.overall || '—'), data.overall === 'pass');
+  showSeqMsg(
+    '执行完成 · 总体：' + formatSequenceOverall(data.overall),
+    data.overall === 'pass'
+  );
   return 'done';
 }
 
@@ -5449,12 +5566,9 @@ async function runSequence() {
   setSeqControlsDisabled(true);
   clearSequenceResultsUi();
   document.getElementById('seq-results').innerHTML = '';
+  updateSeqOverall({ overall: 'running' });
   showSeqMsg('执行中…', true);
-  const snRaw = document.getElementById('seq-sn').value.trim();
-  const woRaw = document.getElementById('seq-work-order').value.trim();
   const payload = {};
-  if (snRaw) payload.sn = snRaw;
-  if (woRaw) payload.work_order = woRaw;
   if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
   if (Array.isArray(channel_indexes)) payload.channel_indexes = channel_indexes;
   startSequenceProgressPoll();
@@ -5466,6 +5580,7 @@ async function runSequence() {
     });
     const data = await resp.json();
     if (!resp.ok) {
+      setSeqRequestFailureState();
       if (resp.status === 409) {
         const tip = formatBusyConflictMessage(data);
         const hint = data.can_force_release ? ' — 可在「机台信息」中强制空闲' : '';
@@ -5478,6 +5593,7 @@ async function runSequence() {
     }
     handleSequenceResponse(data);
   } catch (e) {
+    setSeqRequestFailureState();
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
     stopSequenceProgressPoll();
@@ -6339,6 +6455,19 @@ if (seqRunReportClose) {
   seqRunReportClose.addEventListener('click', function () {
     const report = document.getElementById('seq-run-report');
     if (report) report.hidden = true;
+  });
+}
+const seqRunReportOpen = document.getElementById('seq-run-report-open');
+if (seqRunReportOpen) {
+  seqRunReportOpen.addEventListener('click', function () {
+    openSeqRunReport(
+      seqReportFocusChannelIndex != null
+        ? seqReportFocusChannelIndex
+        : seqChannelProgress.length
+          ? seqChannelProgress[0].channel_index
+          : null,
+      null
+    );
   });
 }
 const seqInsertGroupBtn = document.getElementById('seq-insert-group');
