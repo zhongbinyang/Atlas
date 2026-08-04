@@ -107,7 +107,13 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
             && APP.contains("data-state")
             && APP.contains("已禁用")
             && APP.contains("section.summary.completed")
-            && APP.contains("该组暂无步骤"),
+            && APP.contains("该组暂无步骤")
+            && APP.contains("seq-channel-group-chevron")
+            && APP.contains("chevron.setAttribute('aria-hidden', 'true')")
+            && APP.contains("data-kind")
+            && STYLE.contains(".seq-channel-group[open] > .seq-channel-group-summary .seq-channel-group-chevron")
+            && STYLE.contains(".seq-channel-group[data-kind=\"ungrouped\"]")
+            && STYLE.contains(".seq-channel-group[data-kind=\"result-only\"]"),
         "channel detail must render state-aware grouped sections"
     );
 }

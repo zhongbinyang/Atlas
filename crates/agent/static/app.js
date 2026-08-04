@@ -3444,10 +3444,13 @@ function buildSequenceDetailSections(queue, detailSteps) {
   const stepByPosition = {};
   (detailSteps || []).forEach(function (step) { stepByPosition[step.position] = step; });
   const sections = [];
+  const projectedPositions = {};
+  const groupPositions = {};
   let current = null;
   (queue || []).forEach(function (item, index) {
     const position = item && item.position != null ? item.position : index;
     if (item && item.template_source === 'group') {
+      groupPositions[position] = true;
       current = {
         key: 'group-' + position,
         kind: 'group',
@@ -3464,8 +3467,25 @@ function buildSequenceDetailSections(queue, detailSteps) {
       current = { key: 'ungrouped', kind: 'ungrouped', title: '未分组步骤', enabled: true, collapsed: false, steps: [] };
       sections.push(current);
     }
-    if (stepByPosition[position]) current.steps.push(stepByPosition[position]);
+    if (stepByPosition[position]) {
+      current.steps.push(stepByPosition[position]);
+      projectedPositions[position] = true;
+    }
   });
+  const resultOnlySteps = (detailSteps || []).filter(function (step) {
+    const position = step && step.position;
+    return !projectedPositions[position] && !groupPositions[position];
+  });
+  if (resultOnlySteps.length) {
+    sections.push({
+      key: 'result-only',
+      kind: 'result-only',
+      title: '历史运行结果',
+      enabled: true,
+      collapsed: false,
+      steps: resultOnlySteps,
+    });
+  }
   return sections;
 }
 
@@ -4107,9 +4127,10 @@ function renderSeqChannelDetail() {
   model.expandedPositions = expandedPositions;
   model.sections.forEach(function (section) {
     const group = document.createElement('details');
-    group.className = 'seq-channel-group';
+    group.className = 'seq-channel-group seq-channel-group-kind-' + section.kind;
     group.setAttribute('data-group-key', section.key);
     group.setAttribute('data-state', section.summary.state);
+    group.setAttribute('data-kind', section.kind);
     const hasPreservedOpen = Object.prototype.hasOwnProperty.call(groupOpenByKey, section.key);
     group.open = resolveSequenceGroupOpen(
       section.summary.open,
@@ -4119,9 +4140,15 @@ function renderSeqChannelDetail() {
 
     const summary = document.createElement('summary');
     summary.className = 'seq-channel-group-summary';
+    const chevron = document.createElement('span');
+    chevron.className = 'seq-channel-group-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '›';
     const marker = document.createElement('span');
     marker.className = 'seq-channel-group-marker';
-    marker.textContent = section.kind === 'ungrouped' ? '未分组' : '组';
+    marker.textContent = section.kind === 'group'
+      ? '组'
+      : section.kind === 'result-only' ? '历史' : '未分组';
     const heading = document.createElement('span');
     heading.className = 'seq-channel-group-heading';
     const title = document.createElement('strong');
@@ -4142,6 +4169,7 @@ function renderSeqChannelDetail() {
       ' · 通过 ' + section.summary.passed +
       ' · 失败 ' + section.summary.failed +
       ' · 跳过 ' + section.summary.skipped;
+    summary.appendChild(chevron);
     summary.appendChild(marker);
     summary.appendChild(heading);
     summary.appendChild(groupStatus);

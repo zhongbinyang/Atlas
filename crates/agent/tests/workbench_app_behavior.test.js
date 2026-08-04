@@ -541,6 +541,52 @@ test('channel detail discards a result that collides with a group header positio
   );
 });
 
+test('channel detail keeps unmatched backend results in an ordered fallback section', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+  vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
+
+  const model = context.buildSequenceChannelDetailModel({
+    channel_index: 0,
+    name: 'CH0',
+    steps: [
+      { position: 9, name: 'Old reset', status: 'failed', elapsed_ms: 90, result: { code: 'reset' } },
+      { position: 1, name: 'Unexpected header result', status: 'pass', elapsed_ms: 10 },
+      { position: 7, name: 'Old measure', status: 'pass', elapsed_ms: 70, result: { voltage: 4.9 } },
+      { position: 2, name: 'Current measure', status: 'pass', elapsed_ms: 20 },
+    ],
+  }, [
+    { position: 1, template_source: 'group', name: '校准' },
+    { position: 2, name: 'Current measure' },
+  ]);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(model.sections.map((section) => ({
+      kind: section.kind,
+      title: section.title,
+      positions: section.steps.map((step) => step.position),
+    })))),
+    [
+      { kind: 'group', title: '校准', positions: [2] },
+      { kind: 'result-only', title: '历史运行结果', positions: [7, 9] },
+    ]
+  );
+  const fallback = model.sections[1];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fallback.steps.map((step) => step.elapsedMs))),
+    [70, 90]
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fallback.steps.map((step) => step.result.result))),
+    [{ voltage: 4.9 }, { code: 'reset' }]
+  );
+  assert.equal(model.namedGroupCount, 1);
+});
+
 test('sequence elapsed formatter is stable from milliseconds through hours', () => {
   const context = {};
   vm.createContext(context);
