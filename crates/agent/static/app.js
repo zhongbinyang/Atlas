@@ -106,16 +106,13 @@ function updateMachineBusyActions(data) {
 
 function syncSequenceBusyFromStatus(data) {
   const onSeqPage = isSequencePageVisible();
-  if (!data.busy && seqRunning) {
-    seqRunning = false;
-    setSeqControlsDisabled(false);
-    return;
+  if (data.busy && data.busy_reason === 'sequence') {
+    seqExclusiveBusy = false;
+    if (onSeqPage) refreshSequenceProgress();
+  } else {
+    seqExclusiveBusy = !!data.busy;
   }
-  if (data.busy && data.busy_reason === 'sequence' && !seqRunning && onSeqPage) {
-    seqRunning = true;
-    setSeqControlsDisabled(true);
-    showSeqMsg(data.busy_message || '序列正在执行中…', true);
-  }
+  syncSeqControlsState();
 }
 
 async function forceReleaseSlot() {
@@ -1800,7 +1797,7 @@ function renderSeqChannelPick() {
     cb.className = 'seq-channel-cb';
     cb.value = String(ch.channel_index);
     cb.checked = !!selected[ch.channel_index];
-    cb.disabled = seqRunning;
+    cb.disabled = false;
     cb.addEventListener('change', function () {
       const picked = [];
       host.querySelectorAll('.seq-channel-cb:checked').forEach(function (el) {
@@ -3074,6 +3071,11 @@ syncLvWorkbench();
 let seqRegistered = [];
 let seqSelected = [];
 let seqRunning = false;
+/** Starts and channel aborts in flight, keyed by numeric channel index. */
+let seqPendingChannelStarts = {};
+let seqPendingChannelAborts = {};
+/** A non-sequence operation owns the machine slot and blocks new starts. */
+let seqExclusiveBusy = false;
 let seqStepResults = {};
 let seqProgressPollTimer = null;
 let seqProgressGeneration = 0;
@@ -3180,6 +3182,7 @@ function showPage(page) {
         renderSeqChannelPick();
         renderSeqChannelCards();
         renderSeqChannelDetail();
+        refreshSequenceProgress();
       }
     });
   } else if (page === 'workbench') {
@@ -3217,29 +3220,62 @@ function showSeqMsg(text, ok) {
   });
 }
 
-function setSeqControlsDisabled(disabled) {
-  seqRunning = disabled;
+function isSequenceChannelRunning(channelIndex) {
+  const index = Number(channelIndex);
+  return seqChannelProgress.some(function (channel) {
+    return Number(channel.channel_index) === index && !!channel.running;
+  });
+}
+
+function isSequenceChannelActive(channelIndex) {
+  return isSequenceChannelRunning(channelIndex) || !!seqPendingChannelStarts[Number(channelIndex)];
+}
+
+function anySequenceChannelRunning() {
+  return seqChannelProgress.some(function (channel) { return !!channel.running; });
+}
+
+function anySequenceChannelActivity() {
+  return anySequenceChannelRunning() || Object.keys(seqPendingChannelStarts).length > 0;
+}
+
+function syncSeqControlsState() {
+  const queueEmpty = !sequenceRunQueueItems().length;
+  const anyRunning = anySequenceChannelRunning();
+  const anyActivity = anySequenceChannelActivity();
+  seqRunning = anyActivity;
   const runBtn = document.getElementById('seq-run-btn');
   const abortBtn = document.getElementById('seq-abort-btn');
-  if (runBtn) runBtn.disabled = disabled || !sequenceRunQueueItems().length;
-  document.querySelectorAll('#seq-channel-cards .seq-channel-card-run').forEach(function (button) {
-    button.disabled = disabled || !sequenceRunQueueItems().length;
+  const selected = selectedChannelIndexesForRun();
+  const selectable = Array.isArray(selected) ? selected : enabledAgentChannels().map(function (channel) {
+    return channel.channel_index;
   });
-  // Abort is usable while a sequence POST is in flight (shared cancel watch).
-  if (abortBtn) abortBtn.disabled = !disabled;
+  const hasInactiveSelected = Array.isArray(selected)
+    ? selectable.some(function (index) { return !isSequenceChannelActive(index); })
+    : !selectable.length || selectable.some(function (index) { return !isSequenceChannelActive(index); });
+  if (runBtn) runBtn.disabled = queueEmpty || seqExclusiveBusy || !hasInactiveSelected;
+  document.querySelectorAll('#seq-channel-cards .seq-channel-card-run').forEach(function (button) {
+    const index = Number(button.closest('.seq-channel-card').getAttribute('data-channel-index'));
+    button.disabled = queueEmpty || seqExclusiveBusy || isSequenceChannelActive(index);
+  });
+  document.querySelectorAll('#seq-channel-cards .seq-channel-card-abort').forEach(function (button) {
+    const index = Number(button.closest('.seq-channel-card').getAttribute('data-channel-index'));
+    button.disabled = !isSequenceChannelRunning(index) || !!seqPendingChannelAborts[index];
+  });
+  if (abortBtn) abortBtn.disabled = !anyRunning;
   const insertGroupBtn = document.getElementById('seq-insert-group');
-  if (insertGroupBtn) insertGroupBtn.disabled = disabled;
+  if (insertGroupBtn) insertGroupBtn.disabled = anyActivity;
   updateGroupSelectedBtn();
-  if (disabled) {
+  if (anyActivity) {
     const groupSelectedBtn = document.getElementById('seq-group-selected');
     if (groupSelectedBtn) groupSelectedBtn.disabled = true;
   }
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
     if (btn.classList.contains('seq-detail-toggle')) return;
-    btn.disabled = disabled;
+    btn.disabled = anyActivity;
   });
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
-    el.disabled = disabled;
+    el.disabled = anyActivity;
   });
   // Step editor text fields (resources, group titles, etc.) stay in the DOM after render —
   // must flip disabled here when the run ends (render often happened while seqRunning=true).
@@ -3248,14 +3284,17 @@ function setSeqControlsDisabled(disabled) {
       '#seq-selected-body .step-resources-input, #seq-selected-body input[type="text"], #seq-selected-body input[type="number"], #seq-selected-body textarea'
     )
     .forEach(function (el) {
-      el.disabled = disabled;
+      el.disabled = anyActivity;
     });
-  document.querySelectorAll('#seq-channel-pick .seq-channel-cb').forEach(function (el) {
-    el.disabled = disabled;
-  });
   document.querySelectorAll('#seq-selected-body tr.seq-row[data-index]').forEach(function (row) {
-    row.draggable = !disabled;
+    row.draggable = !anyActivity;
   });
+}
+
+/** Compatibility wrapper for older call sites that describe exclusive slot ownership. */
+function setSeqControlsDisabled(disabled) {
+  seqExclusiveBusy = !!disabled;
+  syncSeqControlsState();
 }
 
 function formatSpecSummary(limits) {
@@ -3858,11 +3897,67 @@ function applyStepResults(steps) {
   }
 }
 
+function mergeSequenceChannels(current, incoming) {
+  const merged = {};
+  (Array.isArray(current) ? current : []).forEach(function (channel) {
+    if (!channel) return;
+    merged[Number(channel.channel_index)] = channel;
+  });
+  (Array.isArray(incoming) ? incoming : []).forEach(function (channel) {
+    if (!channel) return;
+    const index = Number(channel.channel_index);
+    const previous = merged[index];
+    const incomingGeneration = channel.generation;
+    const previousGeneration = previous && previous.generation;
+    if (
+      !previous ||
+      incomingGeneration == null ||
+      previousGeneration == null ||
+      Number(incomingGeneration) >= Number(previousGeneration)
+    ) {
+      merged[index] = channel;
+    }
+  });
+  return Object.keys(merged)
+    .map(function (index) { return merged[index]; })
+    .sort(function (left, right) { return Number(left.channel_index) - Number(right.channel_index); });
+}
+
+function clearSequenceChannelResults(channelIndexes) {
+  const clearIndexes = {};
+  (Array.isArray(channelIndexes) ? channelIndexes : []).forEach(function (index) {
+    clearIndexes[Number(index)] = true;
+  });
+  seqChannelProgress = seqChannelProgress.filter(function (channel) {
+    return !clearIndexes[Number(channel.channel_index)];
+  });
+  seqStepResults = {};
+}
+
+function sequenceOverallFromChannels(channels) {
+  const list = Array.isArray(channels) ? channels : [];
+  if (list.some(function (channel) { return !!channel.running; })) return 'running';
+  let passed = false;
+  for (let i = 0; i < list.length; i++) {
+    const overall = String(list[i].overall || '').toLowerCase();
+    if (overall === 'fail' || overall === 'failed' || overall === 'error' || overall === 'aborted' || overall === 'stopped') {
+      return 'fail';
+    }
+    if (overall === 'pass' || overall === 'ok') passed = true;
+  }
+  return passed ? 'pass' : null;
+}
+
+function shouldPollSequenceProgress(channels, pendingStarts) {
+  return (Array.isArray(channels) ? channels : []).some(function (channel) {
+    return !!channel.running;
+  }) || Object.keys(pendingStarts || {}).length > 0;
+}
+
 function channelProgressFromEnvelope(prog, syntheticChannel) {
   if (!prog) return [];
-  if (Array.isArray(prog.channels) && prog.channels.length) {
+  if (Array.isArray(prog.channels)) {
     return prog.channels.map(function (ch) {
-      const channelOverall = String(ch.overall || '').toLowerCase();
       return {
         channel_index: ch.channel_index,
         name: ch.name || ch.channel_name || ('CH' + ch.channel_index),
@@ -3872,13 +3967,9 @@ function channelProgressFromEnvelope(prog, syntheticChannel) {
         current_name: ch.current_name,
         elapsed_ms: ch.elapsed_ms,
         current_step_elapsed_ms: ch.current_step_elapsed_ms,
+        generation: ch.generation != null ? ch.generation : ch.run_generation,
         synthetic: syntheticChannel === true,
-        running: !!prog.running && (
-          ch.current_position != null ||
-          channelOverall === 'running' ||
-          channelOverall === 'waiting_resource' ||
-          !channelOverall
-        ),
+        running: !!ch.running,
       };
     });
   }
@@ -3893,6 +3984,7 @@ function channelProgressFromEnvelope(prog, syntheticChannel) {
       current_name: prog.current_name,
       elapsed_ms: prog.elapsed_ms,
       current_step_elapsed_ms: prog.current_step_elapsed_ms,
+      generation: prog.generation != null ? prog.generation : prog.run_generation,
       synthetic: syntheticChannel === true,
       running: !!prog.running,
     },
@@ -3900,18 +3992,23 @@ function channelProgressFromEnvelope(prog, syntheticChannel) {
 }
 
 function applyMultiChannelProgress(prog) {
-  seqChannelProgress = channelProgressFromEnvelope(prog, seqRunUsesSyntheticChannel);
+  seqChannelProgress = mergeSequenceChannels(
+    seqChannelProgress,
+    channelProgressFromEnvelope(prog, seqRunUsesSyntheticChannel)
+  );
   // Keep the edit queue free of per-channel measured/status — results live in the run report.
   seqStepResults = {};
+  updateSeqOverall({ overall: sequenceOverallFromChannels(seqChannelProgress) });
   renderSeqChannelCards();
   renderSeqChannelDetail();
   renderSeqSelected();
+  if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
+  if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
 }
 
 function applySequenceProgress(prog) {
   if (!prog) return;
   applyMultiChannelProgress(prog);
-  if (prog.overall) updateSeqOverall(prog);
 }
 
 function sequenceStatusVisualState(status) {
@@ -4016,7 +4113,7 @@ function renderSeqChannelCards(preservedFocus) {
     runButton.className = 'btn-primary seq-channel-card-run';
     runButton.textContent = '运行此通道';
     runButton.setAttribute('aria-label', '运行 ' + channelName + ' 通道');
-    runButton.disabled = seqRunning || !sequenceRunQueueItems().length;
+    runButton.disabled = !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
       runSequence(sequenceCardRunChannelIndexes(channel), channel.synthetic === true);
@@ -4374,7 +4471,7 @@ function clearSequenceResultsUi(preservedCardFocus) {
 }
 
 function startSequenceProgressPoll() {
-  stopSequenceProgressPoll();
+  if (seqProgressPollTimer != null) return;
   const generation = seqProgressGeneration;
   seqProgressPollTimer = setInterval(async function () {
     try {
@@ -4394,6 +4491,26 @@ function stopSequenceProgressPoll() {
   if (seqProgressPollTimer != null) {
     clearInterval(seqProgressPollTimer);
     seqProgressPollTimer = null;
+  }
+}
+
+function reconcileSequenceProgressPoll() {
+  if (shouldPollSequenceProgress(seqChannelProgress, seqPendingChannelStarts)) {
+    startSequenceProgressPoll();
+  } else {
+    stopSequenceProgressPoll();
+  }
+}
+
+async function refreshSequenceProgress() {
+  try {
+    const resp = await fetch('/api/sequence/run/progress');
+    if (!resp.ok) return;
+    applySequenceProgress(await resp.json());
+  } catch (e) {
+    /* Status recovery is best-effort; the shared poll retries while active. */
+  } finally {
+    reconcileSequenceProgressPoll();
   }
 }
 
@@ -5509,7 +5626,7 @@ function renderSeqSelected() {
     detailRow.appendChild(detailTd);
     tbody.appendChild(detailRow);
   }
-  setSeqControlsDisabled(seqRunning);
+  syncSeqControlsState();
   updateSeqInsertBadge();
   updateGroupSelectedBtn();
   updateSeqRunQueueSummary();
@@ -5883,10 +6000,8 @@ function renderSeqResults(data) {
     container.hidden = true;
   }
   const envelope = multiEnvelopeToProgress(data);
-  seqChannelProgress = channelProgressFromEnvelope(envelope, seqRunUsesSyntheticChannel);
+  applyMultiChannelProgress(envelope);
   if (!seqChannelProgress.length) return;
-  renderSeqChannelCards();
-  renderSeqChannelDetail();
 }
 
 function multiEnvelopeToProgress(data) {
@@ -5906,6 +6021,7 @@ function multiEnvelopeToProgress(data) {
           current_name: null,
           elapsed_ms: resp.elapsed_ms != null ? resp.elapsed_ms : ch.elapsed_ms,
           current_step_elapsed_ms: null,
+          generation: resp.run_generation != null ? resp.run_generation : ch.run_generation,
         };
       }),
     };
@@ -5921,6 +6037,7 @@ function multiEnvelopeToProgress(data) {
         overall: data.overall,
         elapsed_ms: data.elapsed_ms,
         current_step_elapsed_ms: null,
+        generation: data.run_generation,
       },
     ],
     steps: data.steps,
@@ -5963,9 +6080,6 @@ function sequenceWasAborted(data) {
 }
 
 function handleSequenceResponse(data) {
-  const envelope = multiEnvelopeToProgress(data);
-  applyMultiChannelProgress(envelope);
-  updateSeqOverall(data);
   renderSeqResults(data);
   renderSeqSelected();
   if (sequenceWasAborted(data)) {
@@ -6069,33 +6183,54 @@ async function loadSequenceTemplateToQueue(tpl) {
 }
 
 async function runSequence(explicitChannelIndexes, syntheticChannel) {
-  if (seqRunning || !sequenceRunQueueItems().length) return;
+  if (!sequenceRunQueueItems().length || (typeof seqExclusiveBusy !== 'undefined' && seqExclusiveBusy)) return;
   const selectedChannelIndexes = selectedChannelIndexesForRun();
-  const channelIndexes = Array.isArray(explicitChannelIndexes)
+  const requestedChannelIndexes = Array.isArray(explicitChannelIndexes)
     ? explicitChannelIndexes.slice()
     : selectedChannelIndexes;
-  if (Array.isArray(channelIndexes) && channelIndexes.length === 0) {
-    showSeqMsg('请至少选择一个通道', false);
-    return;
-  }
-  const cardHost = document.getElementById('seq-channel-cards');
-  const focusedCardControl = captureSequenceChannelCardFocus(cardHost);
-  seqRunUsesSyntheticChannel = syntheticChannel === true || (
+  const useSyntheticChannel = syntheticChannel === true || (
     syntheticChannel == null &&
     !Array.isArray(explicitChannelIndexes) &&
     !enabledAgentChannels().length
   );
-  setSeqControlsDisabled(true);
-  clearSequenceResultsUi(focusedCardControl);
-  document.getElementById('seq-results').innerHTML = '';
-  updateSeqOverall({ overall: 'running' });
+  const resolvedChannelIndexes = Array.isArray(requestedChannelIndexes)
+    ? requestedChannelIndexes.slice()
+    : useSyntheticChannel
+      ? [0]
+      : enabledAgentChannels().map(function (channel) { return channel.channel_index; });
+  if (!resolvedChannelIndexes.length) {
+    showSeqMsg('请至少选择一个通道', false);
+    return;
+  }
+  const idleChannelIndexes = resolvedChannelIndexes.filter(function (index) {
+    return typeof isSequenceChannelActive !== 'function' || !isSequenceChannelActive(index);
+  });
+  if (!idleChannelIndexes.length) {
+    showSeqMsg('所选通道正在执行中', false);
+    return;
+  }
+  const cardHost = document.getElementById('seq-channel-cards');
+  const focusedCardControl = captureSequenceChannelCardFocus(cardHost);
+  seqRunUsesSyntheticChannel = useSyntheticChannel;
+  if (typeof seqPendingChannelStarts === 'undefined') seqPendingChannelStarts = {};
+  idleChannelIndexes.forEach(function (index) { seqPendingChannelStarts[Number(index)] = true; });
+  if (typeof clearSequenceChannelResults === 'function') {
+    clearSequenceChannelResults(idleChannelIndexes);
+    if (typeof renderSeqChannelCards === 'function') renderSeqChannelCards(focusedCardControl);
+    if (typeof renderSeqChannelDetail === 'function') renderSeqChannelDetail();
+  } else {
+    clearSequenceResultsUi(focusedCardControl);
+  }
+  const resultsEl = document.getElementById('seq-results');
+  if (resultsEl) resultsEl.innerHTML = '';
+  if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
+  if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
   showSeqMsg('执行中…', true);
   const payload = buildSequenceRunPayload(
     seqActiveTemplateId,
-    selectedChannelIndexes,
-    explicitChannelIndexes
+    useSyntheticChannel ? null : idleChannelIndexes,
+    useSyntheticChannel ? undefined : idleChannelIndexes
   );
-  startSequenceProgressPoll();
   try {
     const resp = await fetch('/api/sequence/run', {
       method: 'POST',
@@ -6120,17 +6255,41 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     setSeqRequestFailureState();
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
-    stopSequenceProgressPoll();
-    setSeqControlsDisabled(false);
+    idleChannelIndexes.forEach(function (index) { delete seqPendingChannelStarts[Number(index)]; });
+    if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
+    if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
     renderSeqChannelPick();
     renderSeqRegistered();
   }
 }
 
+async function abortSequenceChannel(channelIndex) {
+  const index = Number(channelIndex);
+  if (!Number.isFinite(index) || !isSequenceChannelRunning(index)) return;
+  seqPendingChannelAborts[index] = true;
+  syncSeqControlsState();
+  reconcileSequenceProgressPoll();
+  showSeqMsg('通道中止中…', true);
+  try {
+    const resp = await fetch('/api/sequence/run/channels/' + encodeURIComponent(index) + '/abort', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const err = data.error && (data.error.message || data.error) || resp.status;
+      showSeqMsg('通道中止失败: ' + err, false);
+      return;
+    }
+    showSeqMsg('通道中止已请求…', true);
+  } catch (e) {
+    showSeqMsg('通道中止失败: ' + e.message, false);
+  } finally {
+    delete seqPendingChannelAborts[index];
+    syncSeqControlsState();
+    reconcileSequenceProgressPoll();
+  }
+}
+
 async function abortSequence() {
-  if (!seqRunning) return;
-  const abortBtn = document.getElementById('seq-abort-btn');
-  if (abortBtn) abortBtn.disabled = true;
+  if (typeof anySequenceChannelRunning === 'function' && !anySequenceChannelRunning()) return;
   showSeqMsg('中止中…', true);
   try {
     const resp = await fetch('/api/sequence/run/abort', { method: 'POST' });
@@ -6138,14 +6297,15 @@ async function abortSequence() {
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('中止失败: ' + err, false);
-      if (abortBtn) abortBtn.disabled = false;
       return;
     }
     // Cancel is async: workers stop between steps / lock waits; runSequence handles final result.
     showSeqMsg('中止已请求…', true);
   } catch (e) {
     showSeqMsg('中止失败: ' + e.message, false);
-    if (abortBtn) abortBtn.disabled = false;
+  } finally {
+    if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
+    if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
   }
 }
 

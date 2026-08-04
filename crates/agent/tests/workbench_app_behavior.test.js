@@ -189,7 +189,7 @@ test('multi-channel progress keeps unfinished channels running between step publ
   const channels = context.channelProgressFromEnvelope({
     running: true,
     channels: [
-      { channel_index: 0, name: 'CH0', steps: [], current_position: null },
+      { channel_index: 0, name: 'CH0', steps: [], current_position: null, running: true },
       {
         channel_index: 1,
         name: 'CH1',
@@ -198,6 +198,7 @@ test('multi-channel progress keeps unfinished channels running between step publ
         current_name: 'Measure',
         elapsed_ms: 900,
         current_step_elapsed_ms: 250,
+        running: true,
       },
       { channel_index: 2, name: 'CH2', steps: [], overall: 'pass' },
     ],
@@ -412,6 +413,117 @@ test('sequence run payload omits channel indexes when top selection means all en
     JSON.parse(JSON.stringify(context.buildSequenceRunPayload(null, null, null))),
     {}
   );
+});
+
+test('sequence progress merge preserves unrelated channels and rejects stale generations', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('mergeSequenceChannels'), context);
+
+  const merged = context.mergeSequenceChannels(
+    [
+      { channel_index: 0, generation: 9, running: true, name: 'CH0' },
+      { channel_index: 1, generation: 4, running: false, name: 'CH1 old' },
+    ],
+    [
+      { channel_index: 1, generation: 5, running: true, name: 'CH1 new' },
+      { channel_index: 0, generation: 8, running: false, name: 'CH0 stale' },
+    ]
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(merged)), [
+    { channel_index: 0, generation: 9, running: true, name: 'CH0' },
+    { channel_index: 1, generation: 5, running: true, name: 'CH1 new' },
+  ]);
+});
+
+test('channel activity distinguishes backend running from locally pending starts', () => {
+  const context = {
+    seqChannelProgress: [{ channel_index: 0, running: true }],
+    seqPendingChannelStarts: { 1: true },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('isSequenceChannelRunning'), context);
+  vm.runInContext(functionSource('isSequenceChannelActive'), context);
+  vm.runInContext(functionSource('anySequenceChannelRunning'), context);
+  vm.runInContext(functionSource('anySequenceChannelActivity'), context);
+
+  assert.equal(context.isSequenceChannelRunning(0), true);
+  assert.equal(context.isSequenceChannelRunning(1), false);
+  assert.equal(context.isSequenceChannelRunning(2), false);
+  assert.equal(context.isSequenceChannelActive(0), true);
+  assert.equal(context.isSequenceChannelActive(1), true);
+  assert.equal(context.isSequenceChannelActive(2), false);
+  assert.equal(context.anySequenceChannelRunning(), true);
+  assert.equal(context.anySequenceChannelActivity(), true);
+});
+
+test('sequence aggregate and polling stay active until the final channel stops', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
+  vm.runInContext(functionSource('shouldPollSequenceProgress'), context);
+
+  assert.equal(context.sequenceOverallFromChannels([
+    { running: false, overall: 'pass' },
+    { running: true, overall: null },
+  ]), 'running');
+  assert.equal(context.sequenceOverallFromChannels([
+    { running: false, overall: 'pass' },
+    { running: false, overall: 'fail' },
+  ]), 'fail');
+  assert.equal(context.shouldPollSequenceProgress(
+    [{ channel_index: 0, running: false }],
+    { 1: true }
+  ), true);
+  assert.equal(context.shouldPollSequenceProgress(
+    [{ channel_index: 0, running: false }],
+    {}
+  ), false);
+});
+
+test('card abort posts only its channel while top abort uses the global endpoint', async () => {
+  const paths = [];
+  const context = {
+    seqPendingChannelAborts: {},
+    isSequenceChannelRunning(index) { return index === 2; },
+    fetch: async function (path) {
+      paths.push(path);
+      return { ok: true, json: async function () { return { ok: true }; } };
+    },
+    showSeqMsg() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('abortSequenceChannel'), context);
+  vm.runInContext(functionSource('abortSequence'), context);
+
+  await context.abortSequenceChannel(2);
+  await context.abortSequence();
+  assert.deepEqual(paths, [
+    '/api/sequence/run/channels/2/abort',
+    '/api/sequence/run/abort',
+  ]);
+});
+
+test('sequence busy status restores progress instead of globally locking channel cards', () => {
+  let refreshes = 0;
+  const context = {
+    seqExclusiveBusy: false,
+    isSequencePageVisible() { return true; },
+    refreshSequenceProgress() { refreshes += 1; },
+    syncSeqControlsState() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('syncSequenceBusyFromStatus'), context);
+
+  context.syncSequenceBusyFromStatus({ busy: true, busy_reason: 'sequence' });
+  assert.equal(context.seqExclusiveBusy, false);
+  assert.equal(refreshes, 1);
+
+  context.syncSequenceBusyFromStatus({ busy: true, busy_reason: 'delay' });
+  assert.equal(context.seqExclusiveBusy, true);
 });
 
 test('synthetic sequence card run posts without channel indexes', async () => {
@@ -779,7 +891,7 @@ test('channel card focus restore falls back to the card body when run becomes di
   ]);
 });
 
-test('sequence run captures focused card control before lock and threads it into the first rerender', async () => {
+test('sequence run keeps focused card restoration scoped to the started channel', async () => {
   const events = [];
   const body = {
     focus(options) { events.push(['focus', 'body', options]); },
@@ -819,12 +931,12 @@ test('sequence run captures focused card control before lock and threads it into
     seqActiveTemplateId: null,
     seqStepResults: {},
     seqChannelProgress: [],
+    seqPendingChannelStarts: {},
     selectedChannelIndexesForRun() { return [0]; },
-    setSeqControlsDisabled(disabled) {
-      events.push(['lock', disabled]);
-      run.disabled = disabled;
-      if (disabled) context.document.activeElement = outside;
-    },
+    isSequenceChannelActive(index) { return !!context.seqPendingChannelStarts[index]; },
+    clearSequenceChannelResults() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
     document: {
       activeElement: run,
       getElementById(id) {
@@ -834,6 +946,7 @@ test('sequence run captures focused card control before lock and threads it into
     updateSeqOverall() {},
     renderSeqChannelCards(preservedFocus) {
       events.push(['render', preservedFocus && preservedFocus.kind]);
+      run.disabled = context.isSequenceChannelActive(0);
       context.restoreSequenceChannelCardFocus(host, preservedFocus);
     },
     renderSeqChannelDetail() {},
@@ -855,14 +968,12 @@ test('sequence run captures focused card control before lock and threads it into
   vm.runInContext(functionSource('restoreSequenceChannelCardFocus'), context);
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
-  vm.runInContext(functionSource('clearSequenceResultsUi'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
   await context.runSequence([0], false);
 
   assert.deepEqual(JSON.parse(JSON.stringify(events.slice(0, 4))), [
     ['capture', 'run'],
-    ['lock', true],
     ['render', 'run'],
     ['focus', 'body', { preventScroll: true }],
   ]);
@@ -1024,12 +1135,15 @@ test('sequence card synthetic identity survives result and configuration transit
     seqRunUsesSyntheticChannel: false,
     seqStepResults: {},
     enabledAgentChannels() { return context.enabled; },
+    updateSeqOverall() {},
     renderSeqChannelCards() {},
     renderSeqChannelDetail() {},
     renderSeqSelected() {},
   };
   vm.createContext(context);
   vm.runInContext(functionSource('pendingSequenceChannelsForOperator'), context);
+  vm.runInContext(functionSource('mergeSequenceChannels'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
   vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
   vm.runInContext(functionSource('applyMultiChannelProgress'), context);
   vm.runInContext(functionSource('sequenceChannelsForDisplay'), context);
@@ -1114,18 +1228,22 @@ test('sequence request failures leave running state on busy and network errors',
   }
 });
 
-test('sequence card run posts only its explicit channel without changing top selection', async () => {
+test('sequence card run starts an idle explicit channel while another channel runs', async () => {
   const selected = [0, 1];
   let request = null;
   const results = { innerHTML: '' };
   const context = {
     seqRunning: false,
+    seqChannelProgress: [{ channel_index: 0, running: true }],
+    seqPendingChannelStarts: {},
     seqSelected: [{}],
     seqActiveTemplateId: 12,
     selectedChannelIndexesForRun() { return selected; },
+    isSequenceChannelActive(index) { return index === 0; },
     captureSequenceChannelCardFocus() { return null; },
-    setSeqControlsDisabled() {},
-    clearSequenceResultsUi() {},
+    clearSequenceChannelResults() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
     document: {
       getElementById(id) {
         if (id === 'seq-channel-cards') return null;
@@ -1135,8 +1253,6 @@ test('sequence card run posts only its explicit channel without changing top sel
     },
     updateSeqOverall() {},
     showSeqMsg() {},
-    startSequenceProgressPoll() {},
-    stopSequenceProgressPoll() {},
     handleSequenceResponse() {},
     setSeqRequestFailureState() {},
     renderSeqChannelPick() {},
@@ -1156,7 +1272,7 @@ test('sequence card run posts only its explicit channel without changing top sel
   vm.runInContext(functionSource('runSequence'), context);
 
   const cardChannelIndexes = context.sequenceCardRunChannelIndexes({
-    channel_index: 3,
+    channel_index: 1,
     synthetic: false,
   });
   await context.runSequence(cardChannelIndexes, false);
@@ -1164,9 +1280,30 @@ test('sequence card run posts only its explicit channel without changing top sel
   assert.equal(request.path, '/api/sequence/run');
   assert.deepEqual(JSON.parse(request.options.body), {
     sequence_template_id: 12,
-    channel_indexes: [3],
+    channel_indexes: [1],
   });
   assert.deepEqual(selected, [0, 1]);
+});
+
+test('sequence card run rejects an explicitly requested active channel', async () => {
+  let requests = 0;
+  let message = '';
+  const context = {
+    seqSelected: [{}],
+    seqPendingChannelStarts: {},
+    selectedChannelIndexesForRun() { return [0, 1]; },
+    isSequenceChannelActive(index) { return index === 0; },
+    showSeqMsg(text) { message = text; },
+    fetch: async function () { requests += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence([0], false);
+
+  assert.equal(requests, 0);
+  assert.match(message, /正在执行/);
 });
 
 test('zero-argument top sequence run posts the current channel selection', async () => {
