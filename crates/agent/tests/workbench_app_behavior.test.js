@@ -292,6 +292,39 @@ test('channel card model is ready before the first run', () => {
   );
 });
 
+test('sequence run payload isolates an explicit card channel without changing top selection', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+
+  const selected = [0, 1];
+  const explicit = [3];
+  const cardPayload = context.buildSequenceRunPayload(12, selected, explicit);
+  const topPayload = context.buildSequenceRunPayload(12, selected, null);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(cardPayload)), {
+    sequence_template_id: 12,
+    channel_indexes: [3],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(topPayload)), {
+    sequence_template_id: 12,
+    channel_indexes: [0, 1],
+  });
+  assert.deepEqual(selected, [0, 1]);
+  assert.deepEqual(explicit, [3]);
+});
+
+test('sequence run payload omits channel indexes when top selection means all enabled', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceRunPayload(null, null, null))),
+    {}
+  );
+});
+
 test('channel detail model keeps the complete queue pending before execution', () => {
   const context = {};
   vm.createContext(context);
@@ -691,6 +724,8 @@ test('sequence request failures leave running state on busy and network errors',
         : async () => { throw new Error('offline'); },
     };
     vm.createContext(context);
+    vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+    vm.runInContext(functionSource('buildSequenceRunPayload'), context);
     vm.runInContext(functionSource('runSequence'), context);
 
     await context.runSequence();

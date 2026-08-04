@@ -1830,6 +1830,16 @@ function selectedChannelIndexesForRun() {
   return picked;
 }
 
+function buildSequenceRunPayload(templateId, selectedChannelIndexes, explicitChannelIndexes) {
+  const channelIndexes = Array.isArray(explicitChannelIndexes)
+    ? explicitChannelIndexes.slice()
+    : selectedChannelIndexes;
+  const payload = {};
+  if (templateId != null) payload.sequence_template_id = templateId;
+  if (Array.isArray(channelIndexes)) payload.channel_indexes = channelIndexes.slice();
+  return payload;
+}
+
 function normalizeResourceName(raw) {
   const name = String(raw || '').trim();
   if (!name) return null;
@@ -3204,7 +3214,10 @@ function setSeqControlsDisabled(disabled) {
   seqRunning = disabled;
   const runBtn = document.getElementById('seq-run-btn');
   const abortBtn = document.getElementById('seq-abort-btn');
-  if (runBtn) runBtn.disabled = disabled || !seqSelected.length;
+  if (runBtn) runBtn.disabled = disabled || !sequenceRunQueueItems().length;
+  document.querySelectorAll('#seq-channel-cards .seq-channel-card-run').forEach(function (button) {
+    button.disabled = disabled || !sequenceRunQueueItems().length;
+  });
   // Abort is usable while a sequence POST is in flight (shared cancel watch).
   if (abortBtn) abortBtn.disabled = !disabled;
   const insertGroupBtn = document.getElementById('seq-insert-group');
@@ -3836,6 +3849,7 @@ function renderSeqChannelCards() {
   const queue = seqSelected;
   sourceChannels.forEach(function (channel) {
     const model = buildSequenceChannelCardModel(channel, queue);
+    const channelName = String(channel.name || 'CH' + channel.channel_index);
     const card = document.createElement('article');
     card.className = 'seq-channel-card';
     card.tabIndex = 0;
@@ -3843,14 +3857,14 @@ function renderSeqChannelCards() {
     card.setAttribute('data-state', model.state);
     card.setAttribute('data-channel-index', String(channel.channel_index));
     const cardStatusText = model.state === 'idle' ? '待开始' : formatSequenceOverall(model.state);
-    card.setAttribute('aria-label', String(channel.name || 'CH' + channel.channel_index) + '，' + cardStatusText + '，打开运行详情');
+    card.setAttribute('aria-label', channelName + '，' + cardStatusText + '，打开运行详情');
 
     const header = document.createElement('div');
     header.className = 'seq-channel-card-header';
     const titleBox = document.createElement('div');
     const title = document.createElement('span');
     title.className = 'seq-channel-card-title mono';
-    title.textContent = String(channel.name || 'CH' + channel.channel_index);
+    title.textContent = channelName;
     titleBox.appendChild(title);
     const meta = document.createElement('p');
     meta.className = 'seq-channel-card-meta';
@@ -3898,14 +3912,37 @@ function renderSeqChannelCards() {
       '<span class="seq-channel-card-total-time">总耗时 <strong class="mono">' + escapeHtml(formatSequenceElapsed(model.elapsedMs)) + '</strong></span>';
     card.appendChild(footer);
 
-    const affordance = document.createElement('span');
-    affordance.className = 'seq-channel-card-affordance';
-    affordance.textContent = '查看通道详情 →';
-    card.appendChild(affordance);
+    const actions = document.createElement('div');
+    actions.className = 'seq-channel-card-actions';
+
+    const runButton = document.createElement('button');
+    runButton.type = 'button';
+    runButton.className = 'btn-primary seq-channel-card-run';
+    runButton.textContent = '运行此通道';
+    runButton.setAttribute('aria-label', '运行 ' + channelName + ' 通道');
+    runButton.disabled = seqRunning || !sequenceRunQueueItems().length;
+    runButton.addEventListener('click', function (event) {
+      event.stopPropagation();
+      runSequence([channel.channel_index]);
+    });
+
+    const detailButton = document.createElement('button');
+    detailButton.type = 'button';
+    detailButton.className = 'btn-link seq-channel-card-detail';
+    detailButton.textContent = '查看详情 →';
+    detailButton.addEventListener('click', function (event) {
+      event.stopPropagation();
+      openSeqChannelDetail(channel.channel_index);
+    });
+
+    actions.appendChild(runButton);
+    actions.appendChild(detailButton);
+    card.appendChild(actions);
     card.addEventListener('click', function () {
       openSeqChannelDetail(channel.channel_index);
     });
     card.addEventListener('keydown', function (event) {
+      if (event.target !== card) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       openSeqChannelDetail(channel.channel_index);
@@ -5936,10 +5973,13 @@ async function loadSequenceTemplateToQueue(tpl) {
   }
 }
 
-async function runSequence() {
-  if (seqRunning || !seqSelected.length) return;
-  const channel_indexes = selectedChannelIndexesForRun();
-  if (Array.isArray(channel_indexes) && channel_indexes.length === 0) {
+async function runSequence(explicitChannelIndexes) {
+  if (seqRunning || !sequenceRunQueueItems().length) return;
+  const selectedChannelIndexes = selectedChannelIndexesForRun();
+  const channelIndexes = Array.isArray(explicitChannelIndexes)
+    ? explicitChannelIndexes.slice()
+    : selectedChannelIndexes;
+  if (Array.isArray(channelIndexes) && channelIndexes.length === 0) {
     showSeqMsg('请至少选择一个通道', false);
     return;
   }
@@ -5948,9 +5988,11 @@ async function runSequence() {
   document.getElementById('seq-results').innerHTML = '';
   updateSeqOverall({ overall: 'running' });
   showSeqMsg('执行中…', true);
-  const payload = {};
-  if (seqActiveTemplateId != null) payload.sequence_template_id = seqActiveTemplateId;
-  if (Array.isArray(channel_indexes)) payload.channel_indexes = channel_indexes;
+  const payload = buildSequenceRunPayload(
+    seqActiveTemplateId,
+    selectedChannelIndexes,
+    explicitChannelIndexes
+  );
   startSequenceProgressPoll();
   try {
     const resp = await fetch('/api/sequence/run', {
@@ -6817,7 +6859,9 @@ async function fetchGeneralTemplates() {
   }
 }
 
-document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+document.getElementById('seq-run-btn').addEventListener('click', function () {
+  runSequence();
+});
 const seqGotoRunBtn = document.getElementById('seq-goto-run-btn');
 if (seqGotoRunBtn) {
   seqGotoRunBtn.addEventListener('click', function () {
