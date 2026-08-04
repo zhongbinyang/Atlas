@@ -11,6 +11,10 @@ fn normalized_style() -> String {
     STYLE.replace("\r\n", "\n")
 }
 
+fn normalized_app() -> String {
+    APP.replace("\r\n", "\n")
+}
+
 #[test]
 fn sequence_page_has_mobile_safe_layout_rules() {
     let style = normalized_style();
@@ -42,6 +46,9 @@ fn sequence_page_has_mobile_safe_layout_rules() {
 
 #[test]
 fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
+    let app = normalized_app();
+    let style = normalized_style();
+
     assert!(
         !INDEX.contains("id=\"seq-sn\"")
             && !INDEX.contains("id=\"seq-work-order\"")
@@ -117,15 +124,15 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
         "channel detail must render state-aware grouped sections"
     );
     assert!(
-        APP.contains("seq-channel-card-run")
-            && APP.contains("运行此通道")
-            && APP.contains("runButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
-            && APP.contains("detailButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
-            && STYLE.contains(".seq-channel-cards {\n  display: grid;")
-            && STYLE.contains("repeat(auto-fill, minmax(20rem, 24rem))")
-            && STYLE.contains("justify-content: start;")
-            && STYLE.contains(".seq-channel-card-actions")
-            && STYLE.contains(".seq-channel-card-detail"),
+        app.contains("seq-channel-card-run")
+            && app.contains("运行此通道")
+            && app.contains("runButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
+            && app.contains("detailButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
+            && style.contains(".seq-channel-cards {\n  display: grid;")
+            && style.contains("repeat(auto-fill, minmax(20rem, 24rem))")
+            && style.contains("justify-content: start;")
+            && style.contains(".seq-channel-card-actions")
+            && style.contains(".seq-channel-card-detail"),
         "channel cards need isolated run/detail actions and bounded desktop tracks"
     );
     assert!(
@@ -140,7 +147,7 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
         "the card body must be the only composite detail control and stay separate from native actions"
     );
 
-    let mobile = STYLE
+    let mobile = style
         .split("@media (max-width: 640px) {")
         .nth(1)
         .expect("sequence UI needs the existing mobile breakpoint");
