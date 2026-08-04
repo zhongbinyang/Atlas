@@ -19,13 +19,13 @@ use crate::labview::{
     LabviewError, LabviewParam,
 };
 use crate::channel_run::{
-    channel_specs_from_list, channels_unavailable_fallback, run_multi_channel, ChannelRunRequest,
-    MultiChannelSequenceResponse,
+    aggregate_overall, channel_specs_from_list, channels_unavailable_fallback, run_multi_channel,
+    ChannelRunRequest, ChannelSequenceResponse, ChannelSpec, MultiChannelSequenceResponse,
 };
-use crate::labview_sequence::queue_items_for_run;
+use crate::labview_sequence::{queue_items_for_run, SequenceResponse};
 use crate::metrics::MetricsSnapshot;
 use crate::resource_lock::ResourceLockManager;
-use crate::sequence_session::SequenceProgressSlot;
+use crate::sequence_session::{SequenceCancelRegistry, SequenceProgressSlot};
 use crate::task_slot::TaskSlot;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -45,43 +45,80 @@ pub struct AppState {
     pub labview_getinfo: PathBuf,
     pub sequence_progress: Arc<SequenceProgressSlot>,
     pub resource_locks: Arc<ResourceLockManager>,
-    /// Active mid-run cancel sender keyed by the slot generation of that run.
-    pub sequence_cancel: Arc<tokio::sync::Mutex<Option<ActiveSequenceCancel>>>,
+    pub sequence_cancel: Arc<SequenceCancelRegistry>,
 }
 
-/// Cancel handle for one multi-channel sequence session (generation-scoped).
-#[derive(Clone)]
-pub struct ActiveSequenceCancel {
-    pub generation: u64,
-    pub tx: watch::Sender<bool>,
+struct AdmittedChannelRun {
+    spec: ChannelSpec,
+    generation: u64,
+    cancel: watch::Receiver<bool>,
 }
 
-/// Install cancel for `generation`, replacing any prior handle.
-async fn install_sequence_cancel(s: &AppState, generation: u64) -> watch::Receiver<bool> {
-    let (tx, rx) = watch::channel(false);
-    *s.sequence_cancel.lock().await = Some(ActiveSequenceCancel { generation, tx });
-    rx
+struct ChannelAdmission {
+    started: Vec<AdmittedChannelRun>,
+    skipped_channel_indexes: Vec<usize>,
 }
 
-/// Clear cancel only if it still belongs to `generation`.
-async fn clear_sequence_cancel_if(s: &AppState, generation: u64) {
-    let mut g = s.sequence_cancel.lock().await;
-    if g.as_ref().map(|c| c.generation) == Some(generation) {
-        *g = None;
-    }
-}
+async fn admit_sequence_channels(
+    state: &AppState,
+    channels: Vec<ChannelSpec>,
+) -> Result<ChannelAdmission, &'static str> {
+    let mut admission = ChannelAdmission {
+        started: Vec::new(),
+        skipped_channel_indexes: Vec::new(),
+    };
 
-/// Signal cancel for `generation` if it is still the active session.
-/// Returns true if a cancel signal was sent.
-async fn signal_sequence_cancel_if(s: &AppState, generation: u64) -> bool {
-    let g = s.sequence_cancel.lock().await;
-    if let Some(c) = g.as_ref() {
-        if c.generation == generation {
-            let _ = c.tx.send(true);
-            return true;
+    for spec in channels {
+        let channel_index = spec.channel_index;
+        let generation = match state.slot.try_acquire_sequence(channel_index).await {
+            Ok(generation) => generation,
+            Err("channel busy") => {
+                admission.skipped_channel_indexes.push(channel_index);
+                continue;
+            }
+            Err(error) => {
+                for admitted in admission.started.drain(..) {
+                    state
+                        .sequence_cancel
+                        .clear_if(admitted.spec.channel_index, admitted.generation)
+                        .await;
+                    state
+                        .slot
+                        .release_sequence(admitted.spec.channel_index, admitted.generation)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
+
+        match state.sequence_cancel.install(channel_index, generation).await {
+            Ok(cancel) => admission.started.push(AdmittedChannelRun {
+                spec,
+                generation,
+                cancel,
+            }),
+            Err("stale generation") => {
+                state.slot.release_sequence(channel_index, generation).await;
+                admission.skipped_channel_indexes.push(channel_index);
+            }
+            Err(error) => {
+                state.slot.release_sequence(channel_index, generation).await;
+                for admitted in admission.started.drain(..) {
+                    state
+                        .sequence_cancel
+                        .clear_if(admitted.spec.channel_index, admitted.generation)
+                        .await;
+                    state
+                        .slot
+                        .release_sequence(admitted.spec.channel_index, admitted.generation)
+                        .await;
+                }
+                return Err(error);
+            }
         }
     }
-    false
+
+    Ok(admission)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +220,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/sequence/run/continue",
             post(labview_run_sequence_continue_gone),
+        )
+        .route(
+            "/api/sequence/run/channels/{channel_index}/abort",
+            post(labview_run_sequence_channel_abort),
         )
         .route(
             "/api/sequence/run/abort",
@@ -401,7 +442,7 @@ async fn build_busy_snapshot(s: &AppState) -> BusySnapshot {
         "rest" => "REST 试跑进行中".to_string(),
         other => format!("机台忙碌（{other}）"),
     };
-    let can_abort = reason == "sequence" && s.sequence_cancel.lock().await.is_some();
+    let can_abort = reason == "sequence";
     BusySnapshot {
         busy: true,
         busy_reason: Some(reason),
@@ -461,32 +502,25 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 }
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
-    // Keep the slot busy until cancel is published and this generation's progress
-    // is cleared, so a concurrent new run cannot start / have its progress wiped.
-    let Some(gen) = s.slot.current_generation_if_busy().await else {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "ok": true,
-                "released": false,
-                "message": "当前已空闲",
-            })),
-        )
-            .into_response();
-    };
-
-    let _ = signal_sequence_cancel_if(&s, gen).await;
+    // Publish cancellation and clear exact live progress while admission is still
+    // held. This prevents a new generation from being admitted and then cleared.
+    let _ = s.sequence_cancel.signal_all().await;
     let progress_channels = s.sequence_progress.snapshot().await.channels;
-    for channel in progress_channels {
-        if channel.generation == gen {
-            let _ = s
-                .sequence_progress
-                .clear_channel_if(channel.channel_index, gen)
+    for channel in progress_channels.into_iter().filter(|channel| channel.running) {
+        let _ = s
+            .sequence_progress
+            .clear_channel_if(channel.channel_index, channel.generation)
+            .await;
+    }
+    let released_holds = s.slot.force_release_all().await;
+    for hold in &released_holds {
+        if let Some(channel_index) = hold.channel_index {
+            s.sequence_cancel
+                .clear_if(channel_index, hold.generation)
                 .await;
         }
     }
-    clear_sequence_cancel_if(&s, gen).await;
-    let released = s.slot.force_release_if(gen).await;
+    let released = !released_holds.is_empty();
 
     (
         StatusCode::OK,
@@ -1676,23 +1710,23 @@ async fn labview_run_sequence(
     let sn = normalize_run_sequence_opt(req.sn.clone());
     let work_order = normalize_run_sequence_opt(req.work_order.clone());
     let channel_indexes = req.channel_indexes.clone();
-    let base_vars = load_settings_vars(&s).await;
 
-    let slot_gen = match s.slot.try_acquire("sequence").await {
-        Ok(g) => g,
-        Err("busy") => {
-            let snap = build_busy_snapshot(&s).await;
-            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
-        }
-        Err(_) => unreachable!(),
-    };
+    if s
+        .slot
+        .owner()
+        .await
+        .as_deref()
+        .is_some_and(|owner| owner != "sequence")
+    {
+        let snap = build_busy_snapshot(&s).await;
+        return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+    }
+
+    let base_vars = load_settings_vars(&s).await;
 
     let agent_id = match resolve_agent_id_for_proxy(&s).await {
         Ok(id) => id,
-        Err(resp) => {
-            let _ = s.slot.release(slot_gen).await;
-            return resp;
-        }
+        Err(resp) => return resp,
     };
 
     let (status, queue_body) = match crate::register::get_vi_run_queue(
@@ -1704,7 +1738,6 @@ async fn labview_run_sequence(
     {
         Ok(v) => v,
         Err(e) => {
-            let _ = s.slot.release(slot_gen).await;
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorBody { error: e }),
@@ -1714,7 +1747,6 @@ async fn labview_run_sequence(
     };
 
     if !status.is_success() {
-        let _ = s.slot.release(slot_gen).await;
         let axum_status =
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         return (axum_status, Json(queue_body)).into_response();
@@ -1723,7 +1755,6 @@ async fn labview_run_sequence(
     let items = match queue_items_for_run(&queue_body) {
         Ok(v) => v,
         Err(msg) => {
-            let _ = s.slot.release(slot_gen).await;
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody { error: msg }),
@@ -1733,7 +1764,6 @@ async fn labview_run_sequence(
     };
 
     if items.is_empty() {
-        let _ = s.slot.release(slot_gen).await;
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
@@ -1759,7 +1789,6 @@ async fn labview_run_sequence(
             ) {
                 Ok(v) => {
                     if channel_indexes.is_some() && v.is_empty() {
-                        let _ = s.slot.release(slot_gen).await;
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(ErrorBody {
@@ -1771,7 +1800,6 @@ async fn labview_run_sequence(
                     v
                 }
                 Err(msg) => {
-                    let _ = s.slot.release(slot_gen).await;
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(ErrorBody { error: msg }),
@@ -1792,7 +1820,6 @@ async fn labview_run_sequence(
                     v
                 }
                 Err(msg) => {
-                    let _ = s.slot.release(slot_gen).await;
                     return (
                         StatusCode::BAD_GATEWAY,
                         Json(ErrorBody { error: msg }),
@@ -1807,7 +1834,6 @@ async fn labview_run_sequence(
                 v
             }
             Err(msg) => {
-                let _ = s.slot.release(slot_gen).await;
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(ErrorBody { error: msg }),
@@ -1817,26 +1843,190 @@ async fn labview_run_sequence(
         },
     };
 
-    let cancel_rx = install_sequence_cancel(&s, slot_gen).await;
-
-    let run_req = ChannelRunRequest {
-        items: items.clone(),
-        base_vars,
-        channels,
-        resource_locks: s.resource_locks.clone(),
-        resource_timeout: std::time::Duration::from_secs(300),
-        sn,
-        work_order,
-        progress: s.sequence_progress.clone(),
-        cancel: cancel_rx,
-        run_generation: slot_gen,
+    let channels = if channels.is_empty() {
+        vec![ChannelSpec {
+            channel_index: 0,
+            name: "CH0".into(),
+            overlay: serde_json::json!({}),
+        }]
+    } else {
+        channels
     };
 
-    let resp = run_multi_channel(&s.labview_cli, &s.labview_getinfo, run_req).await;
+    let admission = match admit_sequence_channels(&s, channels).await {
+        Ok(admission) => admission,
+        Err("busy") => {
+            let snap = build_busy_snapshot(&s).await;
+            return (StatusCode::CONFLICT, Json(busy_conflict_json(&snap))).into_response();
+        }
+        Err(_) => unreachable!(),
+    };
 
-    // Only tear down cancel/slot if this run still owns the generation.
-    clear_sequence_cancel_if(&s, slot_gen).await;
-    let _ = s.slot.release(slot_gen).await;
+    if admission.started.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "requested channels are already running",
+                "skipped_channel_indexes": admission.skipped_channel_indexes,
+            })),
+        )
+            .into_response();
+    }
+
+    let skipped_channel_indexes = admission.skipped_channel_indexes;
+    let request_sn = sn.clone();
+    let request_work_order = work_order.clone();
+    let mut workers = Vec::new();
+    for admitted in admission.started {
+        let state = s.clone();
+        let items = items.clone();
+        let base_vars = base_vars.clone();
+        let channel_index = admitted.spec.channel_index;
+        let channel_name = admitted.spec.name.clone();
+        let supervisor_channel_name = channel_name.clone();
+        let generation = admitted.generation;
+        let sn = request_sn.clone();
+        let work_order = request_work_order.clone();
+        let handle = tokio::spawn(async move {
+            // This supervisor outlives the HTTP request and always owns cleanup.
+            let run_state = state.clone();
+            let error_sn = sn.clone();
+            let error_work_order = work_order.clone();
+            let error_channel_name = supervisor_channel_name;
+            let execution = tokio::spawn(async move {
+                run_multi_channel(
+                    &run_state.labview_cli,
+                    &run_state.labview_getinfo,
+                    ChannelRunRequest {
+                        items,
+                        base_vars,
+                        channels: vec![admitted.spec],
+                        resource_locks: run_state.resource_locks.clone(),
+                        resource_timeout: std::time::Duration::from_secs(300),
+                        sn,
+                        work_order,
+                        progress: run_state.sequence_progress.clone(),
+                        cancel: admitted.cancel,
+                        run_generation: generation,
+                    },
+                )
+                .await
+            });
+
+            let response = match execution.await {
+                Ok(response) => response,
+                Err(join_error) => {
+                    tracing::error!(
+                        channel_index,
+                        generation,
+                        error = %join_error,
+                        "sequence channel worker panicked"
+                    );
+                    state
+                        .sequence_progress
+                        .begin_channels(generation, &[(channel_index, error_channel_name.clone())])
+                        .await;
+                    state
+                        .sequence_progress
+                        .finish_channels(
+                            generation,
+                            &[(
+                                channel_index,
+                                error_channel_name.clone(),
+                                Vec::new(),
+                                "error".into(),
+                            )],
+                        )
+                        .await;
+                    MultiChannelSequenceResponse {
+                        channels: vec![ChannelSequenceResponse {
+                            channel_index,
+                            channel_name: error_channel_name,
+                            run_generation: generation,
+                            response: SequenceResponse {
+                                stopped: true,
+                                failed_at: None,
+                                steps: Vec::new(),
+                                sn: error_sn,
+                                work_order: error_work_order,
+                                overall: "error".into(),
+                                elapsed_ms: 0,
+                            },
+                        }],
+                        skipped_channel_indexes: Vec::new(),
+                        overall: "fail".into(),
+                        sn: None,
+                        work_order: None,
+                    }
+                }
+            };
+
+            state.sequence_cancel.clear_if(channel_index, generation).await;
+            state.slot.release_sequence(channel_index, generation).await;
+            response
+        });
+        workers.push((channel_index, channel_name, generation, handle));
+    }
+
+    let mut channels = Vec::with_capacity(workers.len());
+    for (channel_index, channel_name, generation, handle) in workers {
+        match handle.await {
+            Ok(response) => channels.extend(response.channels),
+            Err(join_error) => {
+                tracing::error!(
+                    channel_index,
+                    generation,
+                    error = %join_error,
+                    "sequence channel supervisor panicked"
+                );
+                s.sequence_progress
+                    .begin_channels(generation, &[(channel_index, channel_name.clone())])
+                    .await;
+                s.sequence_progress
+                    .finish_channels(
+                        generation,
+                        &[(
+                            channel_index,
+                            channel_name.clone(),
+                            Vec::new(),
+                            "error".into(),
+                        )],
+                    )
+                    .await;
+                s.sequence_cancel.clear_if(channel_index, generation).await;
+                s.slot.release_sequence(channel_index, generation).await;
+                channels.push(ChannelSequenceResponse {
+                    channel_index,
+                    channel_name,
+                    run_generation: generation,
+                    response: SequenceResponse {
+                        stopped: true,
+                        failed_at: None,
+                        steps: Vec::new(),
+                        sn: request_sn.clone(),
+                        work_order: request_work_order.clone(),
+                        overall: "error".into(),
+                        elapsed_ms: 0,
+                    },
+                });
+            }
+        }
+    }
+
+    channels.sort_by_key(|channel| channel.channel_index);
+    let overalls: Vec<&str> = channels
+        .iter()
+        .map(|channel| channel.response.overall.as_str())
+        .collect();
+    let overall = aggregate_overall(&overalls);
+    let resp = MultiChannelSequenceResponse {
+        channels,
+        skipped_channel_indexes,
+        overall,
+        sn: request_sn,
+        work_order: request_work_order,
+    };
+
     log_multi_channel_run(&s, sequence_template_id, &items, &resp).await;
     (StatusCode::OK, Json(resp)).into_response()
 }
@@ -1855,30 +2045,43 @@ async fn labview_run_sequence_continue_gone() -> impl IntoResponse {
     )
 }
 
+async fn labview_run_sequence_channel_abort(
+    State(s): State<AppState>,
+    Path(channel_index): Path<usize>,
+) -> impl IntoResponse {
+    if s.sequence_cancel.signal_channel(channel_index).await {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "aborting": channel_index })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: format!("channel {channel_index} is not running"),
+            }),
+        )
+            .into_response()
+    }
+}
+
 async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
-    let tx = {
-        let guard = s.sequence_cancel.lock().await;
-        guard.as_ref().map(|c| c.tx.clone())
-    };
-    match tx {
-        Some(tx) => {
-            let _ = tx.send(true);
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "ok": true,
-                    "aborting": true,
-                })),
-            )
-                .into_response()
-        }
-        None => (
+    let aborting = s.sequence_cancel.signal_all().await;
+    if aborting.is_empty() {
+        (
             StatusCode::CONFLICT,
             Json(ErrorBody {
                 error: "no active sequence session".into(),
             }),
         )
-            .into_response(),
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "aborting": aborting })),
+        )
+            .into_response()
     }
 }
 
@@ -1919,7 +2122,7 @@ mod tests {
             labview_getinfo: PathBuf::from(r"C:\labview-runner-cli\getinfo.vi"),
             sequence_progress: SequenceProgressSlot::new(),
             resource_locks: ResourceLockManager::new(),
-            sequence_cancel: Arc::new(tokio::sync::Mutex::new(None)),
+            sequence_cancel: SequenceCancelRegistry::new(),
         }
     }
 
@@ -1936,6 +2139,72 @@ mod tests {
             labview_getinfo: getinfo,
             ..test_state()
         }
+    }
+
+    #[tokio::test]
+    async fn channel_abort_signals_only_the_requested_channel() {
+        let state = test_state();
+        let rx0 = state.sequence_cancel.install(0, 51).await.unwrap();
+        let rx1 = state.sequence_cancel.install(1, 52).await.unwrap();
+        let app = router(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run/channels/0/abort")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(*rx0.borrow());
+        assert!(!*rx1.borrow());
+    }
+
+    #[tokio::test]
+    async fn global_abort_signals_every_running_channel() {
+        let state = test_state();
+        let rx0 = state.sequence_cancel.install(0, 61).await.unwrap();
+        let rx1 = state.sequence_cancel.install(1, 62).await.unwrap();
+        let app = router(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run/abort")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(*rx0.borrow());
+        assert!(*rx1.borrow());
+    }
+
+    #[tokio::test]
+    async fn admission_starts_idle_channels_and_skips_only_duplicates() {
+        let state = test_state();
+        let existing = state.slot.try_acquire_sequence(0).await.unwrap();
+        let admitted = admit_sequence_channels(&state, vec![
+            ChannelSpec { channel_index: 0, name: "CH0".into(), overlay: serde_json::json!({}) },
+            ChannelSpec { channel_index: 1, name: "CH1".into(), overlay: serde_json::json!({}) },
+        ])
+            .await
+            .unwrap();
+        assert_eq!(admitted.started.iter().map(|run| run.spec.channel_index).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(admitted.skipped_channel_indexes, vec![0]);
+        assert!(state.slot.release_sequence(0, existing).await);
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_exclusive_delay_without_admitting_channels() {
+        let state = test_state();
+        let delay = state.slot.try_acquire("delay").await.unwrap();
+        let result = admit_sequence_channels(&state, vec![ChannelSpec {
+            channel_index: 0,
+            name: "CH0".into(),
+            overlay: serde_json::json!({}),
+        }])
+            .await;
+        assert!(matches!(result, Err("busy")));
+        assert_eq!(state.slot.owner().await.as_deref(), Some("delay"));
+        assert!(state.slot.release(delay).await);
+        let channel = state.slot.try_acquire_sequence(0).await.unwrap();
+        assert!(state.slot.release_sequence(0, channel).await);
     }
 
     #[tokio::test]
@@ -2595,8 +2864,8 @@ mod tests {
     #[tokio::test]
     async fn stale_run_teardown_does_not_clear_newer_cancel_or_slot() {
         let state = test_state();
-        let gen_a = state.slot.try_acquire("sequence").await.unwrap();
-        let rx_a = install_sequence_cancel(&state, gen_a).await;
+        let gen_a = state.slot.try_acquire_sequence(0).await.unwrap();
+        let rx_a = state.sequence_cancel.install(0, gen_a).await.unwrap();
         assert!(!*rx_a.borrow());
 
         // Force-release invalidates A's generation and cancels A only.
@@ -2610,41 +2879,30 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(*rx_a.borrow(), "force-release must cancel generation A");
         assert!(!state.slot.is_busy().await);
-        assert!(state.sequence_cancel.lock().await.is_none());
 
         // Newer run B installs its own cancel + slot hold.
-        let gen_b = state.slot.try_acquire("sequence").await.unwrap();
+        let gen_b = state.slot.try_acquire_sequence(0).await.unwrap();
         assert_ne!(gen_a, gen_b);
-        let rx_b = install_sequence_cancel(&state, gen_b).await;
+        let rx_b = state.sequence_cancel.install(0, gen_b).await.unwrap();
 
         // Stale finish of A must not wipe B.
-        clear_sequence_cancel_if(&state, gen_a).await;
-        assert!(!state.slot.release(gen_a).await);
+        assert!(!state.sequence_cancel.clear_if(0, gen_a).await);
+        assert!(!state.slot.release_sequence(0, gen_a).await);
         assert!(state.slot.is_busy().await);
         assert!(!*rx_b.borrow());
-        assert_eq!(
-            state
-                .sequence_cancel
-                .lock()
-                .await
-                .as_ref()
-                .map(|c| c.generation),
-            Some(gen_b)
-        );
 
         // B can still abort and tear down itself.
-        assert!(signal_sequence_cancel_if(&state, gen_b).await);
+        assert!(state.sequence_cancel.signal_channel(0).await);
         assert!(*rx_b.borrow());
-        clear_sequence_cancel_if(&state, gen_b).await;
-        assert!(state.slot.release(gen_b).await);
-        assert!(state.sequence_cancel.lock().await.is_none());
+        assert!(state.sequence_cancel.clear_if(0, gen_b).await);
+        assert!(state.slot.release_sequence(0, gen_b).await);
     }
 
     #[tokio::test]
     async fn force_release_publishes_cancel_before_slot_free_and_scopes_progress() {
         let state = test_state();
-        let gen_a = state.slot.try_acquire("sequence").await.unwrap();
-        let rx_a = install_sequence_cancel(&state, gen_a).await;
+        let gen_a = state.slot.try_acquire_sequence(0).await.unwrap();
+        let rx_a = state.sequence_cancel.install(0, gen_a).await.unwrap();
         state
             .sequence_progress
             .begin_channels(gen_a, &[(0, "A".into())])
@@ -2652,26 +2910,19 @@ mod tests {
 
         // Simulate the critical section of force-release without freeing the slot yet:
         // cancel + progress clear must happen while still busy.
-        assert_eq!(
-            state.slot.current_generation_if_busy().await,
-            Some(gen_a)
-        );
         assert!(state.slot.is_busy().await);
-        assert!(signal_sequence_cancel_if(&state, gen_a).await);
+        assert_eq!(state.sequence_cancel.signal_all().await, vec![0]);
         assert!(*rx_a.borrow(), "cancel must be visible before slot free");
         assert!(state.sequence_progress.clear_channel_if(0, gen_a).await);
         assert!(!state.sequence_progress.snapshot().await.running);
 
-        // New run cannot acquire until force_release_if.
-        assert_eq!(
-            state.slot.try_acquire("sequence").await.unwrap_err(),
-            "busy"
-        );
-        clear_sequence_cancel_if(&state, gen_a).await;
-        assert!(state.slot.force_release_if(gen_a).await);
+        // An exclusive run cannot acquire until all sequence holds are released.
+        assert_eq!(state.slot.try_acquire("delay").await.unwrap_err(), "busy");
+        assert!(state.sequence_cancel.clear_if(0, gen_a).await);
+        assert_eq!(state.slot.force_release_all().await.len(), 1);
 
         // Newer run B's progress must survive a stale exact clear for A.
-        let gen_b = state.slot.try_acquire("sequence").await.unwrap();
+        let gen_b = state.slot.try_acquire_sequence(0).await.unwrap();
         state
             .sequence_progress
             .begin_channels(gen_b, &[(0, "B".into())])
@@ -2680,7 +2931,7 @@ mod tests {
         assert_eq!(state.sequence_progress.snapshot().await.channels[0].name, "B");
 
         // Full HTTP force-release path also cancels B and frees the slot.
-        let rx_b = install_sequence_cancel(&state, gen_b).await;
+        let rx_b = state.sequence_cancel.install(0, gen_b).await.unwrap();
         let app = router(state.clone());
         let req = Request::builder()
             .method("POST")

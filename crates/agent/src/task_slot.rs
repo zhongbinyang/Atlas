@@ -120,15 +120,6 @@ impl TaskSlot {
         true
     }
 
-    /// Generation of the current exclusive hold, if any.
-    pub async fn current_generation_if_busy(&self) -> Option<u64> {
-        let g = self.inner.lock().await;
-        match g.holds {
-            Holds::Exclusive { generation, .. } => Some(generation),
-            Holds::Idle | Holds::Sequence(_) => None,
-        }
-    }
-
     /// Unconditionally clear all holds and invalidate their generations.
     pub async fn force_release_all(&self) -> Vec<TaskHold> {
         let mut g = self.inner.lock().await;
@@ -149,19 +140,6 @@ impl TaskSlot {
                     generation,
                 })
                 .collect(),
-        }
-    }
-
-    /// Force-release only if `generation` is still the active hold.
-    /// Keeps the slot busy for other generations (no-op if mismatched).
-    pub async fn force_release_if(&self, generation: u64) -> bool {
-        let mut g = self.inner.lock().await;
-        if matches!(g.holds, Holds::Exclusive { generation: active, .. } if active == generation) {
-            g.holds = Holds::Idle;
-            g.next_generation = g.next_generation.wrapping_add(1);
-            true
-        } else {
-            false
         }
     }
 }
@@ -206,17 +184,6 @@ mod tests {
         assert!(!slot.release(gen.wrapping_add(99)).await);
         assert!(slot.is_busy().await);
         assert!(slot.release(gen).await);
-    }
-
-    #[tokio::test]
-    async fn force_release_if_mismatched_keeps_busy() {
-        let slot = TaskSlot::new();
-        let gen = slot.try_acquire("delay").await.unwrap();
-        assert!(!slot.force_release_if(gen.wrapping_add(1)).await);
-        assert!(slot.is_busy().await);
-        assert_eq!(slot.current_generation_if_busy().await, Some(gen));
-        assert!(slot.force_release_if(gen).await);
-        assert!(!slot.is_busy().await);
     }
 
     #[tokio::test]

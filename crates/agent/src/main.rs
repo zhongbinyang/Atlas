@@ -21,7 +21,7 @@ use api::AppState;
 use config::AgentConfig;
 use metrics::{MetricsSampler, MetricsSnapshot};
 use resource_lock::ResourceLockManager;
-use sequence_session::SequenceProgressSlot;
+use sequence_session::{SequenceCancelRegistry, SequenceProgressSlot};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,7 +63,7 @@ async fn main() {
         labview_getinfo: cfg.labview_getinfo.clone(),
         sequence_progress: SequenceProgressSlot::new(),
         resource_locks: ResourceLockManager::new(),
-        sequence_cancel: Arc::new(tokio::sync::Mutex::new(None)),
+        sequence_cancel: SequenceCancelRegistry::new(),
     };
 
     let reg = common::RegisterAgentRequest {
