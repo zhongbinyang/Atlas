@@ -333,10 +333,12 @@ test('synthetic sequence card run posts without channel indexes', async () => {
     seqSelected: [{}],
     seqActiveTemplateId: 12,
     selectedChannelIndexesForRun() { return null; },
+    captureSequenceChannelCardFocus() { return null; },
     setSeqControlsDisabled() {},
     clearSequenceResultsUi() {},
     document: {
       getElementById(id) {
+        if (id === 'seq-channel-cards') return null;
         assert.equal(id, 'seq-results');
         return results;
       },
@@ -358,14 +360,17 @@ test('synthetic sequence card run posts without channel indexes', async () => {
     },
   };
   vm.createContext(context);
+  vm.runInContext(functionSource('pendingSequenceChannelsForOperator'), context);
   vm.runInContext(functionSource('sequenceCardRunChannelIndexes'), context);
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
-  const cardChannelIndexes = context.sequenceCardRunChannelIndexes([], 0);
-  await context.runSequence(cardChannelIndexes);
+  const syntheticCard = context.pendingSequenceChannelsForOperator([], null)[0];
+  const cardChannelIndexes = context.sequenceCardRunChannelIndexes(syntheticCard);
+  await context.runSequence(cardChannelIndexes, true);
 
+  assert.equal(syntheticCard.synthetic, true);
   assert.equal(cardChannelIndexes, undefined);
   assert.equal(request.path, '/api/sequence/run');
   assert.deepEqual(JSON.parse(request.options.body), {
@@ -685,6 +690,95 @@ test('channel card focus restore falls back to the card body when run becomes di
   ]);
 });
 
+test('sequence run captures focused card control before lock and threads it into the first rerender', async () => {
+  const events = [];
+  const body = {
+    focus(options) { events.push(['focus', 'body', options]); },
+  };
+  const run = {
+    disabled: false,
+    classList: {
+      contains(name) { return name === 'seq-channel-card-run'; },
+    },
+    closest(selector) {
+      assert.equal(selector, '.seq-channel-card[data-channel-index]');
+      return card;
+    },
+    focus(options) { events.push(['focus', 'run', options]); },
+  };
+  const card = {
+    getAttribute(name) {
+      assert.equal(name, 'data-channel-index');
+      return '0';
+    },
+    querySelector(selector) {
+      return selector === '.seq-channel-card-run' ? run : body;
+    },
+  };
+  const outside = { classList: { contains() { return false; } } };
+  const host = {
+    contains(element) {
+      events.push(['capture', element === run ? 'run' : 'other']);
+      return element === run;
+    },
+    querySelector() { return card; },
+  };
+  const results = { innerHTML: '', hidden: false };
+  const context = {
+    seqRunning: false,
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqStepResults: {},
+    seqChannelProgress: [],
+    selectedChannelIndexesForRun() { return [0]; },
+    setSeqControlsDisabled(disabled) {
+      events.push(['lock', disabled]);
+      run.disabled = disabled;
+      if (disabled) context.document.activeElement = outside;
+    },
+    document: {
+      activeElement: run,
+      getElementById(id) {
+        return id === 'seq-channel-cards' ? host : results;
+      },
+    },
+    updateSeqOverall() {},
+    renderSeqChannelCards(preservedFocus) {
+      events.push(['render', preservedFocus && preservedFocus.kind]);
+      context.restoreSequenceChannelCardFocus(host, preservedFocus);
+    },
+    renderSeqChannelDetail() {},
+    renderSeqSelected() {},
+    showSeqMsg() {},
+    startSequenceProgressPoll() {},
+    stopSequenceProgressPoll() {},
+    handleSequenceResponse() {},
+    setSeqRequestFailureState() {},
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch() {
+      return { ok: true, async json() { return {}; } };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('focusWithoutScroll'), context);
+  vm.runInContext(functionSource('captureSequenceChannelCardFocus'), context);
+  vm.runInContext(functionSource('restoreSequenceChannelCardFocus'), context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('clearSequenceResultsUi'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence([0], false);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(events.slice(0, 4))), [
+    ['capture', 'run'],
+    ['lock', true],
+    ['render', 'run'],
+    ['focus', 'body', { preventScroll: true }],
+  ]);
+});
+
 test('channel models discard group-header result and current-position collisions', () => {
   const context = {};
   vm.createContext(context);
@@ -824,12 +918,63 @@ test('operator console creates pending cards for the currently selected channels
   ], [1]);
 
   assert.deepEqual(JSON.parse(JSON.stringify(pending)), [
-    { channel_index: 1, name: 'CH1', steps: [], overall: null, running: false },
+    { channel_index: 1, name: 'CH1', steps: [], overall: null, running: false, synthetic: false },
   ]);
   assert.deepEqual(
     JSON.parse(JSON.stringify(context.pendingSequenceChannelsForOperator([], null))),
-    [{ channel_index: 0, name: 'CH0', steps: [], overall: null, running: false }]
+    [{ channel_index: 0, name: 'CH0', steps: [], overall: null, running: false, synthetic: true }]
   );
+});
+
+test('sequence card synthetic identity survives result and configuration transitions', () => {
+  const context = {
+    enabled: [{ channel_index: 2, name: 'Fixture CH2' }],
+    seqSelectedChannelIndexes: null,
+    seqChannelProgress: [],
+    seqRunUsesSyntheticChannel: false,
+    seqStepResults: {},
+    enabledAgentChannels() { return context.enabled; },
+    renderSeqChannelCards() {},
+    renderSeqChannelDetail() {},
+    renderSeqSelected() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('pendingSequenceChannelsForOperator'), context);
+  vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
+  vm.runInContext(functionSource('applyMultiChannelProgress'), context);
+  vm.runInContext(functionSource('sequenceChannelsForDisplay'), context);
+  vm.runInContext(functionSource('sequenceCardRunChannelIndexes'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+
+  context.applyMultiChannelProgress({
+    running: false,
+    channels: [{ channel_index: 2, name: 'Fixture CH2', overall: 'pass', steps: [] }],
+  });
+  context.enabled = [];
+  const retainedConfigured = context.sequenceChannelsForDisplay();
+
+  const initialSynthetic = context.pendingSequenceChannelsForOperator([], null)[0];
+  context.seqRunUsesSyntheticChannel = true;
+  context.applyMultiChannelProgress({
+    running: false,
+    channels: [{ channel_index: 0, name: 'CH0', overall: 'pass', steps: [] }],
+  });
+  const completedSynthetic = context.seqChannelProgress[0];
+
+  assert.equal(retainedConfigured[0].synthetic, false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.sequenceCardRunChannelIndexes(retainedConfigured[0]))),
+    [2]
+  );
+  for (const syntheticCard of [initialSynthetic, completedSynthetic]) {
+    assert.equal(syntheticCard.synthetic, true);
+    const indexes = context.sequenceCardRunChannelIndexes(syntheticCard);
+    assert.equal(indexes, undefined);
+    assert.equal(
+      Object.hasOwn(context.buildSequenceRunPayload(null, null, indexes), 'channel_indexes'),
+      false
+    );
+  }
 });
 
 test('sequence request failures leave running state on busy and network errors', async () => {
@@ -841,10 +986,13 @@ test('sequence request failures leave running state on busy and network errors',
       seqSelected: [{}],
       seqActiveTemplateId: null,
       selectedChannelIndexesForRun() { return null; },
+      enabledAgentChannels() { return [{ channel_index: 0 }]; },
+      captureSequenceChannelCardFocus() { return null; },
       setSeqControlsDisabled() {},
       clearSequenceResultsUi() {},
       document: {
         getElementById(id) {
+          if (id === 'seq-channel-cards') return null;
           assert.equal(id, 'seq-results');
           return results;
         },
@@ -885,10 +1033,12 @@ test('sequence card run posts only its explicit channel without changing top sel
     seqSelected: [{}],
     seqActiveTemplateId: 12,
     selectedChannelIndexesForRun() { return selected; },
+    captureSequenceChannelCardFocus() { return null; },
     setSeqControlsDisabled() {},
     clearSequenceResultsUi() {},
     document: {
       getElementById(id) {
+        if (id === 'seq-channel-cards') return null;
         assert.equal(id, 'seq-results');
         return results;
       },
@@ -915,10 +1065,11 @@ test('sequence card run posts only its explicit channel without changing top sel
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
-  const cardChannelIndexes = context.sequenceCardRunChannelIndexes([
-    { channel_index: 3, enabled: true },
-  ], 3);
-  await context.runSequence(cardChannelIndexes);
+  const cardChannelIndexes = context.sequenceCardRunChannelIndexes({
+    channel_index: 3,
+    synthetic: false,
+  });
+  await context.runSequence(cardChannelIndexes, false);
 
   assert.equal(request.path, '/api/sequence/run');
   assert.deepEqual(JSON.parse(request.options.body), {
@@ -936,10 +1087,13 @@ test('zero-argument top sequence run posts the current channel selection', async
     seqSelected: [{}],
     seqActiveTemplateId: null,
     selectedChannelIndexesForRun() { return [1]; },
+    enabledAgentChannels() { return [{ channel_index: 1 }]; },
+    captureSequenceChannelCardFocus() { return null; },
     setSeqControlsDisabled() {},
     clearSequenceResultsUi() {},
     document: {
       getElementById(id) {
+        if (id === 'seq-channel-cards') return null;
         assert.equal(id, 'seq-results');
         return results;
       },

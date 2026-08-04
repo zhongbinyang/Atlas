@@ -158,6 +158,8 @@ let agentChannels = [];
 let seqSelectedChannelIndexes = null;
 /** Latest multi-channel progress/result for channel cards and detail. */
 let seqChannelProgress = [];
+/** Whether the active/latest sequence run uses the fallback synthetic CH0. */
+let seqRunUsesSyntheticChannel = false;
 /** Channel shown in the dedicated detail screen; null keeps the card overview visible. */
 let seqActiveDetailChannelIndex = null;
 
@@ -1840,9 +1842,9 @@ function buildSequenceRunPayload(templateId, selectedChannelIndexes, explicitCha
   return payload;
 }
 
-function sequenceCardRunChannelIndexes(enabledChannels, channelIndex) {
-  if (!Array.isArray(enabledChannels) || !enabledChannels.length) return undefined;
-  return [channelIndex];
+function sequenceCardRunChannelIndexes(channel) {
+  if (channel && channel.synthetic === true) return undefined;
+  return [channel.channel_index];
 }
 
 function normalizeResourceName(raw) {
@@ -3310,7 +3312,7 @@ function isSequenceIssueStatus(status) {
 function pendingSequenceChannelsForOperator(enabledChannels, selectedIndexes) {
   const enabled = Array.isArray(enabledChannels) ? enabledChannels : [];
   if (!enabled.length) {
-    return [{ channel_index: 0, name: 'CH0', steps: [], overall: null, running: false }];
+    return [{ channel_index: 0, name: 'CH0', steps: [], overall: null, running: false, synthetic: true }];
   }
   const selected = Array.isArray(selectedIndexes)
     ? selectedIndexes.reduce(function (map, channelIndex) {
@@ -3332,6 +3334,7 @@ function pendingSequenceChannelsForOperator(enabledChannels, selectedIndexes) {
         steps: [],
         overall: null,
         running: false,
+        synthetic: false,
       };
     });
 }
@@ -3801,7 +3804,7 @@ function applyStepResults(steps) {
   }
 }
 
-function channelProgressFromEnvelope(prog) {
+function channelProgressFromEnvelope(prog, syntheticChannel) {
   if (!prog) return [];
   if (Array.isArray(prog.channels) && prog.channels.length) {
     return prog.channels.map(function (ch) {
@@ -3815,6 +3818,7 @@ function channelProgressFromEnvelope(prog) {
         current_name: ch.current_name,
         elapsed_ms: ch.elapsed_ms,
         current_step_elapsed_ms: ch.current_step_elapsed_ms,
+        synthetic: syntheticChannel === true,
         running: !!prog.running && (
           ch.current_position != null ||
           channelOverall === 'running' ||
@@ -3824,7 +3828,7 @@ function channelProgressFromEnvelope(prog) {
       };
     });
   }
-  // Legacy flat progress → single synthetic channel
+  // Legacy flat progress → single display channel; run state supplies its identity.
   return [
     {
       channel_index: 0,
@@ -3835,13 +3839,14 @@ function channelProgressFromEnvelope(prog) {
       current_name: prog.current_name,
       elapsed_ms: prog.elapsed_ms,
       current_step_elapsed_ms: prog.current_step_elapsed_ms,
+      synthetic: syntheticChannel === true,
       running: !!prog.running,
     },
   ];
 }
 
 function applyMultiChannelProgress(prog) {
-  seqChannelProgress = channelProgressFromEnvelope(prog);
+  seqChannelProgress = channelProgressFromEnvelope(prog, seqRunUsesSyntheticChannel);
   // Keep the edit queue free of per-channel measured/status — results live in the run report.
   seqStepResults = {};
   renderSeqChannelCards();
@@ -3864,12 +3869,13 @@ function sequenceStatusVisualState(status) {
   return 'pending';
 }
 
-function renderSeqChannelCards() {
+function renderSeqChannelCards(preservedFocus) {
   const host = document.getElementById('seq-channel-cards');
   if (!host) return;
-  const focusedControl = captureSequenceChannelCardFocus(host);
+  const focusedControl = preservedFocus === undefined
+    ? captureSequenceChannelCardFocus(host)
+    : preservedFocus;
   host.innerHTML = '';
-  const enabledChannels = enabledAgentChannels();
   const sourceChannels = sequenceChannelsForDisplay();
   if (!sourceChannels.length) {
     const empty = document.createElement('p');
@@ -3959,7 +3965,7 @@ function renderSeqChannelCards() {
     runButton.disabled = seqRunning || !sequenceRunQueueItems().length;
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
-      runSequence(sequenceCardRunChannelIndexes(enabledChannels, channel.channel_index));
+      runSequence(sequenceCardRunChannelIndexes(channel), channel.synthetic === true);
     });
 
     const detailButton = document.createElement('button');
@@ -4008,7 +4014,9 @@ function sequenceChannelsForDisplay() {
     progressByIndex[channel.channel_index] = channel;
   });
   return pending.map(function (channel) {
-    return progressByIndex[channel.channel_index] || channel;
+    const progress = progressByIndex[channel.channel_index];
+    if (!progress || !!progress.synthetic !== !!channel.synthetic) return channel;
+    return progress;
   });
 }
 
@@ -4297,7 +4305,7 @@ function renderSeqChannelDetail() {
   }
 }
 
-function clearSequenceResultsUi() {
+function clearSequenceResultsUi(preservedCardFocus) {
   seqStepResults = {};
   seqChannelProgress = [];
   updateSeqOverall({});
@@ -4306,7 +4314,7 @@ function clearSequenceResultsUi() {
     resultsEl.innerHTML = '';
     resultsEl.hidden = true;
   }
-  renderSeqChannelCards();
+  renderSeqChannelCards(preservedCardFocus);
   renderSeqChannelDetail();
   renderSeqSelected();
 }
@@ -5821,7 +5829,7 @@ function renderSeqResults(data) {
     container.hidden = true;
   }
   const envelope = multiEnvelopeToProgress(data);
-  seqChannelProgress = channelProgressFromEnvelope(envelope);
+  seqChannelProgress = channelProgressFromEnvelope(envelope, seqRunUsesSyntheticChannel);
   if (!seqChannelProgress.length) return;
   renderSeqChannelCards();
   renderSeqChannelDetail();
@@ -6006,7 +6014,7 @@ async function loadSequenceTemplateToQueue(tpl) {
   }
 }
 
-async function runSequence(explicitChannelIndexes) {
+async function runSequence(explicitChannelIndexes, syntheticChannel) {
   if (seqRunning || !sequenceRunQueueItems().length) return;
   const selectedChannelIndexes = selectedChannelIndexesForRun();
   const channelIndexes = Array.isArray(explicitChannelIndexes)
@@ -6016,8 +6024,15 @@ async function runSequence(explicitChannelIndexes) {
     showSeqMsg('请至少选择一个通道', false);
     return;
   }
+  const cardHost = document.getElementById('seq-channel-cards');
+  const focusedCardControl = captureSequenceChannelCardFocus(cardHost);
+  seqRunUsesSyntheticChannel = syntheticChannel === true || (
+    syntheticChannel == null &&
+    !Array.isArray(explicitChannelIndexes) &&
+    !enabledAgentChannels().length
+  );
   setSeqControlsDisabled(true);
-  clearSequenceResultsUi();
+  clearSequenceResultsUi(focusedCardControl);
   document.getElementById('seq-results').innerHTML = '';
   updateSeqOverall({ overall: 'running' });
   showSeqMsg('执行中…', true);
