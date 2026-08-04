@@ -1,100 +1,164 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
 /// Single-flight busy slot shared by sequence / delay / REST (not shell tasks).
 ///
-/// Each successful [`Self::try_acquire`] bumps a generation token. [`Self::release`]
-/// and cancel teardown must pass that token so a stale run cannot clear a newer hold
-/// after force-release.
+/// Each successful acquisition bumps a generation token. Releases must pass that
+/// token so a stale run cannot clear a newer hold after force-release.
 pub struct TaskSlot {
     inner: Mutex<Inner>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskHold {
+    pub owner: String,
+    pub channel_index: Option<usize>,
+    pub generation: u64,
+}
+
+enum Holds {
+    Idle,
+    Exclusive { owner: String, generation: u64 },
+    Sequence(HashMap<usize, u64>),
+}
+
 struct Inner {
-    busy: bool,
-    owner: Option<String>,
-    /// Monotonic; incremented on every successful acquire and on force_release.
-    generation: u64,
+    holds: Holds,
+    /// Monotonic; incremented before every acquisition and on force release.
+    next_generation: u64,
 }
 
 impl TaskSlot {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                busy: false,
-                owner: None,
-                generation: 0,
+                holds: Holds::Idle,
+                next_generation: 0,
             }),
         })
     }
 
     pub async fn is_busy(&self) -> bool {
-        self.inner.lock().await.busy
+        !matches!(self.inner.lock().await.holds, Holds::Idle)
     }
 
     pub async fn owner(&self) -> Option<String> {
-        self.inner.lock().await.owner.clone()
+        match &self.inner.lock().await.holds {
+            Holds::Idle => None,
+            Holds::Exclusive { owner, .. } => Some(owner.clone()),
+            Holds::Sequence(_) => Some("sequence".to_string()),
+        }
     }
 
     /// Returns the generation token for this hold, or Err("busy") if occupied.
     pub async fn try_acquire(&self, owner: &str) -> Result<u64, &'static str> {
         let mut g = self.inner.lock().await;
-        if g.busy {
+        if !matches!(g.holds, Holds::Idle) {
             return Err("busy");
         }
-        g.generation = g.generation.wrapping_add(1);
-        g.busy = true;
-        g.owner = Some(owner.to_string());
-        Ok(g.generation)
+        g.next_generation = g.next_generation.wrapping_add(1);
+        let generation = g.next_generation;
+        g.holds = Holds::Exclusive {
+            owner: owner.to_string(),
+            generation,
+        };
+        Ok(generation)
+    }
+
+    /// Acquire a sequence hold for one channel. Different channels may hold
+    /// concurrently; duplicate channels are rejected.
+    pub async fn try_acquire_sequence(&self, channel_index: usize) -> Result<u64, &'static str> {
+        let mut g = self.inner.lock().await;
+        if matches!(g.holds, Holds::Exclusive { .. }) {
+            return Err("busy");
+        }
+        if matches!(&g.holds, Holds::Sequence(channels) if channels.contains_key(&channel_index)) {
+            return Err("channel busy");
+        }
+
+        g.next_generation = g.next_generation.wrapping_add(1);
+        let generation = g.next_generation;
+        match &mut g.holds {
+            Holds::Idle => {
+                let mut channels = HashMap::new();
+                channels.insert(channel_index, generation);
+                g.holds = Holds::Sequence(channels);
+            }
+            Holds::Sequence(channels) => {
+                channels.insert(channel_index, generation);
+            }
+            Holds::Exclusive { .. } => unreachable!("exclusive holds return above"),
+        }
+        Ok(generation)
     }
 
     /// Release only if `generation` is still the active hold.
     /// Returns true if this call cleared the slot.
     pub async fn release(&self, generation: u64) -> bool {
         let mut g = self.inner.lock().await;
-        if g.busy && g.generation == generation {
-            g.busy = false;
-            g.owner = None;
+        if matches!(g.holds, Holds::Exclusive { generation: active, .. } if active == generation) {
+            g.holds = Holds::Idle;
             true
         } else {
             false
         }
     }
 
-    /// Generation of the current hold, if busy.
+    /// Release a sequence hold only if both channel and generation still match.
+    pub async fn release_sequence(&self, channel_index: usize, generation: u64) -> bool {
+        let mut g = self.inner.lock().await;
+        let Holds::Sequence(channels) = &mut g.holds else {
+            return false;
+        };
+        if channels.get(&channel_index) != Some(&generation) {
+            return false;
+        }
+        channels.remove(&channel_index);
+        if channels.is_empty() {
+            g.holds = Holds::Idle;
+        }
+        true
+    }
+
+    /// Generation of the current exclusive hold, if any.
     pub async fn current_generation_if_busy(&self) -> Option<u64> {
         let g = self.inner.lock().await;
-        if g.busy {
-            Some(g.generation)
-        } else {
-            None
+        match g.holds {
+            Holds::Exclusive { generation, .. } => Some(generation),
+            Holds::Idle | Holds::Sequence(_) => None,
         }
     }
 
-    /// Unconditionally clear a busy slot and invalidate its generation so a
-    /// subsequent [`Self::release`] from the old holder is a no-op.
-    /// Returns the generation that was force-released, if any.
-    pub async fn force_release(&self) -> Option<u64> {
+    /// Unconditionally clear all holds and invalidate their generations.
+    pub async fn force_release_all(&self) -> Vec<TaskHold> {
         let mut g = self.inner.lock().await;
-        if !g.busy {
-            return None;
+        let previous = std::mem::replace(&mut g.holds, Holds::Idle);
+        g.next_generation = g.next_generation.wrapping_add(1);
+        match previous {
+            Holds::Idle => Vec::new(),
+            Holds::Exclusive { owner, generation } => vec![TaskHold {
+                owner,
+                channel_index: None,
+                generation,
+            }],
+            Holds::Sequence(channels) => channels
+                .into_iter()
+                .map(|(channel_index, generation)| TaskHold {
+                    owner: "sequence".to_string(),
+                    channel_index: Some(channel_index),
+                    generation,
+                })
+                .collect(),
         }
-        let gen = g.generation;
-        g.busy = false;
-        g.owner = None;
-        // Invalidate the old generation so stale release(gen) cannot clear a later hold.
-        g.generation = g.generation.wrapping_add(1);
-        Some(gen)
     }
 
     /// Force-release only if `generation` is still the active hold.
     /// Keeps the slot busy for other generations (no-op if mismatched).
     pub async fn force_release_if(&self, generation: u64) -> bool {
         let mut g = self.inner.lock().await;
-        if g.busy && g.generation == generation {
-            g.busy = false;
-            g.owner = None;
-            g.generation = g.generation.wrapping_add(1);
+        if matches!(g.holds, Holds::Exclusive { generation: active, .. } if active == generation) {
+            g.holds = Holds::Idle;
+            g.next_generation = g.next_generation.wrapping_add(1);
             true
         } else {
             false
@@ -109,8 +173,8 @@ mod tests {
     #[tokio::test]
     async fn try_acquire_rejects_second() {
         let slot = TaskSlot::new();
-        let gen = slot.try_acquire("sequence").await.unwrap();
-        assert_eq!(slot.owner().await.as_deref(), Some("sequence"));
+        let gen = slot.try_acquire("delay").await.unwrap();
+        assert_eq!(slot.owner().await.as_deref(), Some("delay"));
         assert_eq!(slot.try_acquire("delay").await.unwrap_err(), "busy");
         assert!(slot.release(gen).await);
         assert!(slot.owner().await.is_none());
@@ -121,16 +185,16 @@ mod tests {
     #[tokio::test]
     async fn stale_release_after_force_release_does_not_clear_new_hold() {
         let slot = TaskSlot::new();
-        let gen_a = slot.try_acquire("sequence").await.unwrap();
-        assert_eq!(slot.force_release().await, Some(gen_a));
+        let gen_a = slot.try_acquire("delay").await.unwrap();
+        assert_eq!(slot.force_release_all().await.len(), 1);
         assert!(!slot.is_busy().await);
 
-        let gen_b = slot.try_acquire("sequence").await.unwrap();
+        let gen_b = slot.try_acquire("delay").await.unwrap();
         assert_ne!(gen_a, gen_b);
         // Old run finishes and tries to release its generation — must not touch B.
         assert!(!slot.release(gen_a).await);
         assert!(slot.is_busy().await);
-        assert_eq!(slot.owner().await.as_deref(), Some("sequence"));
+        assert_eq!(slot.owner().await.as_deref(), Some("delay"));
         assert!(slot.release(gen_b).await);
         assert!(!slot.is_busy().await);
     }
@@ -138,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn release_with_wrong_generation_is_noop() {
         let slot = TaskSlot::new();
-        let gen = slot.try_acquire("sequence").await.unwrap();
+        let gen = slot.try_acquire("delay").await.unwrap();
         assert!(!slot.release(gen.wrapping_add(99)).await);
         assert!(slot.is_busy().await);
         assert!(slot.release(gen).await);
@@ -147,11 +211,54 @@ mod tests {
     #[tokio::test]
     async fn force_release_if_mismatched_keeps_busy() {
         let slot = TaskSlot::new();
-        let gen = slot.try_acquire("sequence").await.unwrap();
+        let gen = slot.try_acquire("delay").await.unwrap();
         assert!(!slot.force_release_if(gen.wrapping_add(1)).await);
         assert!(slot.is_busy().await);
         assert_eq!(slot.current_generation_if_busy().await, Some(gen));
         assert!(slot.force_release_if(gen).await);
         assert!(!slot.is_busy().await);
+    }
+
+    #[tokio::test]
+    async fn distinct_sequence_channels_share_admission_but_duplicates_do_not() {
+        let slot = TaskSlot::new();
+        let ch0 = slot.try_acquire_sequence(0).await.unwrap();
+        let ch1 = slot.try_acquire_sequence(1).await.unwrap();
+
+        assert_ne!(ch0, ch1);
+        assert_eq!(
+            slot.try_acquire_sequence(0).await.unwrap_err(),
+            "channel busy"
+        );
+        assert_eq!(slot.owner().await.as_deref(), Some("sequence"));
+        assert!(slot.release_sequence(0, ch0).await);
+        assert!(slot.is_busy().await);
+        assert!(slot.release_sequence(1, ch1).await);
+        assert!(!slot.is_busy().await);
+    }
+
+    #[tokio::test]
+    async fn exclusive_and_sequence_admission_exclude_each_other() {
+        let slot = TaskSlot::new();
+        let delay = slot.try_acquire("delay").await.unwrap();
+        assert_eq!(slot.try_acquire_sequence(0).await.unwrap_err(), "busy");
+        assert!(slot.release(delay).await);
+
+        let ch0 = slot.try_acquire_sequence(0).await.unwrap();
+        assert_eq!(slot.try_acquire("rest").await.unwrap_err(), "busy");
+        assert!(slot.release_sequence(0, ch0).await);
+    }
+
+    #[tokio::test]
+    async fn stale_sequence_release_cannot_clear_a_newer_generation() {
+        let slot = TaskSlot::new();
+        let old = slot.try_acquire_sequence(3).await.unwrap();
+        let released = slot.force_release_all().await;
+        assert_eq!(released.len(), 1);
+        let new = slot.try_acquire_sequence(3).await.unwrap();
+
+        assert!(!slot.release_sequence(3, old).await);
+        assert!(slot.is_busy().await);
+        assert!(slot.release_sequence(3, new).await);
     }
 }
