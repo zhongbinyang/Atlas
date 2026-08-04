@@ -14,7 +14,7 @@ impl SchedulerConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(26630),
             database_url: std::env::var("SCHEDULER_DATABASE_URL").unwrap_or_else(|_| {
-                "postgres://postgres:postgres@10.102.30.18:5432/atlas?sslmode=disable".into()
+                "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable".into()
             }),
             poll_status_interval_secs: std::env::var("SCHEDULER_POLL_STATUS_INTERVAL_SECS")
                 .ok()

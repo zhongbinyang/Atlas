@@ -226,3 +226,34 @@ fn scheduler_machine_telemetry_strip_is_accessible_and_mobile_safe() {
     assert!(css.contains("@media (max-width: 640px)"));
     assert!(css.contains(".machine-control-strip { grid-template-columns: 1fr; }"));
 }
+
+#[test]
+fn scheduler_defaults_postgres_to_loopback() {
+    let scheduler_dir = manifest_dir();
+    let config = fs::read_to_string(scheduler_dir.join("src/config.rs")).unwrap();
+    let db = fs::read_to_string(scheduler_dir.join("src/db.rs")).unwrap();
+    let readme = fs::read_to_string(scheduler_dir.join("../../README.md")).unwrap();
+    let loopback_url = "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable";
+
+    assert!(
+        config.contains("SCHEDULER_DATABASE_URL") && config.contains(loopback_url),
+        "scheduler config must default SCHEDULER_DATABASE_URL to the loopback PostgreSQL URL"
+    );
+    assert!(
+        db.contains(loopback_url),
+        "scheduler database test/default URL must use loopback PostgreSQL"
+    );
+    assert!(
+        readme.contains("SCHEDULER_DATABASE_URL")
+            && readme.contains(loopback_url)
+            && readme.matches("127.0.0.1:5432").count() >= 3,
+        "README overview, environment table, and PowerShell startup example must describe loopback PostgreSQL"
+    );
+
+    for (name, contents) in [("config.rs", &config), ("db.rs", &db), ("README.md", &readme)] {
+        assert!(
+            !contents.contains("10.102.30.18:5432"),
+            "{name} must not retain the remote PostgreSQL endpoint"
+        );
+    }
+}

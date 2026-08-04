@@ -168,7 +168,7 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
 pub fn default_database_url() -> String {
     std::env::var("SCHEDULER_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:postgres@10.102.30.18:5432/atlas?sslmode=disable".into()
+        "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable".into()
     })
 }
 
