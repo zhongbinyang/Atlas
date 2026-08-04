@@ -3506,6 +3506,24 @@ function resolveSequenceGroupOpen(initialOpen, preservedOpen, forceOpen) {
   return preservedOpen == null ? !!initialOpen : !!preservedOpen;
 }
 
+function focusSequenceDetailSummary(summary) {
+  if (!summary || typeof summary.focus !== 'function') return;
+  try {
+    summary.focus({ preventScroll: true });
+    return;
+  } catch (e) {
+    // Older browsers may reject the FocusOptions argument.
+  }
+  const view = typeof window === 'undefined' ? null : window;
+  const left = view ? (view.scrollX != null ? view.scrollX : view.pageXOffset) : 0;
+  const top = view ? (view.scrollY != null ? view.scrollY : view.pageYOffset) : 0;
+  try {
+    summary.focus();
+  } finally {
+    if (view && typeof view.scrollTo === 'function') view.scrollTo(left, top);
+  }
+}
+
 function formatMeasuredSummary(measured) {
   if (measured == null) return '—';
   try {
@@ -4152,10 +4170,10 @@ function renderSeqChannelDetail() {
       return entry.getAttribute('data-group-key') === focusedGroupKey;
     });
     const focusedSummary = focusedGroup && focusedGroup.querySelector('.seq-channel-group-summary');
-    if (focusedSummary) focusedSummary.focus();
+    focusSequenceDetailSummary(focusedSummary);
   } else if (focusedPosition != null) {
     const focusedSummary = host.querySelector('.seq-channel-step-row[data-position="' + focusedPosition + '"] > summary');
-    if (focusedSummary) focusedSummary.focus();
+    focusSequenceDetailSummary(focusedSummary);
   }
   if (nextCurrent && nextCurrent !== previousCurrent) {
     const activeRow = host.querySelector('.seq-channel-step-row[data-position="' + nextCurrent + '"]');

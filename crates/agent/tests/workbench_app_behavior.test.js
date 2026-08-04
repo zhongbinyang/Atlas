@@ -477,6 +477,39 @@ test('group disclosure prefers forced expansion, then polling state, then initia
   assert.equal(context.resolveSequenceGroupOpen(false, true, false), true);
 });
 
+test('sequence detail focus restoration prevents scrolling and restores scroll after fallback', () => {
+  const normalCalls = [];
+  const normalContext = {};
+  vm.createContext(normalContext);
+  vm.runInContext(functionSource('focusSequenceDetailSummary'), normalContext);
+  normalContext.focusSequenceDetailSummary({
+    focus(options) { normalCalls.push(options); },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(normalCalls)), [{ preventScroll: true }]);
+
+  const scroll = { left: 37, top: 49 };
+  const fallbackContext = {
+    window: {
+      get scrollX() { return scroll.left; },
+      get scrollY() { return scroll.top; },
+      scrollTo(left, top) {
+        scroll.left = left;
+        scroll.top = top;
+      },
+    },
+  };
+  vm.createContext(fallbackContext);
+  vm.runInContext(functionSource('focusSequenceDetailSummary'), fallbackContext);
+  fallbackContext.focusSequenceDetailSummary({
+    focus(options) {
+      if (options) throw new Error('preventScroll unsupported');
+      scroll.left = 0;
+      scroll.top = 0;
+    },
+  });
+  assert.deepEqual(scroll, { left: 37, top: 49 });
+});
+
 test('channel detail discards a result that collides with a group header position', () => {
   const context = {};
   vm.createContext(context);
