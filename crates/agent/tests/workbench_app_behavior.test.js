@@ -295,6 +295,8 @@ test('channel card model is ready before the first run', () => {
 test('channel detail model keeps the complete queue pending before execution', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
   assert.deepEqual(
@@ -315,6 +317,8 @@ test('channel detail model keeps the complete queue pending before execution', (
 test('channel detail model preserves terminal status and recorded step time', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
   const model = context.buildSequenceChannelDetailModel({
@@ -328,6 +332,86 @@ test('channel detail model preserves terminal status and recorded step time', ()
   assert.equal(model.elapsedMs, 80);
   assert.equal(model.steps[0].status, 'pass');
   assert.equal(model.steps[0].elapsedMs, 61);
+});
+
+test('channel detail retains flat steps and adds named group sections', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+  vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
+
+  const model = context.buildSequenceChannelDetailModel({
+    channel_index: 0,
+    name: 'CH0',
+    steps: [{ position: 0, status: 'pass' }, { position: 2, status: 'running' }],
+  }, [
+    { position: 0, name: 'Root' },
+    { position: 1, template_source: 'group', name: '校准', collapsed: true },
+    { position: 2, name: 'Measure' },
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    positions: model.steps.map((step) => step.position),
+    namedGroupCount: model.namedGroupCount,
+    sections: model.sections.map((section) => ({
+      title: section.title,
+      positions: section.steps.map((step) => step.position),
+      state: section.summary.state,
+      open: section.summary.open,
+    })),
+  })), {
+    positions: [0, 2],
+    namedGroupCount: 1,
+    sections: [
+      { title: '未分组步骤', positions: [0], state: 'pass', open: true },
+      { title: '校准', positions: [2], state: 'running', open: true },
+    ],
+  });
+});
+
+test('channel detail projects persisted groups without counting headers as steps', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+
+  const sections = context.buildSequenceDetailSections([
+    { position: 0, name: 'Root' },
+    { position: 1, template_source: 'group', name: '校准', note: '连接仪表', enabled: true, collapsed: true },
+    { position: 2, name: 'Zero' },
+    { position: 3, name: 'Measure' },
+    { position: 4, template_source: 'group', name: '收尾', enabled: false, collapsed: false },
+    { position: 5, name: 'Reset' },
+  ], [
+    { position: 0, name: 'Root', status: 'pending' },
+    { position: 2, name: 'Zero', status: 'pass' },
+    { position: 3, name: 'Measure', status: 'running' },
+    { position: 5, name: 'Reset', status: 'skipped' },
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.map((section) => ({
+    kind: section.kind,
+    title: section.title,
+    positions: section.steps.map((step) => step.position),
+  })))), [
+    { kind: 'ungrouped', title: '未分组步骤', positions: [0] },
+    { kind: 'group', title: '校准', positions: [2, 3] },
+    { kind: 'group', title: '收尾', positions: [5] },
+  ]);
+});
+
+test('group summaries prioritize disabled, active, failure, and terminal member states', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+  const summary = context.buildSequenceGroupSummary;
+
+  assert.equal(summary({ enabled: false, steps: [{ status: 'skipped' }] }).state, 'disabled');
+  assert.equal(summary({ enabled: true, collapsed: true, steps: [{ status: 'running' }] }).state, 'running');
+  assert.equal(summary({ enabled: true, steps: [{ status: 'pass' }, { status: 'error' }] }).state, 'fail');
+  assert.equal(summary({ enabled: true, steps: [{ status: 'pass' }, { status: 'skipped' }] }).state, 'pass');
+  assert.equal(summary({ enabled: true, steps: [{ status: 'skipped' }] }).state, 'skipped');
+  assert.equal(summary({ enabled: true, steps: [{ status: 'pass' }, { status: 'pending' }] }).state, 'pending');
 });
 
 test('sequence elapsed formatter is stable from milliseconds through hours', () => {

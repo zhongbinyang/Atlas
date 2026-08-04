@@ -3377,6 +3377,12 @@ function buildSequenceChannelDetailModel(channel, queue) {
   const sourceQueue = Array.isArray(queue) ? queue : [];
   const actualSteps = Array.isArray(channel.steps) ? channel.steps : [];
   const byPosition = {};
+  const groupPositions = {};
+  for (let i = 0; i < sourceQueue.length; i++) {
+    const item = sourceQueue[i] || {};
+    if (item.template_source !== 'group') continue;
+    groupPositions[item.position != null ? item.position : i] = true;
+  }
   for (let i = 0; i < actualSteps.length; i++) {
     const result = actualSteps[i] || {};
     const position = result.position != null ? result.position : i;
@@ -3386,6 +3392,10 @@ function buildSequenceChannelDetailModel(channel, queue) {
   for (let i = 0; i < sourceQueue.length; i++) {
     const item = sourceQueue[i] || {};
     const position = item.position != null ? item.position : i;
+    if (item.template_source === 'group') {
+      delete byPosition[position];
+      continue;
+    }
     const result = byPosition[position] || null;
     let status = result && result.status ? String(result.status).toLowerCase() : 'pending';
     if (!result && channel.current_position === position && channel.running) status = 'running';
@@ -3402,6 +3412,7 @@ function buildSequenceChannelDetailModel(channel, queue) {
   Object.keys(byPosition).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (key) {
     const result = byPosition[key] || {};
     const position = result.position != null ? result.position : Number(key);
+    if (groupPositions[position]) return;
     detailSteps.push({
       position: position,
       name: result.name || '步骤 ' + (position + 1),
@@ -3410,6 +3421,10 @@ function buildSequenceChannelDetailModel(channel, queue) {
       item: null,
       result: result,
     });
+  });
+  const sections = buildSequenceDetailSections(sourceQueue, detailSteps);
+  sections.forEach(function (section) {
+    section.summary = buildSequenceGroupSummary(section);
   });
   return {
     channelIndex: channel.channel_index,
@@ -3420,6 +3435,69 @@ function buildSequenceChannelDetailModel(channel, queue) {
     currentPosition: channel.current_position != null ? channel.current_position : null,
     currentName: channel.current_name || null,
     steps: detailSteps,
+    sections: sections,
+    namedGroupCount: sections.filter(function (section) { return section.kind === 'group'; }).length,
+  };
+}
+
+function buildSequenceDetailSections(queue, detailSteps) {
+  const stepByPosition = {};
+  (detailSteps || []).forEach(function (step) { stepByPosition[step.position] = step; });
+  const sections = [];
+  let current = null;
+  (queue || []).forEach(function (item, index) {
+    const position = item && item.position != null ? item.position : index;
+    if (item && item.template_source === 'group') {
+      current = {
+        key: 'group-' + position,
+        kind: 'group',
+        title: item.name || '未命名组',
+        note: item.note || '',
+        enabled: item.enabled !== false,
+        collapsed: !!item.collapsed,
+        steps: [],
+      };
+      sections.push(current);
+      return;
+    }
+    if (!current) {
+      current = { key: 'ungrouped', kind: 'ungrouped', title: '未分组步骤', enabled: true, collapsed: false, steps: [] };
+      sections.push(current);
+    }
+    if (stepByPosition[position]) current.steps.push(stepByPosition[position]);
+  });
+  return sections;
+}
+
+function buildSequenceGroupSummary(section) {
+  section = section || {};
+  const steps = Array.isArray(section.steps) ? section.steps : [];
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  let running = false;
+  for (let i = 0; i < steps.length; i++) {
+    const status = String(steps[i] && steps[i].status || 'pending').toLowerCase();
+    if (status === 'pass' || status === 'ok') passed += 1;
+    else if (status === 'skipped') skipped += 1;
+    else if (status === 'fail' || status === 'error' || status === 'aborted') failed += 1;
+    else if (status === 'running') running = true;
+  }
+  const completed = passed + failed + skipped;
+  let state = 'pending';
+  if (section.enabled === false) state = 'disabled';
+  else if (running) state = 'running';
+  else if (failed) state = 'fail';
+  else if (steps.length && completed === steps.length && passed) state = 'pass';
+  else if (steps.length && completed === steps.length && skipped) state = 'skipped';
+  return {
+    state: state,
+    completed: completed,
+    total: steps.length,
+    passed: passed,
+    failed: failed,
+    skipped: skipped,
+    open: state === 'running' || state === 'fail' ? true : !section.collapsed,
   };
 }
 
@@ -3861,7 +3939,7 @@ function renderSeqChannelDetail() {
     detail.hidden = true;
     return;
   }
-  const model = buildSequenceChannelDetailModel(channels[channelIndex], sequenceRunQueueItems());
+  const model = buildSequenceChannelDetailModel(channels[channelIndex], seqSelected);
   const cardModel = buildSequenceChannelCardModel(channels[channelIndex], sequenceRunQueueItems());
   overview.hidden = true;
   detail.hidden = false;
