@@ -3920,6 +3920,82 @@ function appendSequenceJsonBlock(parent, title, value) {
   parent.appendChild(details);
 }
 
+function appendSequenceDetailStep(parent, step, model) {
+  const row = document.createElement('details');
+  row.className = 'seq-channel-step-row';
+  row.setAttribute('data-state', sequenceStatusVisualState(step.status));
+  row.setAttribute('data-position', String(step.position));
+  if ((model.expandedPositions && model.expandedPositions[step.position]) || step.status === 'running' || isSequenceIssueStatus(step.status)) row.open = true;
+  const summary = document.createElement('summary');
+  summary.className = 'seq-channel-step-summary';
+  const number = document.createElement('span');
+  number.className = 'seq-channel-step-number mono';
+  number.textContent = String(step.position + 1).padStart(2, '0');
+  const name = document.createElement('strong');
+  name.className = 'seq-channel-step-name';
+  name.textContent = step.name;
+  const result = document.createElement('span');
+  result.className = 'seq-channel-step-status';
+  result.textContent = formatStepStatus(step.status === 'pending' ? '' : step.status);
+  if (step.status === 'pending') result.textContent = '待执行';
+  const measured = document.createElement('span');
+  measured.className = 'seq-channel-step-measured mono';
+  measured.textContent = formatMeasuredSummary(step.result && step.result.measured);
+  const spec = document.createElement('span');
+  spec.className = 'seq-channel-step-spec';
+  const limits = Array.isArray(step.item && step.item.limits) ? step.item.limits : [];
+  spec.textContent = limits.length ? 'Spec · ' + limits.length + ' 项' : '未配置 Spec';
+  const stepTime = document.createElement('span');
+  stepTime.className = 'seq-channel-step-elapsed mono';
+  stepTime.textContent = step.status === 'running' && model.currentElapsedMs != null
+    ? formatSequenceElapsed(model.currentElapsedMs)
+    : formatSequenceElapsed(step.elapsedMs);
+  summary.appendChild(number);
+  summary.appendChild(name);
+  summary.appendChild(result);
+  summary.appendChild(measured);
+  summary.appendChild(spec);
+  summary.appendChild(stepTime);
+  row.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'seq-channel-step-body';
+  const metrics = buildSequenceMetricRows(step.item, step.result);
+  if (metrics.length) {
+    const table = document.createElement('table');
+    table.className = 'seq-channel-metrics-table';
+    table.innerHTML = '<thead><tr><th>输出</th><th>实测</th><th>下限/期望</th><th>上限</th><th>单位</th><th>结果</th></tr></thead><tbody>' + metrics.map(function (metric) {
+      return '<tr><td>' + escapeHtml(metric.output) + '</td><td class="mono">' + escapeHtml(metric.value) + '</td><td class="mono">' + escapeHtml(metric.min) + '</td><td class="mono">' + escapeHtml(metric.max) + '</td><td>' + escapeHtml(metric.unit) + '</td><td>' + escapeHtml(metric.result) + '</td></tr>';
+    }).join('') + '</tbody>';
+    body.appendChild(table);
+  }
+  appendSequenceJsonBlock(body, '配置输入', step.item && step.item.inputs);
+  appendSequenceJsonBlock(body, '完整输出', step.result && step.result.result);
+  appendSequenceJsonBlock(body, '原始步骤 JSON', step.result);
+  const logPath = lastAgentStatus && lastAgentStatus.log_dir
+    ? lastAgentStatus.log_dir + '\\sequence_runs'
+    : 'Agent 日志目录 sequence_runs';
+  appendSequenceJsonBlock(body, '运行日志', { path: logPath });
+  if (step.result && step.result.error) {
+    const error = document.createElement('p');
+    error.className = 'seq-channel-step-error mono';
+    error.textContent = step.result.error;
+    body.appendChild(error);
+  }
+  row.appendChild(body);
+  parent.appendChild(row);
+  return row;
+}
+
+function formatSequenceGroupStatus(state) {
+  if (state === 'disabled') return '已禁用';
+  if (state === 'running') return '执行中';
+  if (state === 'fail') return '失败';
+  if (state === 'pass') return '通过';
+  if (state === 'skipped') return '已跳过';
+  return '待执行';
+}
+
 function renderSeqChannelDetail() {
   const overview = document.getElementById('seq-channel-overview');
   const detail = document.getElementById('seq-channel-detail');
@@ -3952,10 +4028,9 @@ function renderSeqChannelDetail() {
   if (status) status.textContent = formatSequenceOverall(model.overall);
   if (elapsed) elapsed.textContent = '总耗时 ' + formatSequenceElapsed(model.elapsedMs);
   if (counts) {
-    counts.textContent = '通过 ' + cardModel.passed +
+    counts.textContent = model.namedGroupCount + ' 个组 · ' + cardModel.total + ' 个步骤 · 通过 ' + cardModel.passed +
       ' · 失败 ' + cardModel.failed +
-      ' · 跳过 ' + cardModel.skipped +
-      ' · ' + cardModel.completed + ' / ' + cardModel.total + ' 步';
+      ' · 跳过 ' + cardModel.skipped;
   }
 
   const prev = document.getElementById('seq-channel-detail-prev');
@@ -3994,70 +4069,61 @@ function renderSeqChannelDetail() {
   const nextCurrent = model.currentPosition == null ? '' : String(model.currentPosition);
   host.innerHTML = '';
   host.setAttribute('data-current-position', nextCurrent);
-  model.steps.forEach(function (step) {
-    const row = document.createElement('details');
-    row.className = 'seq-channel-step-row';
-    row.setAttribute('data-state', sequenceStatusVisualState(step.status));
-    row.setAttribute('data-position', String(step.position));
-    if (expandedPositions[step.position] || step.status === 'running' || isSequenceIssueStatus(step.status)) row.open = true;
+  model.expandedPositions = expandedPositions;
+  model.sections.forEach(function (section) {
+    const group = document.createElement('details');
+    group.className = 'seq-channel-group';
+    group.setAttribute('data-group-key', section.key);
+    group.setAttribute('data-state', section.summary.state);
+    group.open = section.summary.open;
+
     const summary = document.createElement('summary');
-    summary.className = 'seq-channel-step-summary';
-    const number = document.createElement('span');
-    number.className = 'seq-channel-step-number mono';
-    number.textContent = String(step.position + 1).padStart(2, '0');
-    const name = document.createElement('strong');
-    name.className = 'seq-channel-step-name';
-    name.textContent = step.name;
-    const result = document.createElement('span');
-    result.className = 'seq-channel-step-status';
-    result.textContent = formatStepStatus(step.status === 'pending' ? '' : step.status);
-    if (step.status === 'pending') result.textContent = '待执行';
-    const measured = document.createElement('span');
-    measured.className = 'seq-channel-step-measured mono';
-    measured.textContent = formatMeasuredSummary(step.result && step.result.measured);
-    const spec = document.createElement('span');
-    spec.className = 'seq-channel-step-spec';
-    const limits = Array.isArray(step.item && step.item.limits) ? step.item.limits : [];
-    spec.textContent = limits.length ? 'Spec · ' + limits.length + ' 项' : '未配置 Spec';
-    const stepTime = document.createElement('span');
-    stepTime.className = 'seq-channel-step-elapsed mono';
-    stepTime.textContent = step.status === 'running' && model.currentElapsedMs != null
-      ? formatSequenceElapsed(model.currentElapsedMs)
-      : formatSequenceElapsed(step.elapsedMs);
-    summary.appendChild(number);
-    summary.appendChild(name);
-    summary.appendChild(result);
-    summary.appendChild(measured);
-    summary.appendChild(spec);
-    summary.appendChild(stepTime);
-    row.appendChild(summary);
+    summary.className = 'seq-channel-group-summary';
+    const marker = document.createElement('span');
+    marker.className = 'seq-channel-group-marker';
+    marker.textContent = section.kind === 'ungrouped' ? '未分组' : '组';
+    const heading = document.createElement('span');
+    heading.className = 'seq-channel-group-heading';
+    const title = document.createElement('strong');
+    title.textContent = section.title;
+    heading.appendChild(title);
+    if (section.note) {
+      const note = document.createElement('span');
+      note.className = 'seq-channel-group-note';
+      note.textContent = section.note;
+      heading.appendChild(note);
+    }
+    const groupStatus = document.createElement('span');
+    groupStatus.className = 'seq-channel-group-status';
+    groupStatus.textContent = formatSequenceGroupStatus(section.summary.state);
+    const groupCounts = document.createElement('span');
+    groupCounts.className = 'seq-channel-group-counts';
+    groupCounts.textContent = section.summary.completed + ' / ' + section.summary.total +
+      ' · 通过 ' + section.summary.passed +
+      ' · 失败 ' + section.summary.failed +
+      ' · 跳过 ' + section.summary.skipped;
+    summary.appendChild(marker);
+    summary.appendChild(heading);
+    summary.appendChild(groupStatus);
+    summary.appendChild(groupCounts);
+    group.appendChild(summary);
 
     const body = document.createElement('div');
-    body.className = 'seq-channel-step-body';
-    const metrics = buildSequenceMetricRows(step.item, step.result);
-    if (metrics.length) {
-      const table = document.createElement('table');
-      table.className = 'seq-channel-metrics-table';
-      table.innerHTML = '<thead><tr><th>输出</th><th>实测</th><th>下限/期望</th><th>上限</th><th>单位</th><th>结果</th></tr></thead><tbody>' + metrics.map(function (metric) {
-        return '<tr><td>' + escapeHtml(metric.output) + '</td><td class="mono">' + escapeHtml(metric.value) + '</td><td class="mono">' + escapeHtml(metric.min) + '</td><td class="mono">' + escapeHtml(metric.max) + '</td><td>' + escapeHtml(metric.unit) + '</td><td>' + escapeHtml(metric.result) + '</td></tr>';
-      }).join('') + '</tbody>';
-      body.appendChild(table);
+    body.className = 'seq-channel-group-body';
+    const guide = document.createElement('span');
+    guide.className = 'seq-channel-group-guide';
+    guide.setAttribute('aria-hidden', 'true');
+    body.appendChild(guide);
+    if (section.steps.length) {
+      section.steps.forEach(function (step) { appendSequenceDetailStep(body, step, model); });
+    } else {
+      const empty = document.createElement('p');
+      empty.className = 'seq-channel-group-empty';
+      empty.textContent = '该组暂无步骤';
+      body.appendChild(empty);
     }
-    appendSequenceJsonBlock(body, '配置输入', step.item && step.item.inputs);
-    appendSequenceJsonBlock(body, '完整输出', step.result && step.result.result);
-    appendSequenceJsonBlock(body, '原始步骤 JSON', step.result);
-    const logPath = lastAgentStatus && lastAgentStatus.log_dir
-      ? lastAgentStatus.log_dir + '\\sequence_runs'
-      : 'Agent 日志目录 sequence_runs';
-    appendSequenceJsonBlock(body, '运行日志', { path: logPath });
-    if (step.result && step.result.error) {
-      const error = document.createElement('p');
-      error.className = 'seq-channel-step-error mono';
-      error.textContent = step.result.error;
-      body.appendChild(error);
-    }
-    row.appendChild(body);
-    host.appendChild(row);
+    group.appendChild(body);
+    host.appendChild(group);
   });
   if (focusedPosition != null) {
     const focusedSummary = host.querySelector('.seq-channel-step-row[data-position="' + focusedPosition + '"] > summary');

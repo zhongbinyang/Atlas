@@ -94,6 +94,16 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
             && !INDEX.contains("id=\"seq-exception-filter-btn\""),
         "the old matrix, mode switch, inspector, report, and exception filter must be removed"
     );
+    assert!(
+        APP.contains("buildSequenceDetailSections")
+            && APP.contains("buildSequenceGroupSummary")
+            && APP.contains("appendSequenceDetailStep")
+            && STYLE.contains(".seq-channel-group {")
+            && STYLE.contains(".seq-channel-group-body {")
+            && STYLE.contains(".seq-channel-group-guide {")
+            && STYLE.contains(".seq-channel-group[data-state=\"running\"]"),
+        "channel detail must render state-aware grouped sections"
+    );
 }
 
 #[test]
