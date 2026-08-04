@@ -48,6 +48,10 @@ fn sequence_page_has_mobile_safe_layout_rules() {
 fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
     let app = normalized_app();
     let style = normalized_style();
+    let mobile_style = style
+        .split("@media (max-width: 640px) {")
+        .last()
+        .expect("mobile sequence card rules");
 
     assert!(
         !INDEX.contains("id=\"seq-sn\"")
@@ -134,6 +138,21 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
             && style.contains(".seq-channel-card-actions")
             && style.contains(".seq-channel-card-detail"),
         "channel cards need isolated run/detail actions and bounded desktop tracks"
+    );
+    assert!(
+        app.contains("seq-channel-card-abort")
+            && app.contains("中止此通道")
+            && app.contains("seq-channel-card-current-group")
+            && app.contains("seq-channel-card-current-step")
+            && style.contains(".seq-channel-card-current-row")
+            && style.contains(".seq-channel-card-abort")
+            && mobile_style.contains(
+                ".seq-channel-card-actions {\n    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);"
+            )
+            && mobile_style.contains(
+                ".seq-channel-card-detail {\n    grid-column: 1 / -1;\n    justify-self: start;"
+            ),
+        "channel cards need per-channel abort and visible group/step context"
     );
     assert!(
         !APP.contains("card.tabIndex = 0;")
@@ -308,8 +327,7 @@ fn settings_and_sequence_expose_channels_and_step_resources() {
         "help text must explain shared resource names vs empty parallel steps"
     );
     assert!(
-        APP.contains("abortBtn.disabled = !disabled")
-            || APP.contains("abortBtn.disabled = !seqRunning"),
+        APP.contains("abortBtn.disabled = !anyRunning"),
         "abort must be enabled while sequence is running"
     );
     assert!(

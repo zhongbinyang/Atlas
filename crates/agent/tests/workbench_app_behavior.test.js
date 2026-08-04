@@ -33,6 +33,80 @@ function functionSource(name) {
   throw new Error('unterminated function ' + name);
 }
 
+function createFakeDomElement(tagName) {
+  const listeners = {};
+  const element = {
+    tagName: String(tagName).toUpperCase(),
+    className: '',
+    children: [],
+    parentNode: null,
+    attributes: {},
+    style: {},
+    disabled: false,
+    textContent: '',
+    appendChild(child) {
+      child.parentNode = this;
+      this.children.push(child);
+      return child;
+    },
+    append(...children) {
+      children.forEach((child) => this.appendChild(child));
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name)
+        ? this.attributes[name]
+        : null;
+    },
+    addEventListener(type, listener) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(listener);
+    },
+    dispatch(type, init) {
+      const event = Object.assign({
+        target: this,
+        stopped: false,
+        stopPropagation() { this.stopped = true; },
+        preventDefault() { this.defaultPrevented = true; },
+      }, init || {});
+      (listeners[type] || []).forEach((listener) => listener(event));
+      return event;
+    },
+    querySelector(selector) {
+      const descendantAt = selector.indexOf(' ');
+      if (descendantAt >= 0) {
+        const ancestor = this.querySelector(selector.slice(0, descendantAt));
+        return ancestor ? ancestor.querySelector(selector.slice(descendantAt + 1)) : null;
+      }
+      const classMatch = selector.match(/^\.([\w-]+)/);
+      const tagMatch = selector.match(/^[a-z][\w-]*$/i);
+      const attributeMatch = selector.match(/\[([\w-]+)="([^"]*)"\]/);
+      const matches = (candidate) => {
+        if (classMatch && !candidate.className.split(/\s+/).includes(classMatch[1])) return false;
+        if (tagMatch && candidate.tagName !== tagMatch[0].toUpperCase()) return false;
+        return !attributeMatch || candidate.getAttribute(attributeMatch[1]) === attributeMatch[2];
+      };
+      const queue = this.children.slice();
+      while (queue.length) {
+        const candidate = queue.shift();
+        if (matches(candidate)) return candidate;
+        queue.push(...candidate.children);
+      }
+      return null;
+    },
+  };
+  Object.defineProperty(element, 'innerHTML', {
+    get() { return this._innerHTML || ''; },
+    set(value) {
+      this._innerHTML = String(value);
+      if (value === '') this.children = [];
+    },
+  });
+  return element;
+}
+
 test('path invalidation clears stale success feedback from the DOM', () => {
   const elements = {
     'lv-msg': {
@@ -815,6 +889,7 @@ test('channel card focus capture remembers the focused descendant kind', () => {
   for (const [className, kind] of [
     ['seq-channel-card-body', 'body'],
     ['seq-channel-card-run', 'run'],
+    ['seq-channel-card-abort', 'abort'],
     ['seq-channel-card-detail', 'detail'],
   ]) {
     context.document.activeElement = {
@@ -833,16 +908,18 @@ test('channel card focus capture remembers the focused descendant kind', () => {
   }
 });
 
-test('channel card focus restore keeps enabled run and detail controls without scrolling', () => {
+test('channel card focus restore keeps enabled run, abort, and detail controls without scrolling', () => {
   const focusCalls = [];
   const body = { focus(options) { focusCalls.push(['body', options]); } };
   const run = { disabled: false, focus(options) { focusCalls.push(['run', options]); } };
+  const abort = { disabled: false, focus(options) { focusCalls.push(['abort', options]); } };
   const detail = { focus(options) { focusCalls.push(['detail', options]); } };
   const card = {
     querySelector(selector) {
       return {
         '.seq-channel-card-body': body,
         '.seq-channel-card-run': run,
+        '.seq-channel-card-abort': abort,
         '.seq-channel-card-detail': detail,
       }[selector] || null;
     },
@@ -860,22 +937,31 @@ test('channel card focus restore keeps enabled run and detail controls without s
 
   context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'body' });
   context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'run' });
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'abort' });
   context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'detail' });
 
   assert.deepEqual(JSON.parse(JSON.stringify(focusCalls)), [
     ['body', { preventScroll: true }],
     ['run', { preventScroll: true }],
+    ['abort', { preventScroll: true }],
     ['detail', { preventScroll: true }],
   ]);
 });
 
-test('channel card focus restore falls back to the card body when run becomes disabled', () => {
+test('channel card focus restore prefers enabled abort when run becomes disabled', () => {
   const focusCalls = [];
   const body = { focus(options) { focusCalls.push(['body', options]); } };
   const run = { disabled: true, focus(options) { focusCalls.push(['run', options]); } };
+  const abort = { disabled: false, focus(options) { focusCalls.push(['abort', options]); } };
+  const detail = { focus(options) { focusCalls.push(['detail', options]); } };
   const card = {
     querySelector(selector) {
-      return selector === '.seq-channel-card-run' ? run : body;
+      return {
+        '.seq-channel-card-body': body,
+        '.seq-channel-card-run': run,
+        '.seq-channel-card-abort': abort,
+        '.seq-channel-card-detail': detail,
+      }[selector] || null;
     },
   };
   const host = { querySelector() { return card; } };
@@ -887,7 +973,98 @@ test('channel card focus restore falls back to the card body when run becomes di
   context.restoreSequenceChannelCardFocus(host, { channelIndex: '0', kind: 'run' });
 
   assert.deepEqual(JSON.parse(JSON.stringify(focusCalls)), [
+    ['abort', { preventScroll: true }],
+  ]);
+});
+
+test('channel card focus restore falls back to the card body when abort becomes disabled', () => {
+  const focusCalls = [];
+  const body = { focus(options) { focusCalls.push(['body', options]); } };
+  const abort = { disabled: true, focus(options) { focusCalls.push(['abort', options]); } };
+  const card = {
+    querySelector(selector) {
+      return selector === '.seq-channel-card-abort' ? abort : body;
+    },
+  };
+  const host = { querySelector() { return card; } };
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('focusWithoutScroll'), context);
+  vm.runInContext(functionSource('restoreSequenceChannelCardFocus'), context);
+
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '0', kind: 'abort' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(focusCalls)), [
     ['body', { preventScroll: true }],
+  ]);
+});
+
+test('rendered channel cards expose isolated run and abort controls with group and step context', () => {
+  const host = createFakeDomElement('div');
+  const calls = [];
+  const models = {
+    0: {
+      state: 'running', completed: 1, total: 3, passed: 1, failed: 0, skipped: 0,
+      currentGroupName: '校准组', currentLabel: '当前步骤 02', currentName: 'Measure',
+      currentElapsedMs: 1250, elapsedMs: 1750,
+    },
+    1: {
+      state: 'idle', completed: 0, total: 3, passed: 0, failed: 0, skipped: 0,
+      currentGroupName: '待开始', currentLabel: '当前状态', currentName: '待执行',
+      currentElapsedMs: null, elapsedMs: 0,
+    },
+  };
+  const context = {
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'seq-channel-cards');
+        return host;
+      },
+      createElement: createFakeDomElement,
+    },
+    seqSelected: [{}],
+    seqRunning: true,
+    seqExclusiveBusy: false,
+    sequenceChannelsForDisplay() {
+      return [
+        { channel_index: 0, name: 'CH0' },
+        { channel_index: 1, name: 'CH1' },
+      ];
+    },
+    buildSequenceChannelCardModel(channel) { return models[channel.channel_index]; },
+    formatSequenceOverall(state) { return state === 'running' ? '执行中' : state; },
+    formatSequenceElapsed(ms) { return ms + 'ms'; },
+    escapeHtml(value) { return value; },
+    captureSequenceChannelCardFocus() { return null; },
+    restoreSequenceChannelCardFocus() {},
+    sequenceRunQueueItems() { return [{}]; },
+    isSequenceChannelActive(index) { return index === 0; },
+    isSequenceChannelRunning(index) { return index === 0; },
+    sequenceCardRunChannelIndexes(channel) { return [channel.channel_index]; },
+    runSequence(indexes, synthetic) { calls.push(['runSequence', indexes, synthetic]); },
+    abortSequenceChannel(index) { calls.push(['abortSequenceChannel', index]); },
+    openSeqChannelDetail(index) { calls.push(['openSeqChannelDetail', index]); },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('renderSeqChannelCards'), context);
+
+  context.renderSeqChannelCards(null);
+
+  const ch0 = host.querySelector('.seq-channel-card[data-channel-index="0"]');
+  const ch1 = host.querySelector('.seq-channel-card[data-channel-index="1"]');
+  assert.equal(ch0.querySelector('.seq-channel-card-run').disabled, true);
+  assert.equal(ch0.querySelector('.seq-channel-card-abort').disabled, false);
+  assert.equal(ch1.querySelector('.seq-channel-card-run').disabled, false);
+  assert.equal(ch1.querySelector('.seq-channel-card-abort').disabled, true);
+  assert.equal(ch0.querySelector('.seq-channel-card-current-group strong').textContent, '校准组');
+  assert.equal(ch0.querySelector('.seq-channel-card-current-step strong').textContent, 'Measure');
+  assert.equal(ch0.querySelector('.seq-channel-card-current-time').textContent, '1250ms');
+
+  ch1.querySelector('.seq-channel-card-run').dispatch('click');
+  ch0.querySelector('.seq-channel-card-abort').dispatch('click');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['runSequence', [1], false],
+    ['abortSequenceChannel', 0],
   ]);
 });
 

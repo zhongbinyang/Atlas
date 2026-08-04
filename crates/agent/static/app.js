@@ -3693,6 +3693,7 @@ function captureSequenceChannelCardFocus(host) {
   let kind = null;
   if (active.classList.contains('seq-channel-card-body')) kind = 'body';
   else if (active.classList.contains('seq-channel-card-run')) kind = 'run';
+  else if (active.classList.contains('seq-channel-card-abort')) kind = 'abort';
   else if (active.classList.contains('seq-channel-card-detail')) kind = 'detail';
   if (!kind) return null;
   return {
@@ -3709,7 +3710,10 @@ function restoreSequenceChannelCardFocus(host, focusState) {
   if (!card) return;
   const body = card.querySelector('.seq-channel-card-body');
   let target = body;
-  if (focusState.kind === 'run') target = card.querySelector('.seq-channel-card-run');
+  if (focusState.kind === 'run') {
+    target = card.querySelector('.seq-channel-card-run');
+    if (!target || target.disabled) target = card.querySelector('.seq-channel-card-abort');
+  } else if (focusState.kind === 'abort') target = card.querySelector('.seq-channel-card-abort');
   else if (focusState.kind === 'detail') target = card.querySelector('.seq-channel-card-detail');
   if (!target || target.disabled) target = body;
   focusWithoutScroll(target);
@@ -4105,19 +4109,26 @@ function renderSeqChannelCards(preservedFocus) {
 
     const current = document.createElement('div');
     current.className = 'seq-channel-card-current';
-    const currentLabel = document.createElement('span');
-    currentLabel.className = 'seq-channel-card-current-label';
-    currentLabel.textContent = model.state === 'running' && model.currentPosition != null
-      ? '当前步骤 ' + String(model.currentPosition + 1).padStart(2, '0')
-      : '当前状态';
-    const currentName = document.createElement('strong');
-    currentName.textContent = model.currentName;
-    const currentTime = document.createElement('span');
-    currentTime.className = 'mono seq-channel-card-current-time';
-    currentTime.textContent = model.currentElapsedMs == null ? '—' : formatSequenceElapsed(model.currentElapsedMs);
-    current.appendChild(currentLabel);
-    current.appendChild(currentName);
-    current.appendChild(currentTime);
+
+    const groupRow = document.createElement('div');
+    groupRow.className = 'seq-channel-card-current-row seq-channel-card-current-group';
+    const groupLabel = document.createElement('span');
+    groupLabel.textContent = '当前组';
+    const groupName = document.createElement('strong');
+    groupName.textContent = model.currentGroupName;
+    groupRow.append(groupLabel, groupName);
+
+    const stepRow = document.createElement('div');
+    stepRow.className = 'seq-channel-card-current-row seq-channel-card-current-step';
+    const stepLabel = document.createElement('span');
+    stepLabel.textContent = model.currentLabel;
+    const stepName = document.createElement('strong');
+    stepName.textContent = model.currentName;
+    const stepTime = document.createElement('span');
+    stepTime.className = 'mono seq-channel-card-current-time';
+    stepTime.textContent = model.currentElapsedMs == null ? '—' : formatSequenceElapsed(model.currentElapsedMs);
+    stepRow.append(stepLabel, stepName, stepTime);
+    current.append(groupRow, stepRow);
     body.appendChild(current);
 
     const progress = document.createElement('div');
@@ -4146,10 +4157,21 @@ function renderSeqChannelCards(preservedFocus) {
     runButton.className = 'btn-primary seq-channel-card-run';
     runButton.textContent = '运行此通道';
     runButton.setAttribute('aria-label', '运行 ' + channelName + ' 通道');
-    runButton.disabled = seqExclusiveBusy || !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
+    runButton.disabled = !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
       runSequence(sequenceCardRunChannelIndexes(channel), channel.synthetic === true);
+    });
+
+    const abortButton = document.createElement('button');
+    abortButton.type = 'button';
+    abortButton.className = 'btn-danger seq-channel-card-abort';
+    abortButton.textContent = '中止此通道';
+    abortButton.setAttribute('aria-label', '中止 ' + channelName + ' 通道');
+    abortButton.disabled = !isSequenceChannelRunning(channel.channel_index);
+    abortButton.addEventListener('click', function (event) {
+      event.stopPropagation();
+      abortSequenceChannel(channel.channel_index);
     });
 
     const detailButton = document.createElement('button');
@@ -4162,6 +4184,7 @@ function renderSeqChannelCards(preservedFocus) {
     });
 
     actions.appendChild(runButton);
+    actions.appendChild(abortButton);
     actions.appendChild(detailButton);
     card.appendChild(actions);
     body.addEventListener('click', function () {
