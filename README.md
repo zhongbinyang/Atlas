@@ -90,7 +90,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 5. **按序执行**：`POST /api/sequence/run` 可选 body `{ "sn", "work_order", "sequence_template_id", "channel_indexes" }`；开始时清空结果，执行中可轮询 `GET /api/sequence/run/progress` 按步刷新。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 Delay/REST 试跑共用 busy 槽，忙碌时返回 409。序列一次性跑完，不再支持断点暂停。
 6. **中止**：保留 `POST /api/sequence/run/abort`；`POST /api/sequence/run/continue` 已移除（410 Gone）。WebUI 顶部状态区集中提供通道选择、开始/中止与总体结果；SN/工单当前不在 WebUI 展示或提交，API 字段仍保留兼容性。
 7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
-8. **运行结果**：不落库「最近一次结果」；运行页始终按所选通道展示固定卡片，卡片实时显示当前步骤、完成统计、当前步耗时和通道总耗时。点击整张卡片进入对应通道详情，按原队列顺序查看每步状态、实测/Spec、输入输出、原始 JSON 和实际耗时。详细结果（含毫秒耗时）写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
+8. **运行结果**：不落库「最近一次结果」；运行页始终按所选通道展示固定卡片，卡片实时显示当前步骤、完成统计、当前步耗时和通道总耗时。点击整张卡片进入对应通道详情，按原队列顺序以具名组分区展示步骤；组头汇总组状态及完成/通过/失败/跳过计数，轮询刷新时保留各组和步骤的展开状态及摘要焦点。详情仍可查看每步状态、实测/Spec、输入输出、原始 JSON 和实际耗时。详细结果（含毫秒耗时）写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
 
 ### WebUI 入口
 

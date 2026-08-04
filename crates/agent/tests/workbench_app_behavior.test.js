@@ -441,6 +441,73 @@ test('group summaries keep active and issue variants open when collapsed', () =>
   });
 });
 
+test('group summaries count terminal members and keep inactive collapsed groups closed', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceGroupSummary({
+      enabled: true,
+      collapsed: true,
+      steps: [{ status: 'pass' }, { status: 'fail' }, { status: 'skipped' }, { status: 'pending' }],
+    }))),
+    { state: 'fail', completed: 3, total: 4, passed: 1, failed: 1, skipped: 1, open: true }
+  );
+  assert.equal(
+    context.buildSequenceGroupSummary({
+      enabled: true,
+      collapsed: true,
+      steps: [{ status: 'pending' }],
+    }).open,
+    false
+  );
+});
+
+test('group disclosure prefers forced expansion, then polling state, then initial state', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('resolveSequenceGroupOpen'), context);
+
+  assert.equal(context.resolveSequenceGroupOpen(false, null, false), false);
+  assert.equal(context.resolveSequenceGroupOpen(true, false, false), false);
+  assert.equal(context.resolveSequenceGroupOpen(false, false, true), true);
+  assert.equal(context.resolveSequenceGroupOpen(false, true, false), true);
+});
+
+test('channel detail discards a result that collides with a group header position', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+  vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
+
+  const model = context.buildSequenceChannelDetailModel({
+    channel_index: 0,
+    name: 'CH0',
+    steps: [
+      { position: 1, name: 'Unexpected header result', status: 'pass' },
+      { position: 2, name: 'Measure', status: 'pass' },
+    ],
+  }, [
+    { position: 1, template_source: 'group', name: '校准' },
+    { position: 2, name: 'Measure' },
+  ]);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(model.steps.map((step) => step.position))),
+    [2]
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(model.sections[0].steps.map((step) => step.position))),
+    [2]
+  );
+});
+
 test('sequence elapsed formatter is stable from milliseconds through hours', () => {
   const context = {};
   vm.createContext(context);

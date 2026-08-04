@@ -3501,6 +3501,11 @@ function buildSequenceGroupSummary(section) {
   };
 }
 
+function resolveSequenceGroupOpen(initialOpen, preservedOpen, forceOpen) {
+  if (forceOpen) return true;
+  return preservedOpen == null ? !!initialOpen : !!preservedOpen;
+}
+
 function formatMeasuredSummary(measured) {
   if (measured == null) return '—';
   try {
@@ -4060,10 +4065,22 @@ function renderSeqChannelDetail() {
   host.querySelectorAll('.seq-channel-step-row[open][data-position]').forEach(function (entry) {
     expandedPositions[entry.getAttribute('data-position')] = true;
   });
+  const groupOpenByKey = {};
+  host.querySelectorAll('.seq-channel-group[data-group-key]').forEach(function (entry) {
+    groupOpenByKey[entry.getAttribute('data-group-key')] = entry.open;
+  });
   let focusedPosition = null;
+  let focusedGroupKey = null;
   if (document.activeElement && host.contains(document.activeElement)) {
-    const focusedRow = document.activeElement.closest('.seq-channel-step-row[data-position]');
-    if (focusedRow) focusedPosition = focusedRow.getAttribute('data-position');
+    const focusedGroup = document.activeElement.closest('.seq-channel-group[data-group-key]');
+    if (focusedGroup && document.activeElement === focusedGroup.querySelector('.seq-channel-group-summary')) {
+      focusedGroupKey = focusedGroup.getAttribute('data-group-key');
+    } else {
+      const focusedRow = document.activeElement.closest('.seq-channel-step-row[data-position]');
+      if (focusedRow && document.activeElement === focusedRow.querySelector('.seq-channel-step-summary')) {
+        focusedPosition = focusedRow.getAttribute('data-position');
+      }
+    }
   }
   const previousCurrent = host.getAttribute('data-current-position');
   const nextCurrent = model.currentPosition == null ? '' : String(model.currentPosition);
@@ -4075,7 +4092,12 @@ function renderSeqChannelDetail() {
     group.className = 'seq-channel-group';
     group.setAttribute('data-group-key', section.key);
     group.setAttribute('data-state', section.summary.state);
-    group.open = section.summary.open;
+    const hasPreservedOpen = Object.prototype.hasOwnProperty.call(groupOpenByKey, section.key);
+    group.open = resolveSequenceGroupOpen(
+      section.summary.open,
+      hasPreservedOpen ? groupOpenByKey[section.key] : null,
+      section.summary.state === 'running' || section.summary.state === 'fail'
+    );
 
     const summary = document.createElement('summary');
     summary.className = 'seq-channel-group-summary';
@@ -4125,7 +4147,13 @@ function renderSeqChannelDetail() {
     group.appendChild(body);
     host.appendChild(group);
   });
-  if (focusedPosition != null) {
+  if (focusedGroupKey != null) {
+    const focusedGroup = Array.prototype.find.call(host.querySelectorAll('.seq-channel-group[data-group-key]'), function (entry) {
+      return entry.getAttribute('data-group-key') === focusedGroupKey;
+    });
+    const focusedSummary = focusedGroup && focusedGroup.querySelector('.seq-channel-group-summary');
+    if (focusedSummary) focusedSummary.focus();
+  } else if (focusedPosition != null) {
     const focusedSummary = host.querySelector('.seq-channel-step-row[data-position="' + focusedPosition + '"] > summary');
     if (focusedSummary) focusedSummary.focus();
   }
