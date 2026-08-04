@@ -4015,9 +4015,33 @@ function applyMultiChannelProgress(prog) {
   if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
 }
 
+function settleSequenceStartRecovery(prog) {
+  if (!prog || typeof seqPendingChannelStartRecovery === 'undefined') return;
+  if (!Array.isArray(prog.channels)) return;
+  prog.channels.forEach(function (channel) {
+    const index = Number(channel && channel.channel_index);
+    if (!Number.isFinite(index) || !seqPendingChannelStartRecovery[index]) return;
+    const current = seqChannelProgress.find(function (entry) {
+      return Number(entry.channel_index) === index;
+    });
+    const incomingGeneration = channel.generation != null ? channel.generation : channel.run_generation;
+    if (
+      current && current.generation != null && incomingGeneration != null &&
+      Number(incomingGeneration) < Number(current.generation)
+    ) {
+      return;
+    }
+    delete seqPendingChannelStarts[index];
+    delete seqPendingChannelStartRecovery[index];
+  });
+}
+
 function applySequenceProgress(prog) {
   if (!prog) return;
   applyMultiChannelProgress(prog);
+  settleSequenceStartRecovery(prog);
+  if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
+  if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
 }
 
 function sequenceStatusVisualState(status) {
@@ -4516,12 +4540,6 @@ async function refreshSequenceProgress() {
     const resp = await fetch('/api/sequence/run/progress');
     if (!resp.ok) return false;
     applySequenceProgress(await resp.json());
-    if (typeof seqPendingChannelStartRecovery !== 'undefined') {
-      Object.keys(seqPendingChannelStartRecovery).forEach(function (index) {
-        delete seqPendingChannelStarts[index];
-        delete seqPendingChannelStartRecovery[index];
-      });
-    }
     return true;
   } catch (e) {
     /* Status recovery is best-effort; the shared poll retries while active. */
@@ -6266,7 +6284,6 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     useSyntheticChannel ? null : idleChannelIndexes,
     useSyntheticChannel ? undefined : idleChannelIndexes
   );
-  const pendingIndexesAwaitingRefresh = {};
   try {
     const resp = await fetch('/api/sequence/run', {
       method: 'POST',
@@ -6277,20 +6294,17 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     const skippedIndexes = typeof skippedSequenceChannelIndexes === 'function'
       ? skippedSequenceChannelIndexes(data, idleChannelIndexes)
       : [];
-    skippedIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[index] = true; });
+    if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+    skippedIndexes.forEach(function (index) {
+      seqPendingChannelStartRecovery[index] = true;
+    });
     if (!resp.ok) {
-      const refreshed = await refreshSequenceProgress();
-      if (refreshed) {
-        skippedIndexes.forEach(function (index) { delete pendingIndexesAwaitingRefresh[index]; });
-      } else if (!skippedIndexes.length) {
-        idleChannelIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[Number(index)] = true; });
-      }
-      if (!refreshed) {
-        if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
-        (skippedIndexes.length ? skippedIndexes : idleChannelIndexes).forEach(function (index) {
+      if (!skippedIndexes.length) {
+        idleChannelIndexes.forEach(function (index) {
           seqPendingChannelStartRecovery[Number(index)] = true;
         });
       }
+      await refreshSequenceProgress();
       if (resp.status === 409) {
         const tip = formatBusyConflictMessage(data);
         const hint = data.can_force_release ? ' — 可在「机台信息」中强制空闲' : '';
@@ -6304,27 +6318,22 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     handleSequenceResponse(data);
     if (skippedIndexes.length) {
       idleChannelIndexes.forEach(function (index) {
-        if (!pendingIndexesAwaitingRefresh[Number(index)]) {
+        if (!seqPendingChannelStartRecovery[Number(index)]) {
           delete seqPendingChannelStarts[Number(index)];
         }
       });
-      if (await refreshSequenceProgress()) {
-        skippedIndexes.forEach(function (index) { delete pendingIndexesAwaitingRefresh[index]; });
-      } else {
-        if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
-        skippedIndexes.forEach(function (index) { seqPendingChannelStartRecovery[Number(index)] = true; });
-      }
+      await refreshSequenceProgress();
     }
   } catch (e) {
-    if (!await refreshSequenceProgress()) {
-      idleChannelIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[Number(index)] = true; });
-      if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
-      idleChannelIndexes.forEach(function (index) { seqPendingChannelStartRecovery[Number(index)] = true; });
-    }
+    if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+    idleChannelIndexes.forEach(function (index) {
+      seqPendingChannelStartRecovery[Number(index)] = true;
+    });
+    await refreshSequenceProgress();
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
     idleChannelIndexes.forEach(function (index) {
-      if (!pendingIndexesAwaitingRefresh[Number(index)]) {
+      if (!seqPendingChannelStartRecovery[Number(index)]) {
         delete seqPendingChannelStarts[Number(index)];
       }
     });

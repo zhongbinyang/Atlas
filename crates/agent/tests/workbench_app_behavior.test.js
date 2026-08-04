@@ -1232,32 +1232,41 @@ test('sequence request failures refresh progress instead of replacing aggregate 
 });
 
 test('all-skipped 409 keeps pending channels through immediate progress reconciliation', async () => {
-  const events = [];
+  let intervalCallback = null;
+  let progressPolls = 0;
   const context = {
     seqSelected: [{}],
     seqActiveTemplateId: null,
     seqPendingChannelStarts: {},
+    seqChannelProgress: [],
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
     selectedChannelIndexesForRun() { return [0]; },
     enabledAgentChannels() { return [{ channel_index: 0 }]; },
     captureSequenceChannelCardFocus() { return null; },
     clearSequenceChannelResults() {},
     syncSeqControlsState() {},
     reconcileSequenceProgressPoll() {},
+    applyMultiChannelProgress(progress) { context.seqChannelProgress = progress.channels || []; },
+    setInterval(callback) { intervalCallback = callback; return 42; },
     document: { getElementById() { return { innerHTML: '' }; } },
     showSeqMsg() {},
     formatBusyConflictMessage() { return '通道已在执行'; },
     setSeqRequestFailureState() { throw new Error('must not overwrite aggregate'); },
     renderSeqChannelPick() {},
     renderSeqRegistered() {},
-    async refreshSequenceProgress() {
-      events.push(['refresh', !!context.seqPendingChannelStarts[0]]);
-      return true;
-    },
-    async fetch() {
+    async fetch(path) {
+      if (path === '/api/sequence/run') {
+        return { ok: false, status: 409, async json() { return { skipped_channel_indexes: [0] }; } };
+      }
+      progressPolls += 1;
       return {
-        ok: false,
-        status: 409,
-        async json() { return { skipped_channel_indexes: [0] }; },
+        ok: true,
+        async json() {
+          return progressPolls === 1
+            ? { running: false, channels: [] }
+            : { running: false, channels: [{ channel_index: 0, running: false, overall: 'pass' }] };
+        },
       };
     },
   };
@@ -1265,37 +1274,61 @@ test('all-skipped 409 keeps pending channels through immediate progress reconcil
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
   await context.runSequence();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['refresh', true]]);
+  assert.equal(progressPolls, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), { 0: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery || {})), { 0: true });
+  context.startSequenceProgressPoll();
+  await intervalCallback();
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.equal(context.sequenceOverallFromChannels(context.seqChannelProgress), 'pass');
 });
 
 test('partial successful starts reconcile only skipped channels before cleanup', async () => {
   const events = [];
+  let intervalCallback = null;
+  let progressPolls = 0;
   const context = {
     seqSelected: [{}],
     seqActiveTemplateId: null,
     seqPendingChannelStarts: {},
+    seqChannelProgress: [],
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
     selectedChannelIndexesForRun() { return [0, 1]; },
     enabledAgentChannels() { return [{ channel_index: 0 }, { channel_index: 1 }]; },
     captureSequenceChannelCardFocus() { return null; },
     clearSequenceChannelResults() {},
     syncSeqControlsState() {},
     reconcileSequenceProgressPoll() {},
+    applyMultiChannelProgress(progress) { context.seqChannelProgress = progress.channels || []; },
+    setInterval(callback) { intervalCallback = callback; return 42; },
     document: { getElementById() { return { innerHTML: '' }; } },
     showSeqMsg() {},
     handleSequenceResponse() { events.push(['response']); },
     setSeqRequestFailureState() { throw new Error('must not overwrite aggregate'); },
     renderSeqChannelPick() {},
     renderSeqRegistered() {},
-    async refreshSequenceProgress() {
-      events.push(['refresh', !!context.seqPendingChannelStarts[0], !!context.seqPendingChannelStarts[1]]);
-      return true;
-    },
-    async fetch() {
+    async fetch(path) {
+      if (path !== '/api/sequence/run') {
+        progressPolls += 1;
+        return {
+          ok: true,
+          async json() {
+            return progressPolls === 1
+              ? { running: false, channels: [] }
+              : { running: false, channels: [{ channel_index: 1, running: false, overall: 'pass' }] };
+          },
+        };
+      }
       return {
         ok: true,
         async json() {
@@ -1308,25 +1341,38 @@ test('partial successful starts reconcile only skipped channels before cleanup',
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
   await context.runSequence();
 
   assert.deepEqual(JSON.parse(JSON.stringify(events)), [
     ['response'],
-    ['refresh', false, true],
   ]);
+  assert.equal(progressPolls, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), { 1: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery || {})), { 1: true });
+  context.startSequenceProgressPoll();
+  await intervalCallback();
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.equal(context.sequenceOverallFromChannels(context.seqChannelProgress), 'pass');
 });
 
 test('network start failure preserves a sibling running channel and its aggregate', async () => {
   let failureStates = 0;
-  let refreshes = 0;
+  let progressPolls = 0;
+  let intervalCallback = null;
   const context = {
     seqSelected: [{}],
     seqActiveTemplateId: null,
     seqChannelProgress: [{ channel_index: 0, running: true, overall: null }],
     seqPendingChannelStarts: {},
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
     selectedChannelIndexesForRun() { return [1]; },
     enabledAgentChannels() { return [{ channel_index: 0 }, { channel_index: 1 }]; },
     captureSequenceChannelCardFocus() { return null; },
@@ -1335,44 +1381,93 @@ test('network start failure preserves a sibling running channel and its aggregat
     },
     syncSeqControlsState() {},
     reconcileSequenceProgressPoll() {},
+    applyMultiChannelProgress(progress) {
+      (progress.channels || []).forEach((channel) => {
+        const at = context.seqChannelProgress.findIndex((current) => current.channel_index === channel.channel_index);
+        if (at >= 0) context.seqChannelProgress[at] = channel;
+        else context.seqChannelProgress.push(channel);
+      });
+    },
+    setInterval(callback) { intervalCallback = callback; return 42; },
     document: { getElementById() { return { innerHTML: '' }; } },
     showSeqMsg() {},
     setSeqRequestFailureState() { failureStates += 1; },
     renderSeqChannelPick() {},
     renderSeqRegistered() {},
-    async refreshSequenceProgress() { refreshes += 1; return true; },
-    async fetch() { throw new Error('offline'); },
+    async fetch(path) {
+      if (path === '/api/sequence/run') throw new Error('offline');
+      progressPolls += 1;
+      return {
+        ok: true,
+        async json() {
+          return progressPolls === 1
+            ? { running: true, channels: [] }
+            : { running: true, channels: [{ channel_index: 1, running: false, overall: 'pass' }] };
+        },
+      };
+    },
   };
   vm.createContext(context);
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
   await context.runSequence();
 
   assert.equal(failureStates, 0);
-  assert.equal(refreshes, 1);
+  assert.equal(progressPolls, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), { 1: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery || {})), { 1: true });
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), [
     { channel_index: 0, running: true, overall: null },
   ]);
+  context.startSequenceProgressPoll();
+  await intervalCallback();
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), [
+    { channel_index: 0, running: true, overall: null },
+    { channel_index: 1, running: false, overall: 'pass' },
+  ]);
 });
 
-test('a later successful progress refresh releases only failure-confirmation pending starts', async () => {
+test('ordinary progress polling settles only recovery targets it actually observes', async () => {
+  let intervalCallback = null;
   const context = {
     seqPendingChannelStarts: { 1: true },
     seqPendingChannelStartRecovery: { 1: true },
-    async fetch() {
-      return { ok: true, async json() { return { running: false, channels: [] }; } };
+    seqChannelProgress: [],
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
+    setInterval(callback) {
+      intervalCallback = callback;
+      return 42;
     },
-    applySequenceProgress() {},
-    reconcileSequenceProgressPoll() {},
+    async fetch() {
+      return {
+        ok: true,
+        async json() {
+          return { running: false, channels: [{ channel_index: 1, running: false, overall: 'pass' }] };
+        },
+      };
+    },
+    applyMultiChannelProgress() {},
   };
   vm.createContext(context);
-  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
 
-  const refreshed = await context.refreshSequenceProgress();
+  context.applySequenceProgress({ running: false, channels: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), { 1: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery)), { 1: true });
 
-  assert.equal(refreshed, true);
+  context.startSequenceProgressPoll();
+  await intervalCallback();
+
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery)), {});
 });
