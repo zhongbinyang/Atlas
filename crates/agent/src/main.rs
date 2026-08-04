@@ -64,6 +64,9 @@ async fn main() {
         sequence_progress: SequenceProgressSlot::new(),
         resource_locks: ResourceLockManager::new(),
         sequence_cancel: SequenceCancelRegistry::new(),
+        sequence_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+        #[cfg(test)]
+        sequence_lifecycle_test_hooks: Arc::new(api::SequenceLifecycleTestHooks::default()),
     };
 
     let reg = common::RegisterAgentRequest {

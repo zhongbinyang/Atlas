@@ -120,6 +120,29 @@ impl TaskSlot {
         true
     }
 
+    /// Snapshot every exact live hold without changing admission state.
+    pub async fn snapshot_holds(&self) -> Vec<TaskHold> {
+        let g = self.inner.lock().await;
+        let mut holds = match &g.holds {
+            Holds::Idle => Vec::new(),
+            Holds::Exclusive { owner, generation } => vec![TaskHold {
+                owner: owner.clone(),
+                channel_index: None,
+                generation: *generation,
+            }],
+            Holds::Sequence(channels) => channels
+                .iter()
+                .map(|(channel_index, generation)| TaskHold {
+                    owner: "sequence".to_string(),
+                    channel_index: Some(*channel_index),
+                    generation: *generation,
+                })
+                .collect(),
+        };
+        holds.sort_by_key(|hold| (hold.channel_index, hold.generation));
+        holds
+    }
+
     /// Unconditionally clear all holds and invalidate their generations.
     pub async fn force_release_all(&self) -> Vec<TaskHold> {
         let mut g = self.inner.lock().await;
@@ -227,5 +250,28 @@ mod tests {
         assert!(!slot.release_sequence(3, old).await);
         assert!(slot.is_busy().await);
         assert!(slot.release_sequence(3, new).await);
+    }
+
+    #[tokio::test]
+    async fn snapshot_holds_reports_exact_live_channel_generations() {
+        let slot = TaskSlot::new();
+        let ch2 = slot.try_acquire_sequence(2).await.unwrap();
+        let ch0 = slot.try_acquire_sequence(0).await.unwrap();
+
+        assert_eq!(
+            slot.snapshot_holds().await,
+            vec![
+                TaskHold {
+                    owner: "sequence".into(),
+                    channel_index: Some(0),
+                    generation: ch0,
+                },
+                TaskHold {
+                    owner: "sequence".into(),
+                    channel_index: Some(2),
+                    generation: ch2,
+                },
+            ]
+        );
     }
 }

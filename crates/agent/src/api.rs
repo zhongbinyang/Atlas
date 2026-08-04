@@ -46,12 +46,110 @@ pub struct AppState {
     pub sequence_progress: Arc<SequenceProgressSlot>,
     pub resource_locks: Arc<ResourceLockManager>,
     pub sequence_cancel: Arc<SequenceCancelRegistry>,
+    pub sequence_lifecycle: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    pub(crate) sequence_lifecycle_test_hooks: Arc<SequenceLifecycleTestHooks>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct SequenceAdmissionPause {
+    channel_index: usize,
+    reached: Arc<tokio::sync::Barrier>,
+    resume: Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct SequenceLifecycleTestHooks {
+    admission_pause: Option<SequenceAdmissionPause>,
+    abort_before_gate: Option<Arc<tokio::sync::Barrier>>,
+    force_release_before_gate: Option<Arc<tokio::sync::Barrier>>,
+    rollback_complete: Option<Arc<tokio::sync::Barrier>>,
+}
+
+struct SequenceAdmissionLease {
+    slot: Arc<TaskSlot>,
+    cancel: Arc<SequenceCancelRegistry>,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    channel_index: usize,
+    generation: u64,
+    armed: bool,
+    #[cfg(test)]
+    rollback_complete: Option<Arc<tokio::sync::Barrier>>,
+}
+
+impl SequenceAdmissionLease {
+    fn new(state: &AppState, channel_index: usize, generation: u64) -> Self {
+        Self {
+            slot: state.slot.clone(),
+            cancel: state.sequence_cancel.clone(),
+            lifecycle: state.sequence_lifecycle.clone(),
+            channel_index,
+            generation,
+            armed: true,
+            #[cfg(test)]
+            rollback_complete: state
+                .sequence_lifecycle_test_hooks
+                .rollback_complete
+                .clone(),
+        }
+    }
+
+    async fn release_locked(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cancel
+            .clear_if(self.channel_index, self.generation)
+            .await;
+        self.slot
+            .release_sequence(self.channel_index, self.generation)
+            .await;
+        self.armed = false;
+    }
+
+    async fn release(mut self) {
+        let lifecycle = self.lifecycle.clone();
+        let _lifecycle = lifecycle.lock().await;
+        self.release_locked().await;
+    }
+}
+
+impl Drop for SequenceAdmissionLease {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        let slot = self.slot.clone();
+        let cancel = self.cancel.clone();
+        let lifecycle = self.lifecycle.clone();
+        let channel_index = self.channel_index;
+        let generation = self.generation;
+        #[cfg(test)]
+        let rollback_complete = self.rollback_complete.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                {
+                    let _lifecycle = lifecycle.lock().await;
+                    cancel.clear_if(channel_index, generation).await;
+                    slot.release_sequence(channel_index, generation).await;
+                }
+                #[cfg(test)]
+                if let Some(barrier) = rollback_complete {
+                    barrier.wait().await;
+                }
+            });
+        }
+    }
 }
 
 struct AdmittedChannelRun {
     spec: ChannelSpec,
     generation: u64,
     cancel: watch::Receiver<bool>,
+    lease: SequenceAdmissionLease,
 }
 
 struct ChannelAdmission {
@@ -63,6 +161,7 @@ async fn admit_sequence_channels(
     state: &AppState,
     channels: Vec<ChannelSpec>,
 ) -> Result<ChannelAdmission, &'static str> {
+    let _lifecycle = state.sequence_lifecycle.lock().await;
     let mut admission = ChannelAdmission {
         started: Vec::new(),
         skipped_channel_indexes: Vec::new(),
@@ -77,41 +176,40 @@ async fn admit_sequence_channels(
                 continue;
             }
             Err(error) => {
-                for admitted in admission.started.drain(..) {
-                    state
-                        .sequence_cancel
-                        .clear_if(admitted.spec.channel_index, admitted.generation)
-                        .await;
-                    state
-                        .slot
-                        .release_sequence(admitted.spec.channel_index, admitted.generation)
-                        .await;
+                for mut admitted in admission.started.drain(..) {
+                    admitted.lease.release_locked().await;
                 }
                 return Err(error);
             }
         };
+        let mut lease = SequenceAdmissionLease::new(state, channel_index, generation);
+
+        #[cfg(test)]
+        if let Some(pause) = state
+            .sequence_lifecycle_test_hooks
+            .admission_pause
+            .as_ref()
+            .filter(|pause| pause.channel_index == channel_index)
+        {
+            pause.reached.wait().await;
+            pause.resume.wait().await;
+        }
 
         match state.sequence_cancel.install(channel_index, generation).await {
             Ok(cancel) => admission.started.push(AdmittedChannelRun {
                 spec,
                 generation,
                 cancel,
+                lease,
             }),
             Err("stale generation") => {
-                state.slot.release_sequence(channel_index, generation).await;
+                lease.release_locked().await;
                 admission.skipped_channel_indexes.push(channel_index);
             }
             Err(error) => {
-                state.slot.release_sequence(channel_index, generation).await;
-                for admitted in admission.started.drain(..) {
-                    state
-                        .sequence_cancel
-                        .clear_if(admitted.spec.channel_index, admitted.generation)
-                        .await;
-                    state
-                        .slot
-                        .release_sequence(admitted.spec.channel_index, admitted.generation)
-                        .await;
+                lease.release_locked().await;
+                for mut admitted in admission.started.drain(..) {
+                    admitted.lease.release_locked().await;
                 }
                 return Err(error);
             }
@@ -502,15 +600,23 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
 }
 
 async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
-    // Publish cancellation and clear exact live progress while admission is still
-    // held. This prevents a new generation from being admitted and then cleared.
+    #[cfg(test)]
+    if let Some(barrier) = &s.sequence_lifecycle_test_hooks.force_release_before_gate {
+        barrier.wait().await;
+    }
+    let _lifecycle = s.sequence_lifecycle.lock().await;
+
+    // Publish cancellation and clear progress from the exact live holds before
+    // freeing admission, so a new exclusive owner cannot overlap an uncancelled run.
     let _ = s.sequence_cancel.signal_all().await;
-    let progress_channels = s.sequence_progress.snapshot().await.channels;
-    for channel in progress_channels.into_iter().filter(|channel| channel.running) {
-        let _ = s
-            .sequence_progress
-            .clear_channel_if(channel.channel_index, channel.generation)
-            .await;
+    let live_holds = s.slot.snapshot_holds().await;
+    for hold in &live_holds {
+        if let Some(channel_index) = hold.channel_index {
+            let _ = s
+                .sequence_progress
+                .clear_channel_if(channel_index, hold.generation)
+                .await;
+        }
     }
     let released_holds = s.slot.force_release_all().await;
     for hold in &released_holds {
@@ -1878,13 +1984,18 @@ async fn labview_run_sequence(
     let request_work_order = work_order.clone();
     let mut workers = Vec::new();
     for admitted in admission.started {
+        let AdmittedChannelRun {
+            spec,
+            generation,
+            cancel,
+            lease,
+        } = admitted;
         let state = s.clone();
         let items = items.clone();
         let base_vars = base_vars.clone();
-        let channel_index = admitted.spec.channel_index;
-        let channel_name = admitted.spec.name.clone();
+        let channel_index = spec.channel_index;
+        let channel_name = spec.name.clone();
         let supervisor_channel_name = channel_name.clone();
-        let generation = admitted.generation;
         let sn = request_sn.clone();
         let work_order = request_work_order.clone();
         let handle = tokio::spawn(async move {
@@ -1900,13 +2011,13 @@ async fn labview_run_sequence(
                     ChannelRunRequest {
                         items,
                         base_vars,
-                        channels: vec![admitted.spec],
+                        channels: vec![spec],
                         resource_locks: run_state.resource_locks.clone(),
                         resource_timeout: std::time::Duration::from_secs(300),
                         sn,
                         work_order,
                         progress: run_state.sequence_progress.clone(),
-                        cancel: admitted.cancel,
+                        cancel,
                         run_generation: generation,
                     },
                 )
@@ -1961,8 +2072,7 @@ async fn labview_run_sequence(
                 }
             };
 
-            state.sequence_cancel.clear_if(channel_index, generation).await;
-            state.slot.release_sequence(channel_index, generation).await;
+            lease.release().await;
             response
         });
         workers.push((channel_index, channel_name, generation, handle));
@@ -1993,8 +2103,6 @@ async fn labview_run_sequence(
                         )],
                     )
                     .await;
-                s.sequence_cancel.clear_if(channel_index, generation).await;
-                s.slot.release_sequence(channel_index, generation).await;
                 channels.push(ChannelSequenceResponse {
                     channel_index,
                     channel_name,
@@ -2049,6 +2157,11 @@ async fn labview_run_sequence_channel_abort(
     State(s): State<AppState>,
     Path(channel_index): Path<usize>,
 ) -> impl IntoResponse {
+    #[cfg(test)]
+    if let Some(barrier) = &s.sequence_lifecycle_test_hooks.abort_before_gate {
+        barrier.wait().await;
+    }
+    let _lifecycle = s.sequence_lifecycle.lock().await;
     if s.sequence_cancel.signal_channel(channel_index).await {
         (
             StatusCode::OK,
@@ -2067,6 +2180,11 @@ async fn labview_run_sequence_channel_abort(
 }
 
 async fn labview_run_sequence_abort(State(s): State<AppState>) -> impl IntoResponse {
+    #[cfg(test)]
+    if let Some(barrier) = &s.sequence_lifecycle_test_hooks.abort_before_gate {
+        barrier.wait().await;
+    }
+    let _lifecycle = s.sequence_lifecycle.lock().await;
     let aborting = s.sequence_cancel.signal_all().await;
     if aborting.is_empty() {
         (
@@ -2123,6 +2241,8 @@ mod tests {
             sequence_progress: SequenceProgressSlot::new(),
             resource_locks: ResourceLockManager::new(),
             sequence_cancel: SequenceCancelRegistry::new(),
+            sequence_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            sequence_lifecycle_test_hooks: Arc::new(SequenceLifecycleTestHooks::default()),
         }
     }
 
@@ -2141,6 +2261,62 @@ mod tests {
         }
     }
 
+    async fn mount_sequence_run_center(mock_server: &wiremock::MockServer) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        Mock::given(method("GET"))
+            .and(path("/api/agents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "id": "agent-uuid-1",
+                "name": "test-host",
+                "ip": "127.0.0.1",
+                "port": 8080,
+                "status": "online",
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "busy": false,
+                "last_seen_at": null,
+                "created_at": "2026-01-01T00:00:00Z"
+            }])))
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "variables": [],
+                "units": []
+            })))
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/run-queue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "position": 0,
+                    "id": "q-delay",
+                    "vi_template_id": null,
+                    "general_template_id": 88,
+                    "name": "Delay",
+                    "kind": "delay",
+                    "vi_path": "",
+                    "inputs": [{ "name": "delay_ms", "value": 0 }]
+                }]
+            })))
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agents/agent-uuid-1/channels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "channels": [
+                    { "channel_index": 0, "name": "CH0", "enabled": true, "overlay": {} },
+                    { "channel_index": 1, "name": "CH1", "enabled": true, "overlay": {} }
+                ]
+            })))
+            .mount(mock_server)
+            .await;
+    }
+
     #[tokio::test]
     async fn channel_abort_signals_only_the_requested_channel() {
         let state = test_state();
@@ -2154,6 +2330,9 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, serde_json::json!({ "ok": true, "aborting": 0 }));
         assert!(*rx0.borrow());
         assert!(!*rx1.borrow());
     }
@@ -2171,15 +2350,35 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, serde_json::json!({ "ok": true, "aborting": [0, 1] }));
         assert!(*rx0.borrow());
         assert!(*rx1.borrow());
+    }
+
+    #[tokio::test]
+    async fn channel_abort_reports_when_channel_is_not_running() {
+        let app = router(test_state());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run/channels/7/abort")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let error: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error.error, "channel 7 is not running");
     }
 
     #[tokio::test]
     async fn admission_starts_idle_channels_and_skips_only_duplicates() {
         let state = test_state();
         let existing = state.slot.try_acquire_sequence(0).await.unwrap();
-        let admitted = admit_sequence_channels(&state, vec![
+        let mut admitted = admit_sequence_channels(&state, vec![
             ChannelSpec { channel_index: 0, name: "CH0".into(), overlay: serde_json::json!({}) },
             ChannelSpec { channel_index: 1, name: "CH1".into(), overlay: serde_json::json!({}) },
         ])
@@ -2187,6 +2386,7 @@ mod tests {
             .unwrap();
         assert_eq!(admitted.started.iter().map(|run| run.spec.channel_index).collect::<Vec<_>>(), vec![1]);
         assert_eq!(admitted.skipped_channel_indexes, vec![0]);
+        admitted.started.pop().unwrap().lease.release().await;
         assert!(state.slot.release_sequence(0, existing).await);
     }
 
@@ -2205,6 +2405,274 @@ mod tests {
         assert!(state.slot.release(delay).await);
         let channel = state.slot.try_acquire_sequence(0).await.unwrap();
         assert!(state.slot.release_sequence(0, channel).await);
+    }
+
+    #[tokio::test]
+    async fn sequence_run_all_skipped_reports_requested_channel_indexes() {
+        let mock_server = wiremock::MockServer::start().await;
+        mount_sequence_run_center(&mock_server).await;
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let existing = state.slot.try_acquire_sequence(0).await.unwrap();
+        let app = router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"channel_indexes":[0]}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "requested channels are already running");
+        assert_eq!(body["skipped_channel_indexes"], serde_json::json!([0]));
+        assert!(state.slot.release_sequence(0, existing).await);
+    }
+
+    #[tokio::test]
+    async fn sequence_run_partial_admission_returns_only_started_channel_and_skipped_indexes() {
+        let mock_server = wiremock::MockServer::start().await;
+        mount_sequence_run_center(&mock_server).await;
+        let mut state = test_state();
+        state.center_url = mock_server.uri();
+        let existing = state.slot.try_acquire_sequence(0).await.unwrap();
+        let app = router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"channel_indexes":[0,1]}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["skipped_channel_indexes"], serde_json::json!([0]));
+        assert_eq!(body["channels"].as_array().unwrap().len(), 1);
+        assert_eq!(body["channels"][0]["channel_index"], 1);
+        assert!(body["channels"][0]["run_generation"].is_number());
+        assert!(state.slot.release_sequence(0, existing).await);
+    }
+
+    #[tokio::test]
+    async fn global_abort_waits_for_admission_install_then_signals_the_channel() {
+        let admission_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let admission_resume = Arc::new(tokio::sync::Barrier::new(2));
+        let abort_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let mut state = test_state();
+        state.sequence_lifecycle_test_hooks = Arc::new(SequenceLifecycleTestHooks {
+            admission_pause: Some(SequenceAdmissionPause {
+                channel_index: 0,
+                reached: admission_reached.clone(),
+                resume: admission_resume.clone(),
+            }),
+            abort_before_gate: Some(abort_reached.clone()),
+            ..Default::default()
+        });
+
+        let admission_state = state.clone();
+        let admission_task = tokio::spawn(async move {
+            admit_sequence_channels(
+                &admission_state,
+                vec![ChannelSpec {
+                    channel_index: 0,
+                    name: "CH0".into(),
+                    overlay: serde_json::json!({}),
+                }],
+            )
+            .await
+        });
+        admission_reached.wait().await;
+
+        let app = router(state.clone());
+        let abort_task = tokio::spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/sequence/run/abort")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        });
+        abort_reached.wait().await;
+        admission_resume.wait().await;
+
+        let admitted = admission_task.await.unwrap().unwrap();
+        let admitted_run = admitted.started.into_iter().next().unwrap();
+        let cancel = admitted_run.cancel.clone();
+        let response = abort_task.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, serde_json::json!({ "ok": true, "aborting": [0] }));
+        assert!(*cancel.borrow());
+
+        admitted_run.lease.release().await;
+    }
+
+    #[tokio::test]
+    async fn channel_abort_waits_for_admission_install_then_signals_only_that_channel() {
+        let admission_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let admission_resume = Arc::new(tokio::sync::Barrier::new(2));
+        let abort_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let mut state = test_state();
+        state.sequence_lifecycle_test_hooks = Arc::new(SequenceLifecycleTestHooks {
+            admission_pause: Some(SequenceAdmissionPause {
+                channel_index: 0,
+                reached: admission_reached.clone(),
+                resume: admission_resume.clone(),
+            }),
+            abort_before_gate: Some(abort_reached.clone()),
+            ..Default::default()
+        });
+
+        let rx1 = state.sequence_cancel.install(1, 500).await.unwrap();
+        let admission_state = state.clone();
+        let admission_task = tokio::spawn(async move {
+            admit_sequence_channels(
+                &admission_state,
+                vec![ChannelSpec {
+                    channel_index: 0,
+                    name: "CH0".into(),
+                    overlay: serde_json::json!({}),
+                }],
+            )
+            .await
+        });
+        admission_reached.wait().await;
+
+        let app = router(state.clone());
+        let abort_task = tokio::spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/sequence/run/channels/0/abort")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        });
+        abort_reached.wait().await;
+        admission_resume.wait().await;
+
+        let admitted = admission_task.await.unwrap().unwrap();
+        let admitted_run = admitted.started.into_iter().next().unwrap();
+        let cancel = admitted_run.cancel.clone();
+        let response = abort_task.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(*cancel.borrow());
+        assert!(!*rx1.borrow());
+
+        admitted_run.lease.release().await;
+        assert!(state.sequence_cancel.clear_if(1, 500).await);
+    }
+
+    #[tokio::test]
+    async fn force_release_waits_for_admission_and_cleans_the_exact_live_hold() {
+        let admission_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let admission_resume = Arc::new(tokio::sync::Barrier::new(2));
+        let force_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let mut state = test_state();
+        state.sequence_lifecycle_test_hooks = Arc::new(SequenceLifecycleTestHooks {
+            admission_pause: Some(SequenceAdmissionPause {
+                channel_index: 0,
+                reached: admission_reached.clone(),
+                resume: admission_resume.clone(),
+            }),
+            force_release_before_gate: Some(force_reached.clone()),
+            ..Default::default()
+        });
+
+        let admission_state = state.clone();
+        let admission_task = tokio::spawn(async move {
+            admit_sequence_channels(
+                &admission_state,
+                vec![ChannelSpec {
+                    channel_index: 0,
+                    name: "CH0".into(),
+                    overlay: serde_json::json!({}),
+                }],
+            )
+            .await
+        });
+        admission_reached.wait().await;
+        let hold = state.slot.snapshot_holds().await.remove(0);
+        state
+            .sequence_progress
+            .begin_channels(hold.generation, &[(0, "CH0".into())])
+            .await;
+
+        let app = router(state.clone());
+        let force_task = tokio::spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/slot/force-release")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        });
+        force_reached.wait().await;
+        admission_resume.wait().await;
+
+        let admitted = admission_task.await.unwrap().unwrap();
+        let admitted_run = admitted.started.into_iter().next().unwrap();
+        let cancel = admitted_run.cancel.clone();
+        let response = force_task.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(*cancel.borrow());
+        assert!(state.slot.snapshot_holds().await.is_empty());
+        assert!(state.sequence_progress.snapshot().await.channels.is_empty());
+        assert!(!state.sequence_cancel.signal_channel(0).await);
+        admitted_run.lease.release().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_during_multi_channel_admission_rolls_back_every_generation() {
+        let admission_reached = Arc::new(tokio::sync::Barrier::new(2));
+        let admission_resume = Arc::new(tokio::sync::Barrier::new(2));
+        let rollback_complete = Arc::new(tokio::sync::Barrier::new(3));
+        let mut state = test_state();
+        state.sequence_lifecycle_test_hooks = Arc::new(SequenceLifecycleTestHooks {
+            admission_pause: Some(SequenceAdmissionPause {
+                channel_index: 1,
+                reached: admission_reached.clone(),
+                resume: admission_resume,
+            }),
+            rollback_complete: Some(rollback_complete.clone()),
+            ..Default::default()
+        });
+
+        let admission_state = state.clone();
+        let admission_task = tokio::spawn(async move {
+            admit_sequence_channels(
+                &admission_state,
+                vec![
+                    ChannelSpec {
+                        channel_index: 0,
+                        name: "CH0".into(),
+                        overlay: serde_json::json!({}),
+                    },
+                    ChannelSpec {
+                        channel_index: 1,
+                        name: "CH1".into(),
+                        overlay: serde_json::json!({}),
+                    },
+                ],
+            )
+            .await
+        });
+        admission_reached.wait().await;
+
+        admission_task.abort();
+        let join_result = admission_task.await;
+        assert!(matches!(join_result, Err(error) if error.is_cancelled()));
+        rollback_complete.wait().await;
+
+        assert!(state.slot.snapshot_holds().await.is_empty());
+        assert!(!state.sequence_cancel.signal_channel(0).await);
+        assert!(!state.sequence_cancel.signal_channel(1).await);
     }
 
     #[tokio::test]
