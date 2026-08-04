@@ -8,7 +8,21 @@ WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space
 
 **无鉴权。** 全部 HTTP API 与 WebUI 均对外开放。请仅部署在可信内网，或自行做好网络访问控制。**不要**把这些端口暴露到公网。
 
+## 本地 PostgreSQL（Docker）
+
+仓库根目录提供 `docker-compose.yml`，可在本机起一份 `atlas` 库，并从远程（默认 `10.102.30.18`）复制数据：
+
+```powershell
+docker compose up -d postgres
+.\scripts\sync-atlas-db.ps1
+$env:SCHEDULER_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"
+cargo run -p scheduler
+```
+
+本地连接串：`postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable`（用户/密码/库名与远程默认一致）。
+
 ## 平台支持
+
 
 | 组件 | 平台 |
 |------|------|
