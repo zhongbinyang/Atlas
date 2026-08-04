@@ -531,8 +531,16 @@ body {
   background: var(--panel);
   box-shadow: 0 3px 12px rgba(21, 32, 43, 0.07);
   text-align: left;
-  cursor: pointer;
   transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.seq-channel-card-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  border-radius: var(--radius);
+  cursor: pointer;
 }
 
 .seq-channel-card:hover {
@@ -541,7 +549,7 @@ body {
   transform: translateY(-1px);
 }
 
-.seq-channel-card:focus-visible {
+.seq-channel-card-body:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
   outline-offset: 2px;
 }

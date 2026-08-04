@@ -1840,6 +1840,11 @@ function buildSequenceRunPayload(templateId, selectedChannelIndexes, explicitCha
   return payload;
 }
 
+function sequenceCardRunChannelIndexes(enabledChannels, channelIndex) {
+  if (!Array.isArray(enabledChannels) || !enabledChannels.length) return undefined;
+  return [channelIndex];
+}
+
 function normalizeResourceName(raw) {
   const name = String(raw || '').trim();
   if (!name) return null;
@@ -3557,10 +3562,10 @@ function resolveSequenceGroupOpen(initialOpen, preservedOpen, forceOpen) {
   return preservedOpen == null ? !!initialOpen : !!preservedOpen;
 }
 
-function focusSequenceDetailSummary(summary) {
-  if (!summary || typeof summary.focus !== 'function') return;
+function focusWithoutScroll(element) {
+  if (!element || typeof element.focus !== 'function') return;
   try {
-    summary.focus({ preventScroll: true });
+    element.focus({ preventScroll: true });
     return;
   } catch (e) {
     // Older browsers may reject the FocusOptions argument.
@@ -3569,10 +3574,40 @@ function focusSequenceDetailSummary(summary) {
   const left = view ? (view.scrollX != null ? view.scrollX : view.pageXOffset) : 0;
   const top = view ? (view.scrollY != null ? view.scrollY : view.pageYOffset) : 0;
   try {
-    summary.focus();
+    element.focus();
   } finally {
     if (view && typeof view.scrollTo === 'function') view.scrollTo(left, top);
   }
+}
+
+function captureSequenceChannelCardFocus(host) {
+  const active = document.activeElement;
+  if (!active || !host || !host.contains(active)) return null;
+  const card = active.closest('.seq-channel-card[data-channel-index]');
+  if (!card || !active.classList) return null;
+  let kind = null;
+  if (active.classList.contains('seq-channel-card-body')) kind = 'body';
+  else if (active.classList.contains('seq-channel-card-run')) kind = 'run';
+  else if (active.classList.contains('seq-channel-card-detail')) kind = 'detail';
+  if (!kind) return null;
+  return {
+    channelIndex: card.getAttribute('data-channel-index'),
+    kind: kind,
+  };
+}
+
+function restoreSequenceChannelCardFocus(host, focusState) {
+  if (!host || !focusState || focusState.channelIndex == null) return;
+  const card = host.querySelector(
+    '.seq-channel-card[data-channel-index="' + focusState.channelIndex + '"]'
+  );
+  if (!card) return;
+  const body = card.querySelector('.seq-channel-card-body');
+  let target = body;
+  if (focusState.kind === 'run') target = card.querySelector('.seq-channel-card-run');
+  else if (focusState.kind === 'detail') target = card.querySelector('.seq-channel-card-detail');
+  if (!target || target.disabled) target = body;
+  focusWithoutScroll(target);
 }
 
 function formatMeasuredSummary(measured) {
@@ -3832,12 +3867,9 @@ function sequenceStatusVisualState(status) {
 function renderSeqChannelCards() {
   const host = document.getElementById('seq-channel-cards');
   if (!host) return;
-  let focusedChannelIndex = null;
-  if (document.activeElement && host.contains(document.activeElement)) {
-    const focusedCard = document.activeElement.closest('.seq-channel-card[data-channel-index]');
-    if (focusedCard) focusedChannelIndex = focusedCard.getAttribute('data-channel-index');
-  }
+  const focusedControl = captureSequenceChannelCardFocus(host);
   host.innerHTML = '';
+  const enabledChannels = enabledAgentChannels();
   const sourceChannels = sequenceChannelsForDisplay();
   if (!sourceChannels.length) {
     const empty = document.createElement('p');
@@ -3852,12 +3884,15 @@ function renderSeqChannelCards() {
     const channelName = String(channel.name || 'CH' + channel.channel_index);
     const card = document.createElement('article');
     card.className = 'seq-channel-card';
-    card.tabIndex = 0;
-    card.setAttribute('role', 'button');
     card.setAttribute('data-state', model.state);
     card.setAttribute('data-channel-index', String(channel.channel_index));
     const cardStatusText = model.state === 'idle' ? '待开始' : formatSequenceOverall(model.state);
-    card.setAttribute('aria-label', channelName + '，' + cardStatusText + '，打开运行详情');
+
+    const body = document.createElement('div');
+    body.className = 'seq-channel-card-body';
+    body.tabIndex = 0;
+    body.setAttribute('role', 'button');
+    body.setAttribute('aria-label', channelName + '，' + cardStatusText + '，打开运行详情');
 
     const header = document.createElement('div');
     header.className = 'seq-channel-card-header';
@@ -3876,7 +3911,7 @@ function renderSeqChannelCards() {
     overallEl.className = 'seq-channel-overall';
     overallEl.textContent = cardStatusText;
     header.appendChild(overallEl);
-    card.appendChild(header);
+    body.appendChild(header);
 
     const current = document.createElement('div');
     current.className = 'seq-channel-card-current';
@@ -3893,7 +3928,7 @@ function renderSeqChannelCards() {
     current.appendChild(currentLabel);
     current.appendChild(currentName);
     current.appendChild(currentTime);
-    card.appendChild(current);
+    body.appendChild(current);
 
     const progress = document.createElement('div');
     progress.className = 'seq-channel-card-progress';
@@ -3901,7 +3936,7 @@ function renderSeqChannelCards() {
     const percent = model.total ? Math.min(100, Math.round(model.completed / model.total * 100)) : 0;
     progressBar.style.width = percent + '%';
     progress.appendChild(progressBar);
-    card.appendChild(progress);
+    body.appendChild(progress);
 
     const footer = document.createElement('div');
     footer.className = 'seq-channel-card-footer';
@@ -3910,7 +3945,8 @@ function renderSeqChannelCards() {
       '<span>失败 <strong>' + model.failed + '</strong></span>' +
       '<span>跳过 <strong>' + model.skipped + '</strong></span>' +
       '<span class="seq-channel-card-total-time">总耗时 <strong class="mono">' + escapeHtml(formatSequenceElapsed(model.elapsedMs)) + '</strong></span>';
-    card.appendChild(footer);
+    body.appendChild(footer);
+    card.appendChild(body);
 
     const actions = document.createElement('div');
     actions.className = 'seq-channel-card-actions';
@@ -3923,7 +3959,7 @@ function renderSeqChannelCards() {
     runButton.disabled = seqRunning || !sequenceRunQueueItems().length;
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
-      runSequence([channel.channel_index]);
+      runSequence(sequenceCardRunChannelIndexes(enabledChannels, channel.channel_index));
     });
 
     const detailButton = document.createElement('button');
@@ -3938,21 +3974,18 @@ function renderSeqChannelCards() {
     actions.appendChild(runButton);
     actions.appendChild(detailButton);
     card.appendChild(actions);
-    card.addEventListener('click', function () {
+    body.addEventListener('click', function () {
       openSeqChannelDetail(channel.channel_index);
     });
-    card.addEventListener('keydown', function (event) {
-      if (event.target !== card) return;
+    body.addEventListener('keydown', function (event) {
+      if (event.target !== body) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       openSeqChannelDetail(channel.channel_index);
     });
     host.appendChild(card);
   });
-  if (focusedChannelIndex != null) {
-    const focusedCard = host.querySelector('.seq-channel-card[data-channel-index="' + focusedChannelIndex + '"]');
-    if (focusedCard) focusedCard.focus();
-  }
+  restoreSequenceChannelCardFocus(host, focusedControl);
 }
 
 function sequenceRunQueueItems() {
@@ -4253,10 +4286,10 @@ function renderSeqChannelDetail() {
       return entry.getAttribute('data-group-key') === focusedGroupKey;
     });
     const focusedSummary = focusedGroup && focusedGroup.querySelector('.seq-channel-group-summary');
-    focusSequenceDetailSummary(focusedSummary);
+    focusWithoutScroll(focusedSummary);
   } else if (focusedPosition != null) {
     const focusedSummary = host.querySelector('.seq-channel-step-row[data-position="' + focusedPosition + '"] > summary');
-    focusSequenceDetailSummary(focusedSummary);
+    focusWithoutScroll(focusedSummary);
   }
   if (nextCurrent && nextCurrent !== previousCurrent) {
     const activeRow = host.querySelector('.seq-channel-step-row[data-position="' + nextCurrent + '"]');

@@ -119,13 +119,25 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
     assert!(
         APP.contains("seq-channel-card-run")
             && APP.contains("运行此通道")
-            && APP.contains("event.stopPropagation()")
+            && APP.contains("runButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
+            && APP.contains("detailButton.addEventListener('click', function (event) {\n      event.stopPropagation();")
             && STYLE.contains(".seq-channel-cards {\n  display: grid;")
             && STYLE.contains("repeat(auto-fill, minmax(20rem, 24rem))")
             && STYLE.contains("justify-content: start;")
             && STYLE.contains(".seq-channel-card-actions")
             && STYLE.contains(".seq-channel-card-detail"),
         "channel cards need isolated run/detail actions and bounded desktop tracks"
+    );
+    assert!(
+        !APP.contains("card.tabIndex = 0;")
+            && !APP.contains("card.setAttribute('role', 'button');")
+            && APP.contains("body.className = 'seq-channel-card-body';")
+            && APP.contains("body.tabIndex = 0;")
+            && APP.contains("body.setAttribute('role', 'button');")
+            && APP.contains("card.appendChild(body);")
+            && APP.contains("card.appendChild(actions);")
+            && STYLE.contains(".seq-channel-card-body:focus-visible"),
+        "the card body must be the only composite detail control and stay separate from native actions"
     );
 
     let mobile = STYLE

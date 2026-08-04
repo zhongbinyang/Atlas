@@ -325,6 +325,55 @@ test('sequence run payload omits channel indexes when top selection means all en
   );
 });
 
+test('synthetic sequence card run posts without channel indexes', async () => {
+  let request = null;
+  const results = { innerHTML: '' };
+  const context = {
+    seqRunning: false,
+    seqSelected: [{}],
+    seqActiveTemplateId: 12,
+    selectedChannelIndexesForRun() { return null; },
+    setSeqControlsDisabled() {},
+    clearSequenceResultsUi() {},
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'seq-results');
+        return results;
+      },
+    },
+    updateSeqOverall() {},
+    showSeqMsg() {},
+    startSequenceProgressPoll() {},
+    stopSequenceProgressPoll() {},
+    handleSequenceResponse() {},
+    setSeqRequestFailureState() {},
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch(path, options) {
+      request = { path, options };
+      return {
+        ok: true,
+        async json() { return {}; },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceCardRunChannelIndexes'), context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  const cardChannelIndexes = context.sequenceCardRunChannelIndexes([], 0);
+  await context.runSequence(cardChannelIndexes);
+
+  assert.equal(cardChannelIndexes, undefined);
+  assert.equal(request.path, '/api/sequence/run');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    sequence_template_id: 12,
+  });
+  assert.equal(Object.hasOwn(JSON.parse(request.options.body), 'channel_indexes'), false);
+});
+
 test('channel detail model keeps the complete queue pending before execution', () => {
   const context = {};
   vm.createContext(context);
@@ -510,12 +559,12 @@ test('group disclosure prefers forced expansion, then polling state, then initia
   assert.equal(context.resolveSequenceGroupOpen(false, true, false), true);
 });
 
-test('sequence detail focus restoration prevents scrolling and restores scroll after fallback', () => {
+test('focus restoration prevents scrolling and restores scroll after fallback', () => {
   const normalCalls = [];
   const normalContext = {};
   vm.createContext(normalContext);
-  vm.runInContext(functionSource('focusSequenceDetailSummary'), normalContext);
-  normalContext.focusSequenceDetailSummary({
+  vm.runInContext(functionSource('focusWithoutScroll'), normalContext);
+  normalContext.focusWithoutScroll({
     focus(options) { normalCalls.push(options); },
   });
   assert.deepEqual(JSON.parse(JSON.stringify(normalCalls)), [{ preventScroll: true }]);
@@ -532,8 +581,8 @@ test('sequence detail focus restoration prevents scrolling and restores scroll a
     },
   };
   vm.createContext(fallbackContext);
-  vm.runInContext(functionSource('focusSequenceDetailSummary'), fallbackContext);
-  fallbackContext.focusSequenceDetailSummary({
+  vm.runInContext(functionSource('focusWithoutScroll'), fallbackContext);
+  fallbackContext.focusWithoutScroll({
     focus(options) {
       if (options) throw new Error('preventScroll unsupported');
       scroll.left = 0;
@@ -541,6 +590,99 @@ test('sequence detail focus restoration prevents scrolling and restores scroll a
     },
   });
   assert.deepEqual(scroll, { left: 37, top: 49 });
+});
+
+test('channel card focus capture remembers the focused descendant kind', () => {
+  const card = {
+    getAttribute(name) {
+      assert.equal(name, 'data-channel-index');
+      return '4';
+    },
+  };
+  const context = { document: { activeElement: null } };
+  const host = {
+    contains(element) { return element === context.document.activeElement; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('captureSequenceChannelCardFocus'), context);
+
+  for (const [className, kind] of [
+    ['seq-channel-card-body', 'body'],
+    ['seq-channel-card-run', 'run'],
+    ['seq-channel-card-detail', 'detail'],
+  ]) {
+    context.document.activeElement = {
+      classList: {
+        contains(name) { return name === className; },
+      },
+      closest(selector) {
+        assert.equal(selector, '.seq-channel-card[data-channel-index]');
+        return card;
+      },
+    };
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(context.captureSequenceChannelCardFocus(host))),
+      { channelIndex: '4', kind }
+    );
+  }
+});
+
+test('channel card focus restore keeps enabled run and detail controls without scrolling', () => {
+  const focusCalls = [];
+  const body = { focus(options) { focusCalls.push(['body', options]); } };
+  const run = { disabled: false, focus(options) { focusCalls.push(['run', options]); } };
+  const detail = { focus(options) { focusCalls.push(['detail', options]); } };
+  const card = {
+    querySelector(selector) {
+      return {
+        '.seq-channel-card-body': body,
+        '.seq-channel-card-run': run,
+        '.seq-channel-card-detail': detail,
+      }[selector] || null;
+    },
+  };
+  const host = {
+    querySelector(selector) {
+      assert.equal(selector, '.seq-channel-card[data-channel-index="2"]');
+      return card;
+    },
+  };
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('focusWithoutScroll'), context);
+  vm.runInContext(functionSource('restoreSequenceChannelCardFocus'), context);
+
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'body' });
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'run' });
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '2', kind: 'detail' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(focusCalls)), [
+    ['body', { preventScroll: true }],
+    ['run', { preventScroll: true }],
+    ['detail', { preventScroll: true }],
+  ]);
+});
+
+test('channel card focus restore falls back to the card body when run becomes disabled', () => {
+  const focusCalls = [];
+  const body = { focus(options) { focusCalls.push(['body', options]); } };
+  const run = { disabled: true, focus(options) { focusCalls.push(['run', options]); } };
+  const card = {
+    querySelector(selector) {
+      return selector === '.seq-channel-card-run' ? run : body;
+    },
+  };
+  const host = { querySelector() { return card; } };
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('focusWithoutScroll'), context);
+  vm.runInContext(functionSource('restoreSequenceChannelCardFocus'), context);
+
+  context.restoreSequenceChannelCardFocus(host, { channelIndex: '0', kind: 'run' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(focusCalls)), [
+    ['body', { preventScroll: true }],
+  ]);
 });
 
 test('channel models discard group-header result and current-position collisions', () => {
@@ -768,11 +910,15 @@ test('sequence card run posts only its explicit channel without changing top sel
     },
   };
   vm.createContext(context);
+  vm.runInContext(functionSource('sequenceCardRunChannelIndexes'), context);
   vm.runInContext(functionSource('sequenceRunQueueItems'), context);
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
-  await context.runSequence([3]);
+  const cardChannelIndexes = context.sequenceCardRunChannelIndexes([
+    { channel_index: 3, enabled: true },
+  ], 3);
+  await context.runSequence(cardChannelIndexes);
 
   assert.equal(request.path, '/api/sequence/run');
   assert.deepEqual(JSON.parse(request.options.body), {
@@ -780,6 +926,49 @@ test('sequence card run posts only its explicit channel without changing top sel
     channel_indexes: [3],
   });
   assert.deepEqual(selected, [0, 1]);
+});
+
+test('zero-argument top sequence run posts the current channel selection', async () => {
+  let request = null;
+  const results = { innerHTML: '' };
+  const context = {
+    seqRunning: false,
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    selectedChannelIndexesForRun() { return [1]; },
+    setSeqControlsDisabled() {},
+    clearSequenceResultsUi() {},
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'seq-results');
+        return results;
+      },
+    },
+    updateSeqOverall() {},
+    showSeqMsg() {},
+    startSequenceProgressPoll() {},
+    stopSequenceProgressPoll() {},
+    handleSequenceResponse() {},
+    setSeqRequestFailureState() {},
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch(path, options) {
+      request = { path, options };
+      return {
+        ok: true,
+        async json() { return {}; },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.equal(request.path, '/api/sequence/run');
+  assert.deepEqual(JSON.parse(request.options.body), { channel_indexes: [1] });
 });
 
 test('stale sequence progress response is ignored after poll generation changes', async () => {
