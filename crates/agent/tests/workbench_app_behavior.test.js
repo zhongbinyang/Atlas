@@ -107,6 +107,52 @@ function createFakeDomElement(tagName) {
   return element;
 }
 
+function renderChannelCardsWithControlState(controlState) {
+  const host = createFakeDomElement('div');
+  const context = {
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'seq-channel-cards');
+        return host;
+      },
+      createElement: createFakeDomElement,
+    },
+    seqSelected: [{}],
+    seqExclusiveBusy: !!controlState.seqExclusiveBusy,
+    seqPendingChannelAborts: controlState.seqPendingChannelAborts || {},
+    sequenceChannelsForDisplay() {
+      return [
+        { channel_index: 0, name: 'CH0' },
+        { channel_index: 1, name: 'CH1' },
+      ];
+    },
+    buildSequenceChannelCardModel(channel) {
+      return {
+        state: channel.channel_index === 0 ? 'running' : 'idle',
+        completed: 0, total: 1, passed: 0, failed: 0, skipped: 0,
+        currentGroupName: '校准组', currentLabel: '当前步骤', currentName: 'Measure',
+        currentElapsedMs: 10, elapsedMs: 10,
+      };
+    },
+    formatSequenceOverall(state) { return state; },
+    formatSequenceElapsed(ms) { return ms + 'ms'; },
+    escapeHtml(value) { return value; },
+    captureSequenceChannelCardFocus() { return null; },
+    restoreSequenceChannelCardFocus() {},
+    sequenceRunQueueItems() { return [{}]; },
+    isSequenceChannelActive(index) { return index === 0; },
+    isSequenceChannelRunning(index) { return index === 0; },
+    sequenceCardRunChannelIndexes(channel) { return [channel.channel_index]; },
+    runSequence() {},
+    abortSequenceChannel() {},
+    openSeqChannelDetail() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('renderSeqChannelCards'), context);
+  context.renderSeqChannelCards(null);
+  return host;
+}
+
 test('path invalidation clears stale success feedback from the DOM', () => {
   const elements = {
     'lv-msg': {
@@ -1025,6 +1071,7 @@ test('rendered channel cards expose isolated run and abort controls with group a
     seqSelected: [{}],
     seqRunning: true,
     seqExclusiveBusy: false,
+    seqPendingChannelAborts: {},
     sequenceChannelsForDisplay() {
       return [
         { channel_index: 0, name: 'CH0' },
@@ -1060,12 +1107,38 @@ test('rendered channel cards expose isolated run and abort controls with group a
   assert.equal(ch0.querySelector('.seq-channel-card-current-step strong').textContent, 'Measure');
   assert.equal(ch0.querySelector('.seq-channel-card-current-time').textContent, '1250ms');
 
-  ch1.querySelector('.seq-channel-card-run').dispatch('click');
-  ch0.querySelector('.seq-channel-card-abort').dispatch('click');
+  const runEvent = ch1.querySelector('.seq-channel-card-run').dispatch('click');
+  const abortEvent = ch0.querySelector('.seq-channel-card-abort').dispatch('click');
+  assert.equal(runEvent.stopped, true);
+  assert.equal(abortEvent.stopped, true);
+
+  const body = ch1.querySelector('.seq-channel-card-body');
+  body.dispatch('click');
+  const enterEvent = body.dispatch('keydown', { key: 'Enter' });
+  const spaceEvent = body.dispatch('keydown', { key: ' ' });
+  assert.equal(enterEvent.defaultPrevented, true);
+  assert.equal(spaceEvent.defaultPrevented, true);
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     ['runSequence', [1], false],
     ['abortSequenceChannel', 0],
+    ['openSeqChannelDetail', 1],
+    ['openSeqChannelDetail', 1],
+    ['openSeqChannelDetail', 1],
   ]);
+});
+
+test('rendered channel card run stays disabled during exclusive-busy rerender', () => {
+  const host = renderChannelCardsWithControlState({ seqExclusiveBusy: true });
+  const ch1 = host.querySelector('.seq-channel-card[data-channel-index="1"]');
+
+  assert.equal(ch1.querySelector('.seq-channel-card-run').disabled, true);
+});
+
+test('rendered channel card abort stays disabled during pending-abort rerender', () => {
+  const host = renderChannelCardsWithControlState({ seqPendingChannelAborts: { 0: true } });
+  const ch0 = host.querySelector('.seq-channel-card[data-channel-index="0"]');
+
+  assert.equal(ch0.querySelector('.seq-channel-card-abort').disabled, true);
 });
 
 test('sequence run keeps focused card restoration scoped to the started channel', async () => {

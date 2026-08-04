@@ -4157,7 +4157,7 @@ function renderSeqChannelCards(preservedFocus) {
     runButton.className = 'btn-primary seq-channel-card-run';
     runButton.textContent = '运行此通道';
     runButton.setAttribute('aria-label', '运行 ' + channelName + ' 通道');
-    runButton.disabled = !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
+    runButton.disabled = !sequenceRunQueueItems().length || seqExclusiveBusy || isSequenceChannelActive(channel.channel_index);
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
       runSequence(sequenceCardRunChannelIndexes(channel), channel.synthetic === true);
@@ -4168,7 +4168,8 @@ function renderSeqChannelCards(preservedFocus) {
     abortButton.className = 'btn-danger seq-channel-card-abort';
     abortButton.textContent = '中止此通道';
     abortButton.setAttribute('aria-label', '中止 ' + channelName + ' 通道');
-    abortButton.disabled = !isSequenceChannelRunning(channel.channel_index);
+    abortButton.disabled = !isSequenceChannelRunning(channel.channel_index) ||
+      !!seqPendingChannelAborts[Number(channel.channel_index)];
     abortButton.addEventListener('click', function (event) {
       event.stopPropagation();
       abortSequenceChannel(channel.channel_index);
