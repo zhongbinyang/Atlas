@@ -233,6 +233,7 @@ test('final multi-channel envelope preserves backend channel and step timing', (
 test('channel card model exposes current work, counts, and backend timing', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
   vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
 
   assert.deepEqual(
@@ -251,6 +252,8 @@ test('channel card model exposes current work, counts, and backend timing', () =
     }, [{}, {}, {}, {}]))),
     {
       state: 'running',
+      currentGroupName: '未分组',
+      currentLabel: '当前步骤 03',
       currentName: 'Measure',
       currentPosition: 2,
       completed: 2,
@@ -267,6 +270,7 @@ test('channel card model exposes current work, counts, and backend timing', () =
 test('channel card model is ready before the first run', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
   vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
 
   assert.deepEqual(
@@ -279,6 +283,8 @@ test('channel card model is ready before the first run', () => {
     }, [{}, {}, {}]))),
     {
       state: 'idle',
+      currentGroupName: '—',
+      currentLabel: '当前状态',
       currentName: '等待运行',
       currentPosition: null,
       completed: 0,
@@ -290,6 +296,89 @@ test('channel card model is ready before the first run', () => {
       currentElapsedMs: null,
     }
   );
+});
+
+test('channel card maps running and final steps to their named groups', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
+
+  const queue = [
+    { position: 0, name: 'Boot' },
+    { position: 1, template_source: 'group', name: '校准组', enabled: true },
+    { position: 2, name: 'Measure' },
+    { position: 3, template_source: 'group', name: '关闭组', enabled: false },
+    { position: 4, name: 'Disabled step' },
+  ];
+  const running = context.buildSequenceChannelCardModel({
+    running: true,
+    current_position: 2,
+    current_name: 'Measure',
+    steps: [],
+  }, queue);
+  const finished = context.buildSequenceChannelCardModel({
+    overall: 'pass',
+    steps: [{ position: 2, name: 'Measure', status: 'pass' }],
+  }, queue);
+
+  assert.equal(running.currentGroupName, '校准组');
+  assert.equal(running.currentLabel, '当前步骤 03');
+  assert.equal(running.currentName, 'Measure');
+  assert.equal(finished.currentGroupName, '校准组');
+  assert.equal(finished.currentLabel, '最后步骤 03');
+  assert.equal(finished.currentName, 'Measure');
+});
+
+test('channel card labels ungrouped and group-header progress without counting headers', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
+
+  const queue = [
+    { position: 0, name: 'Boot' },
+    { position: 1, template_source: 'group', name: '测试组' },
+    { position: 2, name: 'Check' },
+  ];
+  const boot = context.buildSequenceChannelCardModel({ running: true, current_position: 0, current_name: 'Boot' }, queue);
+  const header = context.buildSequenceChannelCardModel({ running: true, current_position: 1, current_name: '测试组' }, queue);
+
+  assert.equal(boot.currentGroupName, '未分组');
+  assert.equal(header.currentGroupName, '测试组');
+  assert.equal(header.currentLabel, '当前状态');
+  assert.equal(header.currentName, '准备下一步骤');
+  assert.equal(header.currentPosition, null);
+});
+
+test('channel card keeps group context for waits, disabled-group history, and aborts', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
+
+  const queue = [
+    { position: 0, template_source: 'group', name: '运行组', enabled: true },
+    { position: 1, name: 'Wait resource' },
+    { position: 2, template_source: 'group', name: '已禁用组', enabled: false },
+    { position: 3, name: 'Historical step' },
+  ];
+  const waiting = context.buildSequenceChannelCardModel({
+    overall: 'waiting_resource',
+    current_position: 1,
+    current_name: 'Wait resource',
+    steps: [],
+  }, queue);
+  const aborted = context.buildSequenceChannelCardModel({
+    overall: 'aborted',
+    steps: [{ position: 3, name: 'Historical step', status: 'aborted' }],
+  }, queue);
+
+  assert.equal(waiting.currentGroupName, '运行组');
+  assert.equal(waiting.currentName, 'Wait resource');
+  assert.equal(aborted.currentGroupName, '已禁用组');
+  assert.equal(aborted.currentLabel, '最后步骤 04');
+  assert.equal(aborted.currentName, 'Historical step');
 });
 
 test('sequence run payload isolates an explicit card channel without changing top selection', () => {
@@ -782,6 +871,7 @@ test('sequence run captures focused card control before lock and threads it into
 test('channel models discard group-header result and current-position collisions', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequencePositionGroupMap'), context);
   vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
   vm.runInContext(functionSource('buildSequenceDetailSections'), context);
   vm.runInContext(functionSource('isSequenceIssueStatus'), context);

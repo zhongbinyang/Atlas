@@ -3352,10 +3352,27 @@ function formatSequenceElapsed(rawMilliseconds) {
   return hours > 0 ? String(hours).padStart(2, '0') + ':' + core : core;
 }
 
+function buildSequencePositionGroupMap(queue) {
+  const map = {};
+  let current = { name: '未分组', enabled: true, header: false };
+  (Array.isArray(queue) ? queue : []).forEach(function (item, index) {
+    item = item || {};
+    const position = item.position != null ? item.position : index;
+    if (item.template_source === 'group') {
+      current = { name: item.name || '未命名组', enabled: item.enabled !== false, header: true };
+      map[position] = current;
+      return;
+    }
+    map[position] = { name: current.name, enabled: current.enabled, header: false };
+  });
+  return map;
+}
+
 function buildSequenceChannelCardModel(channel, queue) {
   channel = channel || {};
   const sourceQueue = Array.isArray(queue) ? queue : [];
   const rawSteps = Array.isArray(channel.steps) ? channel.steps : [];
+  const positionGroups = buildSequencePositionGroupMap(sourceQueue);
   const groupPositions = {};
   const totalPositions = {};
   for (let i = 0; i < sourceQueue.length; i++) {
@@ -3387,19 +3404,56 @@ function buildSequenceChannelCardModel(channel, queue) {
   if (channel.running || overall === 'running' || overall === 'waiting_resource') state = 'running';
   else if (overall === 'pass' || overall === 'ok') state = 'pass';
   else if (overall === 'fail' || overall === 'failed' || overall === 'error' || overall === 'aborted' || overall === 'stopped') state = 'fail';
+  let currentPosition = null;
+  let currentGroupName = '—';
+  let currentLabel = '当前状态';
   let currentName = '等待运行';
-  if (state === 'running') currentName = channel.current_name || '准备下一步骤';
-  else if (state === 'pass') currentName = '全部步骤通过';
-  else if (state === 'fail') {
-    const lastStep = steps.length ? steps[steps.length - 1] : null;
-    currentName = lastStep && lastStep.name ? lastStep.name : '运行结束，请查看详情';
+  let currentPositionIsGroup = false;
+  if (state === 'running' && channel.current_position != null) {
+    currentPosition = channel.current_position;
+    const currentGroup = positionGroups[currentPosition];
+    currentPositionIsGroup = !!(currentGroup && currentGroup.header);
+    currentGroupName = currentGroup ? currentGroup.name : '—';
+    if (currentPositionIsGroup) {
+      currentPosition = null;
+      currentName = '准备下一步骤';
+    } else {
+      currentLabel = '当前步骤 ' + String(Number(currentPosition) + 1).padStart(2, '0');
+      currentName = channel.current_name || '准备下一步骤';
+    }
+  } else if (state === 'pass' || state === 'fail') {
+    const terminalStatuses = {
+      pass: true,
+      ok: true,
+      skipped: true,
+      fail: true,
+      failed: true,
+      error: true,
+      aborted: true,
+      stopped: true,
+    };
+    for (let i = rawSteps.length - 1; i >= 0; i--) {
+      const step = rawSteps[i] || {};
+      const position = step.position != null ? step.position : i;
+      const group = positionGroups[position];
+      const status = String(step.status || '').toLowerCase();
+      if (!terminalStatuses[status] || !group || group.header) continue;
+      currentPosition = position;
+      currentGroupName = group.name;
+      currentLabel = '最后步骤 ' + String(Number(position) + 1).padStart(2, '0');
+      currentName = step.name || sourceQueue.find(function (item, index) {
+        const queueItem = item || {};
+        return (queueItem.position != null ? queueItem.position : index) === position;
+      }).name || '步骤 ' + String(Number(position) + 1);
+      break;
+    }
   }
-  const currentPositionIsGroup = channel.current_position != null && !!groupPositions[channel.current_position];
-  if (currentPositionIsGroup && state === 'running') currentName = '准备下一步骤';
   return {
     state: state,
+    currentGroupName: currentGroupName,
+    currentLabel: currentLabel,
     currentName: currentName,
-    currentPosition: channel.current_position != null && !currentPositionIsGroup ? channel.current_position : null,
+    currentPosition: currentPosition,
     completed: completed,
     total: total,
     passed: passed,
