@@ -3477,11 +3477,11 @@ function buildSequenceGroupSummary(section) {
   let skipped = 0;
   let running = false;
   for (let i = 0; i < steps.length; i++) {
-    const status = String(steps[i] && steps[i].status || 'pending').toLowerCase();
-    if (status === 'pass' || status === 'ok') passed += 1;
-    else if (status === 'skipped') skipped += 1;
-    else if (status === 'fail' || status === 'error' || status === 'aborted') failed += 1;
-    else if (status === 'running') running = true;
+    const state = sequenceStatusVisualState(steps[i] && steps[i].status);
+    if (state === 'pass') passed += 1;
+    else if (state === 'skipped') skipped += 1;
+    else if (state === 'fail') failed += 1;
+    else if (state === 'running') running = true;
   }
   const completed = passed + failed + skipped;
   let state = 'pending';

@@ -296,6 +296,8 @@ test('channel detail model keeps the complete queue pending before execution', (
   const context = {};
   vm.createContext(context);
   vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
   vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
@@ -318,6 +320,8 @@ test('channel detail model preserves terminal status and recorded step time', ()
   const context = {};
   vm.createContext(context);
   vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
   vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
@@ -338,6 +342,8 @@ test('channel detail retains flat steps and adds named group sections', () => {
   const context = {};
   vm.createContext(context);
   vm.runInContext(functionSource('buildSequenceDetailSections'), context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
   vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
@@ -403,6 +409,8 @@ test('channel detail projects persisted groups without counting headers as steps
 test('group summaries prioritize disabled, active, failure, and terminal member states', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
   vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   const summary = context.buildSequenceGroupSummary;
 
@@ -412,6 +420,25 @@ test('group summaries prioritize disabled, active, failure, and terminal member 
   assert.equal(summary({ enabled: true, steps: [{ status: 'pass' }, { status: 'skipped' }] }).state, 'pass');
   assert.equal(summary({ enabled: true, steps: [{ status: 'skipped' }] }).state, 'skipped');
   assert.equal(summary({ enabled: true, steps: [{ status: 'pass' }, { status: 'pending' }] }).state, 'pending');
+});
+
+test('group summaries keep active and issue variants open when collapsed', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('isSequenceIssueStatus'), context);
+  vm.runInContext(functionSource('sequenceStatusVisualState'), context);
+  vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
+  const summary = context.buildSequenceGroupSummary;
+
+  [
+    ['waiting_resource', 'running'],
+    ['failed', 'fail'],
+    ['stopped', 'fail'],
+  ].forEach(([status, expectedState]) => {
+    const result = summary({ enabled: true, collapsed: true, steps: [{ status }] });
+    assert.equal(result.state, expectedState, status);
+    assert.equal(result.open, true, status);
+  });
 });
 
 test('sequence elapsed formatter is stable from milliseconds through hours', () => {
