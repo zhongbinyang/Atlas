@@ -116,6 +116,26 @@ fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
             && STYLE.contains(".seq-channel-group[data-kind=\"result-only\"]"),
         "channel detail must render state-aware grouped sections"
     );
+    assert!(
+        APP.contains("seq-channel-card-run")
+            && APP.contains("运行此通道")
+            && APP.contains("event.stopPropagation()")
+            && STYLE.contains(".seq-channel-cards {\n  display: grid;")
+            && STYLE.contains("repeat(auto-fill, minmax(20rem, 24rem))")
+            && STYLE.contains("justify-content: start;")
+            && STYLE.contains(".seq-channel-card-actions")
+            && STYLE.contains(".seq-channel-card-detail"),
+        "channel cards need isolated run/detail actions and bounded desktop tracks"
+    );
+
+    let mobile = STYLE
+        .split("@media (max-width: 640px) {")
+        .nth(1)
+        .expect("sequence UI needs the existing mobile breakpoint");
+    assert!(
+        mobile.contains(".seq-channel-cards {\n    grid-template-columns: 1fr;"),
+        "channel cards must become one full-width column on mobile"
+    );
 }
 
 #[test]
