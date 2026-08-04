@@ -28,8 +28,8 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         .expect("a mobile breakpoint for the sequence page");
 
     assert!(
-        style.contains("#page-sequence {\n  padding-bottom: 5.5rem;\n  min-width: 0;\n}"),
-        "the sequence page must shrink without page-level overflow"
+        style.contains("#page-sequence-edit,\n#page-sequence-run {\n  padding-bottom: 5.5rem;\n  min-width: 0;\n}"),
+        "the sequence pages must shrink without page-level overflow"
     );
     assert!(
         style.contains(".seq-queue-section {\n  margin-bottom: 0.75rem;\n  min-width: 0;\n}"),
@@ -40,7 +40,7 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         "registered functions and templates must use collapsible drawers"
     );
     assert!(
-        mobile_rules.contains("#page-sequence {\n    padding-bottom: 0;\n  }"),
+        mobile_rules.contains("#page-sequence-edit,\n  #page-sequence-run {\n    padding-bottom: 0;\n  }"),
         "the fixed-bar spacer must be removed on small screens"
     );
     assert!(
@@ -174,14 +174,34 @@ fn settings_and_sequence_expose_channels_and_step_resources() {
         "step resources UI needs presets datalist and tag editor"
     );
     assert!(
+        INDEX.contains("data-page=\"sequence-edit\"")
+            && INDEX.contains("data-page=\"sequence-run\"")
+            && INDEX.contains("id=\"page-sequence-edit\"")
+            && INDEX.contains("id=\"page-sequence-run\"")
+            && INDEX.contains("id=\"seq-goto-run-btn\"")
+            && INDEX.contains("id=\"seq-goto-edit-btn\"")
+            && APP.contains("showPage('sequence-run')")
+            && APP.contains("showPage('sequence-edit')"),
+        "sequence must split into 编排 / 运行 pages with cross-links"
+    );
+    assert!(
         INDEX.contains("id=\"seq-channel-pick\"")
             && INDEX.contains("id=\"seq-progress-matrix\"")
+            && INDEX.contains("id=\"seq-results-section\"")
+            && INDEX.contains("id=\"seq-run-report\"")
+            && INDEX.contains("id=\"seq-run-report-tabs\"")
+            && INDEX.contains("id=\"seq-run-report-body\"")
             && APP.contains("channel_indexes")
             && APP.contains("applyMultiChannelProgress")
             && APP.contains("renderSeqProgressMatrix")
+            && APP.contains("renderSeqRunReport")
+            && APP.contains("openSeqRunReport")
+            && APP.contains("seq-progress-heading")
             && APP.contains("handleSequenceResponse")
-            && APP.contains("data.channels"),
-        "run panel must pick channels and render multi-channel progress matrix"
+            && APP.contains("data.channels")
+            && APP.contains("Keep the edit queue free of per-channel")
+            && (INDEX.contains("序列运行") || INDEX.contains("不写回本队列")),
+        "run page must pick channels, matrix + channel-tabbed run report; edit queue stays edit-only"
     );
     assert!(
         INDEX.contains("共用仪表填相同资源名")

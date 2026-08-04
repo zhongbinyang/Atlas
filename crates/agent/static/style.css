@@ -207,9 +207,31 @@ body {
 #page-workbench[hidden],
 #page-general[hidden],
 #page-api[hidden],
-#page-sequence[hidden],
+#page-sequence-edit[hidden],
+#page-sequence-run[hidden],
 #page-settings[hidden] {
   display: none;
+}
+
+.seq-page-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.seq-page-heading h2 {
+  margin: 0 0 0.25rem;
+}
+
+.seq-page-heading .muted-hint {
+  margin: 0;
+}
+
+.seq-run-summary {
+  margin: 0 0 0.75rem;
 }
 
 .seq-panel h3 {
@@ -217,7 +239,8 @@ body {
   font-size: 0.95rem;
 }
 
-#page-sequence {
+#page-sequence-edit,
+#page-sequence-run {
   padding-bottom: 5.5rem;
   min-width: 0;
 }
@@ -395,6 +418,20 @@ body {
 .seq-progress-matrix {
   margin: 0.75rem 0;
   overflow-x: auto;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.seq-progress-heading {
+  margin: 0 0 0.55rem;
+  font-size: 1.05rem;
+}
+
+.seq-results-section {
+  margin: 0.75rem 0 1rem;
+  min-width: 0;
 }
 
 .seq-progress-table {
@@ -433,6 +470,100 @@ body {
 .seq-matrix-running {
   color: #b54708;
   font-weight: 600;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.btn-link:hover {
+  opacity: 0.85;
+}
+
+.seq-run-report {
+  margin: 1rem 0 5.5rem;
+  padding: 0.85rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.seq-run-report-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.65rem;
+}
+
+.seq-run-report-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.seq-run-report-lead {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+
+.seq-run-report-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.seq-run-report-tab {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.seq-run-report-tab.active {
+  border-color: var(--accent, #2563eb);
+  background: color-mix(in srgb, var(--accent, #2563eb) 12%, var(--panel));
+  font-weight: 600;
+}
+
+.seq-run-report-body {
+  overflow-x: auto;
+}
+
+.seq-run-report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.seq-run-report-table th,
+.seq-run-report-table td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.55rem;
+  vertical-align: top;
+}
+
+.seq-report-step-focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -2px;
+}
+
+.seq-run-report-loghint {
+  margin: 0.65rem 0 0;
+}
+
+.seq-open-report-btn {
+  margin-top: 0.4rem;
 }
 
 .step-resources {
@@ -1255,7 +1386,8 @@ th {
     gap: 0.75rem;
   }
 
-  #page-sequence {
+  #page-sequence-edit,
+  #page-sequence-run {
     padding-bottom: 0;
   }
 

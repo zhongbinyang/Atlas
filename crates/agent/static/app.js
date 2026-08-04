@@ -105,8 +105,7 @@ function updateMachineBusyActions(data) {
 }
 
 function syncSequenceBusyFromStatus(data) {
-  const sequencePage = document.getElementById('page-sequence');
-  const onSeqPage = sequencePage && !sequencePage.hidden;
+  const onSeqPage = isSequencePageVisible();
   if (!data.busy && seqRunning) {
     seqRunning = false;
     setSeqControlsDisabled(false);
@@ -157,8 +156,12 @@ let calibrationProfiles = [];
 let agentChannels = [];
 /** Selected channel_indexes for the next run (null = all enabled). */
 let seqSelectedChannelIndexes = null;
-/** Latest multi-channel progress/result for matrix rendering. */
+/** Latest multi-channel progress/result for matrix + run report. */
 let seqChannelProgress = [];
+/** Active channel tab in the run report (channel_index). */
+let seqReportFocusChannelIndex = null;
+/** Optional step position to highlight in the run report. */
+let seqReportFocusPosition = null;
 
 function isSystemVarName(name) {
   return name === 'Hostname' || name === 'IP';
@@ -3064,11 +3067,40 @@ let seqExpandedIndexes = {};
 let seqRegisteredQuery = '';
 let seqRegisteredSource = 'all';
 
+function isSequencePageVisible() {
+  const edit = document.getElementById('page-sequence-edit');
+  const run = document.getElementById('page-sequence-run');
+  return (edit && !edit.hidden) || (run && !run.hidden);
+}
+
+function normalizeSequencePage(page) {
+  if (page === 'sequence') return 'sequence-edit';
+  return page;
+}
+
+function updateSeqRunQueueSummary() {
+  const el = document.getElementById('seq-run-queue-summary');
+  if (!el) return;
+  let steps = 0;
+  for (let i = 0; i < seqSelected.length; i++) {
+    if (!isSeqGroupItem(seqSelected[i])) steps += 1;
+  }
+  if (!seqSelected.length) {
+    el.textContent = '当前队列：空（请先到「序列编排」添加步骤）';
+    return;
+  }
+  const bind = document.getElementById('seq-template-bind');
+  const bindText = bind && bind.textContent ? ' · ' + bind.textContent : '';
+  el.textContent = '当前队列：' + steps + ' 步' + bindText;
+}
+
 function showPage(page) {
+  page = normalizeSequencePage(page);
   const workbench = document.getElementById('page-workbench');
   const general = document.getElementById('page-general');
   const apiPage = document.getElementById('page-api');
-  const sequence = document.getElementById('page-sequence');
+  const sequenceEdit = document.getElementById('page-sequence-edit');
+  const sequenceRun = document.getElementById('page-sequence-run');
   const settings = document.getElementById('page-settings');
   const leavingSettings = settings && !settings.hidden && page !== 'settings';
   if (leavingSettings && settingsDirty) {
@@ -3077,13 +3109,21 @@ function showPage(page) {
   workbench.hidden = page !== 'workbench';
   if (general) general.hidden = page !== 'general';
   if (apiPage) apiPage.hidden = page !== 'api';
-  sequence.hidden = page !== 'sequence';
+  if (sequenceEdit) sequenceEdit.hidden = page !== 'sequence-edit';
+  if (sequenceRun) sequenceRun.hidden = page !== 'sequence-run';
   if (settings) settings.hidden = page !== 'settings';
   document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
     btn.classList.toggle('active', btn.getAttribute('data-page') === page);
   });
-  if (page === 'sequence') {
-    loadSequencePage();
+  if (page === 'sequence-edit' || page === 'sequence-run') {
+    loadSequencePage().then(function () {
+      if (page === 'sequence-run') {
+        updateSeqRunQueueSummary();
+        renderSeqChannelPick();
+        renderSeqProgressMatrix();
+        renderSeqRunReport();
+      }
+    });
   } else if (page === 'workbench') {
     fetchLabviewCenterTemplates();
   } else if (page === 'general') {
@@ -3107,10 +3147,16 @@ document.querySelectorAll('.page-tabs .tab').forEach(function (btn) {
 });
 
 function showSeqMsg(text, ok) {
-  const msg = document.getElementById('seq-msg');
-  msg.hidden = false;
-  msg.textContent = text;
-  msg.className = ok ? 'msg ok' : 'msg err';
+  const targets = [
+    document.getElementById('seq-msg'),
+    document.getElementById('seq-run-msg'),
+  ];
+  targets.forEach(function (msg) {
+    if (!msg) return;
+    msg.hidden = false;
+    msg.textContent = text;
+    msg.className = ok ? 'msg ok' : 'msg err';
+  });
 }
 
 function setSeqControlsDisabled(disabled) {
@@ -3357,29 +3403,13 @@ function channelProgressFromEnvelope(prog) {
 
 function applyMultiChannelProgress(prog) {
   seqChannelProgress = channelProgressFromEnvelope(prog);
-  // Queue step rows mirror first channel (legacy-compatible).
-  const first = seqChannelProgress[0];
-  if (first) {
-    applyStepResults(first.steps);
-    if (first.current_position != null && first.running) {
-      const pos = first.current_position;
-      if (!seqStepResults[pos]) {
-        seqStepResults[pos] = {
-          position: pos,
-          name: first.current_name || '',
-          ok: true,
-          status: 'running',
-          measured: null,
-          limits: null,
-          result: null,
-          error: null,
-        };
-      }
-    }
-  } else {
-    applyStepResults([]);
+  // Keep the edit queue free of per-channel measured/status — results live in the run report.
+  seqStepResults = {};
+  if (seqReportFocusChannelIndex == null && seqChannelProgress.length) {
+    seqReportFocusChannelIndex = seqChannelProgress[0].channel_index;
   }
   renderSeqProgressMatrix();
+  renderSeqRunReport();
   renderSeqSelected();
 }
 
@@ -3398,6 +3428,11 @@ function renderSeqProgressMatrix() {
     return;
   }
   host.hidden = false;
+  host.innerHTML = '';
+  const heading = document.createElement('h3');
+  heading.className = 'seq-progress-heading';
+  heading.textContent = '通道进度';
+  host.appendChild(heading);
   const stepCols = [];
   const seen = {};
   seqChannelProgress.forEach(function (ch) {
@@ -3413,7 +3448,6 @@ function renderSeqProgressMatrix() {
       });
     });
   });
-  // Also include queue steps not yet in results
   seqSelected.forEach(function (item, i) {
     if (item.template_source === 'group') return;
     const pos = item.position != null ? item.position : i;
@@ -3428,21 +3462,40 @@ function renderSeqProgressMatrix() {
     return ap - bp;
   });
 
-  let html = '<table class="seq-progress-table"><thead><tr><th>通道</th>';
+  const table = document.createElement('table');
+  table.className = 'seq-progress-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headRow.appendChild(document.createElement('th')).textContent = '通道';
   stepCols.forEach(function (col) {
-    html += '<th title="' + escapeHtml(col.name) + '">' + escapeHtml(col.name) + '</th>';
+    const th = document.createElement('th');
+    th.title = col.name;
+    th.textContent = col.name;
+    headRow.appendChild(th);
   });
-  html += '<th>总体</th></tr></thead><tbody>';
+  headRow.appendChild(document.createElement('th')).textContent = '总体';
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
   seqChannelProgress.forEach(function (ch) {
     const byPos = {};
     (ch.steps || []).forEach(function (st, si) {
       const pos = st.position != null ? st.position : si;
       byPos[pos] = st;
     });
-    html +=
-      '<tr><td class="mono">' +
-      escapeHtml(String(ch.name || ('CH' + ch.channel_index))) +
-      '</td>';
+    const tr = document.createElement('tr');
+    const nameTd = document.createElement('td');
+    nameTd.className = 'mono seq-matrix-channel';
+    const nameBtn = document.createElement('button');
+    nameBtn.type = 'button';
+    nameBtn.className = 'btn-link seq-matrix-channel-btn';
+    nameBtn.textContent = String(ch.name || 'CH' + ch.channel_index);
+    nameBtn.title = '打开该通道运行报告';
+    nameBtn.addEventListener('click', function () {
+      openSeqRunReport(ch.channel_index, null);
+    });
+    nameTd.appendChild(nameBtn);
+    tr.appendChild(nameTd);
     stepCols.forEach(function (col) {
       let st = col.position != null ? byPos[col.position] : null;
       if (
@@ -3453,7 +3506,8 @@ function renderSeqProgressMatrix() {
       ) {
         st = { status: 'running', name: ch.current_name };
       }
-      const status = st && st.status ? st.status : '—';
+      const status = st && st.status ? st.status : '';
+      const td = document.createElement('td');
       const cls =
         status === 'pass' || status === 'ok'
           ? 'seq-matrix-pass'
@@ -3462,25 +3516,37 @@ function renderSeqProgressMatrix() {
             : status === 'running'
               ? 'seq-matrix-running'
               : '';
-      html +=
-        '<td class="' +
-        cls +
-        '">' +
-        escapeHtml(formatStepStatus(status === '—' ? '' : status)) +
-        '</td>';
+      if (cls) td.className = cls;
+      if (st) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-link seq-matrix-cell-btn';
+        btn.textContent = formatStepStatus(status) || '—';
+        btn.title = '查看 ' + (ch.name || 'CH' + ch.channel_index) + ' · ' + (col.name || '');
+        btn.addEventListener('click', function () {
+          openSeqRunReport(ch.channel_index, col.position);
+        });
+        td.appendChild(btn);
+      } else {
+        td.textContent = '—';
+      }
+      tr.appendChild(td);
     });
-    html +=
-      '<td class="mono">' +
-      escapeHtml(ch.overall != null ? String(ch.overall) : '—') +
-      '</td></tr>';
+    const overallTd = document.createElement('td');
+    overallTd.className = 'mono';
+    overallTd.textContent = ch.overall != null ? String(ch.overall) : '—';
+    tr.appendChild(overallTd);
+    tbody.appendChild(tr);
   });
-  html += '</tbody></table>';
-  host.innerHTML = html;
+  table.appendChild(tbody);
+  host.appendChild(table);
 }
 
 function clearSequenceResultsUi() {
   seqStepResults = {};
   seqChannelProgress = [];
+  seqReportFocusChannelIndex = null;
+  seqReportFocusPosition = null;
   updateSeqOverall({});
   const resultsEl = document.getElementById('seq-results');
   if (resultsEl) {
@@ -3492,7 +3558,198 @@ function clearSequenceResultsUi() {
     matrix.innerHTML = '';
     matrix.hidden = true;
   }
+  const report = document.getElementById('seq-run-report');
+  if (report) report.hidden = true;
+  const tabs = document.getElementById('seq-run-report-tabs');
+  if (tabs) tabs.innerHTML = '';
+  const body = document.getElementById('seq-run-report-body');
+  if (body) body.innerHTML = '';
   renderSeqSelected();
+}
+
+function openSeqRunReport(channelIndex, position) {
+  if (channelIndex != null) seqReportFocusChannelIndex = channelIndex;
+  seqReportFocusPosition = position != null ? position : null;
+  renderSeqRunReport();
+  const report = document.getElementById('seq-run-report');
+  if (report) {
+    report.hidden = false;
+    report.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+function findReportChannel(channelIndex) {
+  for (let i = 0; i < seqChannelProgress.length; i++) {
+    if (seqChannelProgress[i].channel_index === channelIndex) {
+      return seqChannelProgress[i];
+    }
+  }
+  return seqChannelProgress[0] || null;
+}
+
+function renderSeqRunReport() {
+  const report = document.getElementById('seq-run-report');
+  const tabs = document.getElementById('seq-run-report-tabs');
+  const body = document.getElementById('seq-run-report-body');
+  const logHint = document.getElementById('seq-run-report-loghint');
+  if (!report || !tabs || !body) return;
+  if (!seqChannelProgress.length) {
+    report.hidden = true;
+    tabs.innerHTML = '';
+    body.innerHTML = '';
+    if (logHint) logHint.textContent = '';
+    return;
+  }
+  report.hidden = false;
+  if (
+    seqReportFocusChannelIndex == null ||
+    !findReportChannel(seqReportFocusChannelIndex)
+  ) {
+    seqReportFocusChannelIndex = seqChannelProgress[0].channel_index;
+  }
+  tabs.innerHTML = '';
+  seqChannelProgress.forEach(function (ch) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className =
+      'seq-run-report-tab' +
+      (ch.channel_index === seqReportFocusChannelIndex ? ' active' : '');
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute(
+      'aria-selected',
+      ch.channel_index === seqReportFocusChannelIndex ? 'true' : 'false'
+    );
+    const ov = ch.overall != null ? String(ch.overall) : '—';
+    btn.textContent =
+      (ch.name || 'CH' + ch.channel_index) + ' · ' + ov;
+    btn.addEventListener('click', function () {
+      seqReportFocusChannelIndex = ch.channel_index;
+      seqReportFocusPosition = null;
+      renderSeqRunReport();
+    });
+    tabs.appendChild(btn);
+  });
+
+  const ch = findReportChannel(seqReportFocusChannelIndex);
+  body.innerHTML = '';
+  if (!ch) return;
+  const summary = document.createElement('p');
+  summary.className = 'seq-run-report-summary muted-hint';
+  summary.textContent =
+    '通道 ' +
+    (ch.name || 'CH' + ch.channel_index) +
+    ' · 总体 ' +
+    (ch.overall != null ? ch.overall : '—') +
+    (ch.running && ch.current_name
+      ? ' · 当前: ' + ch.current_name
+      : '');
+  body.appendChild(summary);
+
+  const table = document.createElement('table');
+  table.className = 'seq-run-report-table';
+  table.innerHTML =
+    '<thead><tr>' +
+    '<th>#</th><th>名称</th><th>结果</th><th>值</th><th>下限</th><th>上限</th><th>单位</th><th>实测 / 原始</th>' +
+    '</tr></thead>';
+  const tbody = document.createElement('tbody');
+  const steps = Array.isArray(ch.steps) ? ch.steps : [];
+  const queueByPos = {};
+  seqSelected.forEach(function (item, i) {
+    if (item.template_source === 'group') return;
+    const pos = item.position != null ? item.position : i;
+    queueByPos[pos] = item;
+  });
+  if (!steps.length && ch.running) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td colspan="8" class="empty">执行中…' +
+      (ch.current_name ? ' ' + escapeHtml(ch.current_name) : '') +
+      '</td>';
+    tbody.appendChild(tr);
+  }
+  steps.forEach(function (st, si) {
+    const pos = st.position != null ? st.position : si;
+    const item = queueByPos[pos] || {};
+    const limits = Array.isArray(item.limits) ? item.limits : [];
+    const limitCells = formatSeqLimitCells(
+      { limits: limits.length ? limits : st.limits || [] },
+      st
+    );
+    const tr = document.createElement('tr');
+    tr.className = 'seq-report-step-row';
+    tr.setAttribute('data-report-pos', String(pos));
+    if (seqReportFocusPosition != null && pos === seqReportFocusPosition) {
+      tr.classList.add('seq-report-step-focus');
+    }
+    tr.innerHTML =
+      '<td class="mono">' +
+      escapeHtml(String(pos + 1)) +
+      '</td>' +
+      '<td>' +
+      escapeHtml(st.name || item.name || '—') +
+      '</td>' +
+      '<td class="seq-result-cell">' +
+      resultBadgeHtml(st) +
+      '</td>' +
+      '<td class="seq-limit-cell mono">' +
+      limitCells.value +
+      '</td>' +
+      '<td class="seq-limit-cell mono">' +
+      limitCells.min +
+      '</td>' +
+      '<td class="seq-limit-cell mono">' +
+      limitCells.max +
+      '</td>' +
+      '<td class="seq-limit-cell mono">' +
+      limitCells.unit +
+      '</td>' +
+      '<td class="seq-report-detail-cell"></td>';
+    const detailCell = tr.querySelector('.seq-report-detail-cell');
+    const measured = document.createElement('div');
+    measured.className = 'mono';
+    measured.textContent = '实测: ' + formatMeasuredSummary(st.measured);
+    detailCell.appendChild(measured);
+    if (st.error) {
+      const errEl = document.createElement('div');
+      errEl.className = 'seq-detail-error mono';
+      errEl.textContent = '错误: ' + st.error;
+      detailCell.appendChild(errEl);
+    }
+    if (st.result != null) {
+      const details = document.createElement('details');
+      details.className = 'seq-step-details';
+      if (seqReportFocusPosition != null && pos === seqReportFocusPosition) {
+        details.open = true;
+      }
+      const sum = document.createElement('summary');
+      sum.textContent = '原始返回 JSON';
+      const pre = document.createElement('pre');
+      pre.className = 'mono lv-pre';
+      pre.textContent = JSON.stringify(st.result, null, 2);
+      details.appendChild(sum);
+      details.appendChild(pre);
+      detailCell.appendChild(details);
+    }
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  if (logHint) {
+    logHint.textContent =
+      lastAgentStatus && lastAgentStatus.log_dir
+        ? '详细日志: ' + lastAgentStatus.log_dir + '\\sequence_runs'
+        : '详细日志已写入 Agent 日志目录 sequence_runs';
+  }
+
+  if (seqReportFocusPosition != null) {
+    const focusRow = body.querySelector(
+      '.seq-report-step-row[data-report-pos="' + seqReportFocusPosition + '"]'
+    );
+    if (focusRow) {
+      focusRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
 }
 
 function startSequenceProgressPoll() {
@@ -4307,11 +4564,12 @@ function renderSeqSelected() {
   seqCheckedIndexes = nextChecked;
 
   if (!seqSelected.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>';
     setSeqControlsDisabled(false);
     seqFocusIndex = null;
     updateSeqInsertBadge();
     updateGroupSelectedBtn();
+    updateSeqRunQueueSummary();
     return;
   }
   if (seqFocusIndex != null && (seqFocusIndex < 0 || seqFocusIndex >= seqSelected.length)) {
@@ -4394,12 +4652,6 @@ function renderSeqSelected() {
       kindTd.textContent = '分组';
       row.appendChild(kindTd);
 
-      for (let c = 0; c < 5; c++) {
-        const td = document.createElement('td');
-        td.textContent = '—';
-        row.appendChild(td);
-      }
-
       const actions = document.createElement('td');
       actions.className = 'seq-row-actions';
       const upBtn = document.createElement('button');
@@ -4444,7 +4696,7 @@ function renderSeqSelected() {
         emptyRow.setAttribute('data-index', String(i));
         emptyRow.setAttribute('data-drop-mode', 'into');
         const emptyTd = document.createElement('td');
-        emptyTd.colSpan = 11;
+        emptyTd.colSpan = 5;
         emptyTd.textContent = '拖入步骤到此分组';
         emptyRow.appendChild(emptyTd);
         emptyRow.addEventListener('dragover', onSeqDragOver);
@@ -4467,7 +4719,6 @@ function renderSeqSelected() {
       (seqFocusIndex === i ? ' seq-row-focused' : '') +
       (seqCheckedIndexes[i] ? ' seq-row-picked' : '');
     const pos = item.position != null ? item.position : i;
-    const stepResult = seqStepResults[pos];
     const source = item.template_source === 'general' ? 'general' : 'labview';
     const templateId = source === 'general' ? item.general_template_id : item.vi_template_id;
     const name = escapeHtml(item.name || templateId || '—');
@@ -4476,18 +4727,12 @@ function renderSeqSelected() {
     const failPolicy = item.fail_policy === 'continue' ? 'continue' : 'stop';
     const limits = Array.isArray(item.limits) ? item.limits : [];
     const expanded = !!seqExpandedIndexes[i];
-    const limitCells = formatSeqLimitCells(item, stepResult);
 
     row.innerHTML =
       '<td class="mono"></td>' +
       '<td class="seq-check-cell"></td>' +
       '<td>' + name + '</td>' +
-      '<td class="mono">' + kindDisplay + '</td>' +
-      '<td class="seq-result-cell">' + resultBadgeHtml(stepResult) + '</td>' +
-      '<td class="seq-limit-cell mono">' + limitCells.value + '</td>' +
-      '<td class="seq-limit-cell mono">' + limitCells.min + '</td>' +
-      '<td class="seq-limit-cell mono">' + limitCells.max + '</td>' +
-      '<td class="seq-limit-cell mono">' + limitCells.unit + '</td>';
+      '<td class="mono">' + kindDisplay + '</td>';
 
     const indexWrap = document.createElement('span');
     indexWrap.className = 'seq-outline-index';
@@ -4569,7 +4814,7 @@ function renderSeqSelected() {
     detailRow.className = 'seq-detail-row';
     detailRow.hidden = !expanded;
     const detailTd = document.createElement('td');
-    detailTd.colSpan = 11;
+    detailTd.colSpan = 5;
     const panel = document.createElement('div');
     panel.className = 'seq-detail-panel';
 
@@ -4618,27 +4863,27 @@ function renderSeqSelected() {
 
     const measured = document.createElement('div');
     measured.className = 'seq-detail-measured mono';
-    measured.textContent = '实测: ' + (stepResult ? formatMeasuredSummary(stepResult.measured) : '—');
-    panel.appendChild(measured);
-
-    if (stepResult && stepResult.error) {
-      const errEl = document.createElement('div');
-      errEl.className = 'seq-detail-error mono';
-      errEl.textContent = '错误: ' + stepResult.error;
-      panel.appendChild(errEl);
-    }
-
-    if (stepResult && stepResult.result != null) {
-      const details = document.createElement('details');
-      details.className = 'seq-step-details';
-      const summary = document.createElement('summary');
-      summary.textContent = '原始返回 JSON';
-      const pre = document.createElement('pre');
-      pre.className = 'mono lv-pre';
-      pre.textContent = JSON.stringify(stepResult.result, null, 2);
-      details.appendChild(summary);
-      details.appendChild(pre);
-      panel.appendChild(details);
+    if (seqChannelProgress.length) {
+      measured.textContent = '实测 / 原始返回见「序列运行」页的运行报告。';
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'btn-sm seq-open-report-btn';
+      openBtn.textContent = '打开运行报告';
+      openBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        showPage('sequence-run');
+        openSeqRunReport(
+          seqReportFocusChannelIndex != null
+            ? seqReportFocusChannelIndex
+            : seqChannelProgress[0].channel_index,
+          pos
+        );
+      });
+      panel.appendChild(measured);
+      panel.appendChild(openBtn);
+    } else {
+      measured.textContent = '实测: —（请到「序列运行」页执行后查看）';
+      panel.appendChild(measured);
     }
 
     detailTd.appendChild(panel);
@@ -4648,6 +4893,7 @@ function renderSeqSelected() {
   setSeqControlsDisabled(seqRunning);
   updateSeqInsertBadge();
   updateGroupSelectedBtn();
+  updateSeqRunQueueSummary();
 }
 
 function renderSeqInputsCell(host, item, index) {
@@ -5013,33 +5259,18 @@ function onSeqDragEnd(e) {
 
 function renderSeqResults(data) {
   const container = document.getElementById('seq-results');
-  if (!container) return;
-  container.innerHTML = '';
-  const channels = Array.isArray(data && data.channels) ? data.channels : null;
-  let stepCount = 0;
-  if (channels && channels.length) {
-    channels.forEach(function (ch) {
-      const resp = ch.response || ch;
-      if (resp && Array.isArray(resp.steps)) stepCount += resp.steps.length;
-    });
-  } else if (data && Array.isArray(data.steps)) {
-    stepCount = data.steps.length;
-  }
-  if (!stepCount && !(channels && channels.length)) {
+  if (container) {
+    container.innerHTML = '';
     container.hidden = true;
-    return;
   }
-  container.hidden = false;
-  const chLabel = channels && channels.length ? channels.length + ' 通道 · ' : '';
-  container.textContent =
-    '本次 ' +
-    chLabel +
-    '共 ' +
-    stepCount +
-    ' 步结果；进度矩阵按通道展示，步骤行显示首通道结果。'
-    + ((lastAgentStatus && lastAgentStatus.log_dir)
-      ? ('详细日志: ' + lastAgentStatus.log_dir + '\\sequence_runs')
-      : '详细日志已写入 Agent 日志目录 sequence_runs');
+  const envelope = multiEnvelopeToProgress(data);
+  seqChannelProgress = channelProgressFromEnvelope(envelope);
+  if (!seqChannelProgress.length) return;
+  if (seqReportFocusChannelIndex == null) {
+    seqReportFocusChannelIndex = seqChannelProgress[0].channel_index;
+  }
+  renderSeqProgressMatrix();
+  renderSeqRunReport();
 }
 
 function multiEnvelopeToProgress(data) {
@@ -6091,6 +6322,25 @@ async function fetchGeneralTemplates() {
 }
 
 document.getElementById('seq-run-btn').addEventListener('click', runSequence);
+const seqGotoRunBtn = document.getElementById('seq-goto-run-btn');
+if (seqGotoRunBtn) {
+  seqGotoRunBtn.addEventListener('click', function () {
+    showPage('sequence-run');
+  });
+}
+const seqGotoEditBtn = document.getElementById('seq-goto-edit-btn');
+if (seqGotoEditBtn) {
+  seqGotoEditBtn.addEventListener('click', function () {
+    showPage('sequence-edit');
+  });
+}
+const seqRunReportClose = document.getElementById('seq-run-report-close');
+if (seqRunReportClose) {
+  seqRunReportClose.addEventListener('click', function () {
+    const report = document.getElementById('seq-run-report');
+    if (report) report.hidden = true;
+  });
+}
 const seqInsertGroupBtn = document.getElementById('seq-insert-group');
 if (seqInsertGroupBtn) seqInsertGroupBtn.addEventListener('click', insertSeqGroup);
 const seqGroupSelectedBtn = document.getElementById('seq-group-selected');

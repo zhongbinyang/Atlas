@@ -19,7 +19,8 @@
         <button type="button" class="tab active" data-page="workbench">VI</button>
         <button type="button" class="tab" data-page="general">通用</button>
         <button type="button" class="tab" data-page="api">REST</button>
-        <button type="button" class="tab" data-page="sequence">序列</button>
+        <button type="button" class="tab" data-page="sequence-edit">序列编排</button>
+        <button type="button" class="tab" data-page="sequence-run">序列运行</button>
         <button type="button" class="tab" data-page="settings">配置</button>
       </nav>
     </div>
@@ -582,9 +583,15 @@
       </section>
     </div>
 
-    <div id="page-sequence" hidden>
+    <div id="page-sequence-edit" hidden>
       <section class="seq-panel">
-        <h2>执行序列</h2>
+        <div class="seq-page-heading">
+          <div>
+            <h2>序列编排</h2>
+            <p class="muted-hint">编辑执行顺序、入参 / Spec / 资源，并管理中心序列模板。</p>
+          </div>
+          <button type="button" id="seq-goto-run-btn" class="btn-primary">去运行 →</button>
+        </div>
 
         <details class="seq-drawer" id="seq-registered-drawer">
           <summary>
@@ -622,7 +629,7 @@
 
         <section class="seq-queue-section">
           <h3>执行顺序</h3>
-          <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略 / 资源，并查看实测与原始返回</p>
+          <p class="muted-hint seq-queue-hint">点击「详情」编辑入参 / Spec / Fail 策略 / 资源。运行结果在「序列运行」页按通道查看，不写回本队列。</p>
           <p class="muted-hint seq-resources-help">共用仪表填相同资源名，例如 station.dca；通道私有步骤留空即可并行。</p>
           <p id="seq-template-bind" class="muted-hint">当前未绑定序列模板</p>
           <datalist id="resource-presets">
@@ -633,6 +640,7 @@
           <div class="seq-queue-toolbar">
             <button type="button" id="seq-insert-group" class="btn-sm">新建分组</button>
             <button type="button" id="seq-group-selected" class="btn-sm" disabled title="将勾选的步骤编成一组">编成一组</button>
+            <button type="button" id="seq-save-template-btn" class="btn-sm">保存为模板</button>
             <span id="seq-insert-badge" class="seq-insert-badge" aria-live="polite">将加入：队尾（根级）</span>
           </div>
           <div class="table-scroll seq-queue-scroll">
@@ -643,16 +651,11 @@
                   <th>启用</th>
                   <th>名称</th>
                   <th>类型</th>
-                  <th>结果</th>
-                  <th>值</th>
-                  <th>下限</th>
-                  <th>上限</th>
-                  <th>单位</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody id="seq-selected-body">
-                <tr><td colspan="10" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>
+                <tr><td colspan="5" class="empty">队列为空，展开上方「中心全部功能」后添加</td></tr>
               </tbody>
             </table>
           </div>
@@ -683,15 +686,42 @@
             </div>
           </div>
         </details>
+      </section>
+    </div>
 
-        <div id="seq-progress-matrix" class="seq-progress-matrix" hidden></div>
-        <div id="seq-results" class="seq-results-hint" hidden></div>
+    <div id="page-sequence-run" hidden>
+      <section class="seq-panel">
+        <div class="seq-page-heading">
+          <div>
+            <h2>序列运行</h2>
+            <p class="muted-hint">选择通道并执行当前编排队列；结果按通道分开展示。</p>
+          </div>
+          <button type="button" id="seq-goto-edit-btn" class="btn-sm">← 去编排</button>
+        </div>
+
+        <div class="seq-run-summary muted-hint" id="seq-run-queue-summary">当前队列：—</div>
+        <p id="seq-run-msg" class="msg" hidden></p>
+
+        <section id="seq-results-section" class="seq-results-section">
+          <div id="seq-progress-matrix" class="seq-progress-matrix" hidden aria-label="通道进度矩阵"></div>
+
+          <section id="seq-run-report" class="seq-run-report" hidden>
+            <div class="seq-run-report-header">
+              <h3>运行报告</h3>
+              <p class="muted-hint seq-run-report-lead">按通道查看完整步骤结果；点击矩阵单元格可跳转到对应通道与步骤。</p>
+              <button type="button" id="seq-run-report-close" class="btn-sm">收起</button>
+            </div>
+            <div id="seq-run-report-tabs" class="seq-run-report-tabs" role="tablist" aria-label="通道报告"></div>
+            <div id="seq-run-report-body" class="seq-run-report-body"></div>
+            <p id="seq-run-report-loghint" class="muted-hint seq-run-report-loghint"></p>
+          </section>
+          <div id="seq-results" class="seq-results-hint" hidden></div>
+        </section>
       </section>
       <div class="seq-run-bar seq-run-bar-fixed">
         <label>SN <input id="seq-sn" type="text" placeholder="可选；也可由步骤读入" /></label>
         <label>工单 <input id="seq-work-order" type="text" placeholder="可选" /></label>
         <div id="seq-channel-pick" class="seq-channel-pick" aria-label="选择运行通道"></div>
-        <button id="seq-save-template-btn" type="button">保存为模板</button>
         <button id="seq-run-btn" type="button" class="btn-primary">开始</button>
         <button id="seq-abort-btn" type="button" disabled>中止</button>
         <span id="seq-overall"></span>
