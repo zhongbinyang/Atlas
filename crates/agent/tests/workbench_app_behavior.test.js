@@ -1181,9 +1181,10 @@ test('sequence card synthetic identity survives result and configuration transit
   }
 });
 
-test('sequence request failures leave running state on busy and network errors', async () => {
+test('sequence request failures refresh progress instead of replacing aggregate state', async () => {
   for (const scenario of ['busy', 'network']) {
     let failureStates = 0;
+    let refreshes = 0;
     const results = { innerHTML: '' };
     const context = {
       seqRunning: false,
@@ -1205,6 +1206,7 @@ test('sequence request failures leave running state on busy and network errors',
       showSeqMsg() {},
       startSequenceProgressPoll() {},
       stopSequenceProgressPoll() {},
+      async refreshSequenceProgress() { refreshes += 1; return true; },
       formatBusyConflictMessage() { return '机台忙碌'; },
       setSeqRequestFailureState() { failureStates += 1; },
       renderSeqChannelPick() {},
@@ -1224,8 +1226,229 @@ test('sequence request failures leave running state on busy and network errors',
 
     await context.runSequence();
 
-    assert.equal(failureStates, 1, scenario + ' must replace the running summary');
+    assert.equal(failureStates, 0, scenario + ' must not replace the channel-derived summary');
+    assert.equal(refreshes, 1, scenario + ' must reconcile progress immediately');
   }
+});
+
+test('all-skipped 409 keeps pending channels through immediate progress reconciliation', async () => {
+  const events = [];
+  const context = {
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqPendingChannelStarts: {},
+    selectedChannelIndexesForRun() { return [0]; },
+    enabledAgentChannels() { return [{ channel_index: 0 }]; },
+    captureSequenceChannelCardFocus() { return null; },
+    clearSequenceChannelResults() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+    document: { getElementById() { return { innerHTML: '' }; } },
+    showSeqMsg() {},
+    formatBusyConflictMessage() { return '通道已在执行'; },
+    setSeqRequestFailureState() { throw new Error('must not overwrite aggregate'); },
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async refreshSequenceProgress() {
+      events.push(['refresh', !!context.seqPendingChannelStarts[0]]);
+      return true;
+    },
+    async fetch() {
+      return {
+        ok: false,
+        status: 409,
+        async json() { return { skipped_channel_indexes: [0] }; },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['refresh', true]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+});
+
+test('partial successful starts reconcile only skipped channels before cleanup', async () => {
+  const events = [];
+  const context = {
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqPendingChannelStarts: {},
+    selectedChannelIndexesForRun() { return [0, 1]; },
+    enabledAgentChannels() { return [{ channel_index: 0 }, { channel_index: 1 }]; },
+    captureSequenceChannelCardFocus() { return null; },
+    clearSequenceChannelResults() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+    document: { getElementById() { return { innerHTML: '' }; } },
+    showSeqMsg() {},
+    handleSequenceResponse() { events.push(['response']); },
+    setSeqRequestFailureState() { throw new Error('must not overwrite aggregate'); },
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async refreshSequenceProgress() {
+      events.push(['refresh', !!context.seqPendingChannelStarts[0], !!context.seqPendingChannelStarts[1]]);
+      return true;
+    },
+    async fetch() {
+      return {
+        ok: true,
+        async json() {
+          return { channels: [{ channel_index: 0 }], skipped_channel_indexes: [1] };
+        },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['response'],
+    ['refresh', false, true],
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+});
+
+test('network start failure preserves a sibling running channel and its aggregate', async () => {
+  let failureStates = 0;
+  let refreshes = 0;
+  const context = {
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqChannelProgress: [{ channel_index: 0, running: true, overall: null }],
+    seqPendingChannelStarts: {},
+    selectedChannelIndexesForRun() { return [1]; },
+    enabledAgentChannels() { return [{ channel_index: 0 }, { channel_index: 1 }]; },
+    captureSequenceChannelCardFocus() { return null; },
+    clearSequenceChannelResults(indexes) {
+      context.seqChannelProgress = context.seqChannelProgress.filter((channel) => !indexes.includes(channel.channel_index));
+    },
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+    document: { getElementById() { return { innerHTML: '' }; } },
+    showSeqMsg() {},
+    setSeqRequestFailureState() { failureStates += 1; },
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async refreshSequenceProgress() { refreshes += 1; return true; },
+    async fetch() { throw new Error('offline'); },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.equal(failureStates, 0);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), [
+    { channel_index: 0, running: true, overall: null },
+  ]);
+});
+
+test('a later successful progress refresh releases only failure-confirmation pending starts', async () => {
+  const context = {
+    seqPendingChannelStarts: { 1: true },
+    seqPendingChannelStartRecovery: { 1: true },
+    async fetch() {
+      return { ok: true, async json() { return { running: false, channels: [] }; } };
+    },
+    applySequenceProgress() {},
+    reconcileSequenceProgressPoll() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+
+  const refreshed = await context.refreshSequenceProgress();
+
+  assert.equal(refreshed, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery)), {});
+});
+
+test('sequence control sync disables template mutation but leaves channel picks alone during activity', () => {
+  const save = { disabled: false };
+  const templateLoad = { disabled: false };
+  const channelPick = { disabled: false };
+  const context = {
+    seqChannelProgress: [{ channel_index: 0, running: true }],
+    seqPendingChannelStarts: {},
+    seqPendingChannelAborts: {},
+    seqExclusiveBusy: false,
+    seqRunning: false,
+    seqSelected: [{}],
+    selectedChannelIndexesForRun() { return [0]; },
+    enabledAgentChannels() { return [{ channel_index: 0 }]; },
+    updateGroupSelectedBtn() {},
+    document: {
+      getElementById(id) {
+        if (id === 'seq-save-template-btn') return save;
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === '#seq-templates-body button') return [templateLoad];
+        if (selector === '#seq-channel-pick .seq-channel-cb') return [channelPick];
+        return [];
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('isSequenceChannelRunning'), context);
+  vm.runInContext(functionSource('isSequenceChannelActive'), context);
+  vm.runInContext(functionSource('anySequenceChannelRunning'), context);
+  vm.runInContext(functionSource('anySequenceChannelActivity'), context);
+  vm.runInContext(functionSource('syncSeqControlsState'), context);
+
+  context.syncSeqControlsState();
+
+  assert.equal(save.disabled, true);
+  assert.equal(templateLoad.disabled, true);
+  assert.equal(channelPick.disabled, false);
+
+  context.seqChannelProgress = [];
+  context.seqPendingChannelAborts = { 0: true };
+  save.disabled = false;
+  templateLoad.disabled = false;
+  context.syncSeqControlsState();
+
+  assert.equal(save.disabled, true);
+  assert.equal(templateLoad.disabled, true);
+  assert.equal(channelPick.disabled, false);
+});
+
+test('template load and save handlers reject mutation during sequence activity', async () => {
+  const messages = [];
+  let requests = 0;
+  const context = {
+    seqSelected: [{}],
+    anySequenceChannelActivity() { return true; },
+    showSeqMsg(message) { messages.push(message); },
+    fetch: async function () { requests += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('saveCurrentQueueAsSequenceTemplate'), context);
+  vm.runInContext(functionSource('loadSequenceTemplateToQueue'), context);
+
+  await context.saveCurrentQueueAsSequenceTemplate();
+  await context.loadSequenceTemplateToQueue({ id: 9 });
+
+  assert.equal(requests, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(messages)), [
+    '序列执行中，不能保存模板',
+    '序列执行中，不能加载模板',
+  ]);
 });
 
 test('sequence card run starts an idle explicit channel while another channel runs', async () => {

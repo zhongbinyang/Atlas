@@ -3074,6 +3074,8 @@ let seqRunning = false;
 /** Starts and channel aborts in flight, keyed by numeric channel index. */
 let seqPendingChannelStarts = {};
 let seqPendingChannelAborts = {};
+/** Start requests whose outcome needs a successful progress snapshot to settle. */
+let seqPendingChannelStartRecovery = {};
 /** A non-sequence operation owns the machine slot and blocks new starts. */
 let seqExclusiveBusy = false;
 let seqStepResults = {};
@@ -3236,7 +3238,9 @@ function anySequenceChannelRunning() {
 }
 
 function anySequenceChannelActivity() {
-  return anySequenceChannelRunning() || Object.keys(seqPendingChannelStarts).length > 0;
+  return anySequenceChannelRunning() ||
+    Object.keys(seqPendingChannelStarts).length > 0 ||
+    (typeof seqPendingChannelAborts !== 'undefined' && Object.keys(seqPendingChannelAborts).length > 0);
 }
 
 function syncSeqControlsState() {
@@ -3265,6 +3269,8 @@ function syncSeqControlsState() {
   if (abortBtn) abortBtn.disabled = !anyRunning;
   const insertGroupBtn = document.getElementById('seq-insert-group');
   if (insertGroupBtn) insertGroupBtn.disabled = anyActivity;
+  const saveTemplateBtn = document.getElementById('seq-save-template-btn');
+  if (saveTemplateBtn) saveTemplateBtn.disabled = anyActivity;
   updateGroupSelectedBtn();
   if (anyActivity) {
     const groupSelectedBtn = document.getElementById('seq-group-selected');
@@ -3272,6 +3278,9 @@ function syncSeqControlsState() {
   }
   document.querySelectorAll('#seq-registered-body button, #seq-selected-body button').forEach(function (btn) {
     if (btn.classList.contains('seq-detail-toggle')) return;
+    btn.disabled = anyActivity;
+  });
+  document.querySelectorAll('#seq-templates-body button').forEach(function (btn) {
     btn.disabled = anyActivity;
   });
   document.querySelectorAll('#seq-selected-body input[type="checkbox"], #seq-selected-body select').forEach(function (el) {
@@ -3884,7 +3893,7 @@ function updateSeqOverall(data) {
 }
 
 function setSeqRequestFailureState() {
-  updateSeqOverall({ overall: 'error' });
+  updateSeqOverall({ overall: sequenceOverallFromChannels(seqChannelProgress) });
 }
 
 function applyStepResults(steps) {
@@ -4113,7 +4122,7 @@ function renderSeqChannelCards(preservedFocus) {
     runButton.className = 'btn-primary seq-channel-card-run';
     runButton.textContent = '运行此通道';
     runButton.setAttribute('aria-label', '运行 ' + channelName + ' 通道');
-    runButton.disabled = !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
+    runButton.disabled = seqExclusiveBusy || !sequenceRunQueueItems().length || isSequenceChannelActive(channel.channel_index);
     runButton.addEventListener('click', function (event) {
       event.stopPropagation();
       runSequence(sequenceCardRunChannelIndexes(channel), channel.synthetic === true);
@@ -4505,10 +4514,18 @@ function reconcileSequenceProgressPoll() {
 async function refreshSequenceProgress() {
   try {
     const resp = await fetch('/api/sequence/run/progress');
-    if (!resp.ok) return;
+    if (!resp.ok) return false;
     applySequenceProgress(await resp.json());
+    if (typeof seqPendingChannelStartRecovery !== 'undefined') {
+      Object.keys(seqPendingChannelStartRecovery).forEach(function (index) {
+        delete seqPendingChannelStarts[index];
+        delete seqPendingChannelStartRecovery[index];
+      });
+    }
+    return true;
   } catch (e) {
     /* Status recovery is best-effort; the shared poll retries while active. */
+    return false;
   } finally {
     reconcileSequenceProgressPoll();
   }
@@ -5000,7 +5017,7 @@ function renderSequenceTemplates() {
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';
     loadBtn.textContent = '加载到当前队列';
-    loadBtn.disabled = seqRunning;
+    loadBtn.disabled = anySequenceChannelActivity();
     loadBtn.addEventListener('click', function () { loadSequenceTemplateToQueue(t); });
     actions.appendChild(loadBtn);
     row.appendChild(actions);
@@ -6132,6 +6149,10 @@ function handleSequenceResponse(data) {
 }
 
 async function saveCurrentQueueAsSequenceTemplate() {
+  if (anySequenceChannelActivity()) {
+    showSeqMsg('序列执行中，不能保存模板', false);
+    return;
+  }
   if (!seqSelected.length) {
     showSeqMsg('当前队列为空，无法保存模板', false);
     return;
@@ -6160,6 +6181,10 @@ async function saveCurrentQueueAsSequenceTemplate() {
 }
 
 async function loadSequenceTemplateToQueue(tpl) {
+  if (anySequenceChannelActivity()) {
+    showSeqMsg('序列执行中，不能加载模板', false);
+    return;
+  }
   try {
     const resp = await fetch('/api/sequence-templates/' + encodeURIComponent(tpl.id) + '/load', {
       method: 'POST',
@@ -6180,6 +6205,16 @@ async function loadSequenceTemplateToQueue(tpl) {
   } catch (e) {
     showSeqMsg('加载模板失败: ' + e.message, false);
   }
+}
+
+function skippedSequenceChannelIndexes(data, requestedIndexes) {
+  const requested = {};
+  (Array.isArray(requestedIndexes) ? requestedIndexes : []).forEach(function (index) {
+    requested[Number(index)] = true;
+  });
+  return (data && Array.isArray(data.skipped_channel_indexes) ? data.skipped_channel_indexes : [])
+    .map(function (index) { return Number(index); })
+    .filter(function (index) { return Number.isFinite(index) && !!requested[index]; });
 }
 
 async function runSequence(explicitChannelIndexes, syntheticChannel) {
@@ -6231,6 +6266,7 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     useSyntheticChannel ? null : idleChannelIndexes,
     useSyntheticChannel ? undefined : idleChannelIndexes
   );
+  const pendingIndexesAwaitingRefresh = {};
   try {
     const resp = await fetch('/api/sequence/run', {
       method: 'POST',
@@ -6238,8 +6274,23 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
       body: JSON.stringify(payload),
     });
     const data = await resp.json();
+    const skippedIndexes = typeof skippedSequenceChannelIndexes === 'function'
+      ? skippedSequenceChannelIndexes(data, idleChannelIndexes)
+      : [];
+    skippedIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[index] = true; });
     if (!resp.ok) {
-      setSeqRequestFailureState();
+      const refreshed = await refreshSequenceProgress();
+      if (refreshed) {
+        skippedIndexes.forEach(function (index) { delete pendingIndexesAwaitingRefresh[index]; });
+      } else if (!skippedIndexes.length) {
+        idleChannelIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[Number(index)] = true; });
+      }
+      if (!refreshed) {
+        if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+        (skippedIndexes.length ? skippedIndexes : idleChannelIndexes).forEach(function (index) {
+          seqPendingChannelStartRecovery[Number(index)] = true;
+        });
+      }
       if (resp.status === 409) {
         const tip = formatBusyConflictMessage(data);
         const hint = data.can_force_release ? ' — 可在「机台信息」中强制空闲' : '';
@@ -6251,11 +6302,32 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
       return;
     }
     handleSequenceResponse(data);
+    if (skippedIndexes.length) {
+      idleChannelIndexes.forEach(function (index) {
+        if (!pendingIndexesAwaitingRefresh[Number(index)]) {
+          delete seqPendingChannelStarts[Number(index)];
+        }
+      });
+      if (await refreshSequenceProgress()) {
+        skippedIndexes.forEach(function (index) { delete pendingIndexesAwaitingRefresh[index]; });
+      } else {
+        if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+        skippedIndexes.forEach(function (index) { seqPendingChannelStartRecovery[Number(index)] = true; });
+      }
+    }
   } catch (e) {
-    setSeqRequestFailureState();
+    if (!await refreshSequenceProgress()) {
+      idleChannelIndexes.forEach(function (index) { pendingIndexesAwaitingRefresh[Number(index)] = true; });
+      if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+      idleChannelIndexes.forEach(function (index) { seqPendingChannelStartRecovery[Number(index)] = true; });
+    }
     showSeqMsg('执行失败: ' + e.message, false);
   } finally {
-    idleChannelIndexes.forEach(function (index) { delete seqPendingChannelStarts[Number(index)]; });
+    idleChannelIndexes.forEach(function (index) {
+      if (!pendingIndexesAwaitingRefresh[Number(index)]) {
+        delete seqPendingChannelStarts[Number(index)];
+      }
+    });
     if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
     if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
     renderSeqChannelPick();
