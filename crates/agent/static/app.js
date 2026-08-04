@@ -3333,8 +3333,23 @@ function formatSequenceElapsed(rawMilliseconds) {
 
 function buildSequenceChannelCardModel(channel, queue) {
   channel = channel || {};
-  const steps = Array.isArray(channel.steps) ? channel.steps : [];
-  const total = Math.max(Array.isArray(queue) ? queue.length : 0, steps.length);
+  const sourceQueue = Array.isArray(queue) ? queue : [];
+  const rawSteps = Array.isArray(channel.steps) ? channel.steps : [];
+  const groupPositions = {};
+  const totalPositions = {};
+  for (let i = 0; i < sourceQueue.length; i++) {
+    const item = sourceQueue[i] || {};
+    const position = item.position != null ? item.position : i;
+    if (item.template_source === 'group') groupPositions[position] = true;
+    else totalPositions[position] = true;
+  }
+  const steps = rawSteps.filter(function (step, index) {
+    const position = step && step.position != null ? step.position : index;
+    if (groupPositions[position]) return false;
+    totalPositions[position] = true;
+    return true;
+  });
+  const total = Object.keys(totalPositions).length;
   let passed = 0;
   let failed = 0;
   let skipped = 0;
@@ -3358,17 +3373,19 @@ function buildSequenceChannelCardModel(channel, queue) {
     const lastStep = steps.length ? steps[steps.length - 1] : null;
     currentName = lastStep && lastStep.name ? lastStep.name : '运行结束，请查看详情';
   }
+  const currentPositionIsGroup = channel.current_position != null && !!groupPositions[channel.current_position];
+  if (currentPositionIsGroup && state === 'running') currentName = '准备下一步骤';
   return {
     state: state,
     currentName: currentName,
-    currentPosition: channel.current_position != null ? channel.current_position : null,
+    currentPosition: channel.current_position != null && !currentPositionIsGroup ? channel.current_position : null,
     completed: completed,
     total: total,
     passed: passed,
     failed: failed,
     skipped: skipped,
     elapsedMs: Number(channel.elapsed_ms) || 0,
-    currentElapsedMs: channel.current_step_elapsed_ms != null ? Number(channel.current_step_elapsed_ms) : null,
+    currentElapsedMs: channel.current_step_elapsed_ms != null && !currentPositionIsGroup ? Number(channel.current_step_elapsed_ms) : null,
   };
 }
 
@@ -3426,14 +3443,15 @@ function buildSequenceChannelDetailModel(channel, queue) {
   sections.forEach(function (section) {
     section.summary = buildSequenceGroupSummary(section);
   });
+  const currentPositionIsGroup = channel.current_position != null && !!groupPositions[channel.current_position];
   return {
     channelIndex: channel.channel_index,
     name: channel.name || 'CH' + channel.channel_index,
     overall: channel.overall || (channel.running ? 'running' : null),
     elapsedMs: Number(channel.elapsed_ms) || 0,
-    currentElapsedMs: channel.current_step_elapsed_ms != null ? Number(channel.current_step_elapsed_ms) : null,
-    currentPosition: channel.current_position != null ? channel.current_position : null,
-    currentName: channel.current_name || null,
+    currentElapsedMs: channel.current_step_elapsed_ms != null && !currentPositionIsGroup ? Number(channel.current_step_elapsed_ms) : null,
+    currentPosition: channel.current_position != null && !currentPositionIsGroup ? channel.current_position : null,
+    currentName: currentPositionIsGroup ? null : channel.current_name || null,
     steps: detailSteps,
     sections: sections,
     namedGroupCount: sections.filter(function (section) { return section.kind === 'group'; }).length,
@@ -3815,7 +3833,7 @@ function renderSeqChannelCards() {
     host.appendChild(empty);
     return;
   }
-  const queue = sequenceRunQueueItems();
+  const queue = seqSelected;
   sourceChannels.forEach(function (channel) {
     const model = buildSequenceChannelCardModel(channel, queue);
     const card = document.createElement('article');
@@ -4059,7 +4077,7 @@ function renderSeqChannelDetail() {
     return;
   }
   const model = buildSequenceChannelDetailModel(channels[channelIndex], seqSelected);
-  const cardModel = buildSequenceChannelCardModel(channels[channelIndex], sequenceRunQueueItems());
+  const cardModel = buildSequenceChannelCardModel(channels[channelIndex], seqSelected);
   overview.hidden = true;
   detail.hidden = false;
   detail.setAttribute('data-state', cardModel.state);

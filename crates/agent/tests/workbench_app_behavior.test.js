@@ -510,34 +510,74 @@ test('sequence detail focus restoration prevents scrolling and restores scroll a
   assert.deepEqual(scroll, { left: 37, top: 49 });
 });
 
-test('channel detail discards a result that collides with a group header position', () => {
+test('channel models discard group-header result and current-position collisions', () => {
   const context = {};
   vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
   vm.runInContext(functionSource('buildSequenceDetailSections'), context);
   vm.runInContext(functionSource('isSequenceIssueStatus'), context);
   vm.runInContext(functionSource('sequenceStatusVisualState'), context);
   vm.runInContext(functionSource('buildSequenceGroupSummary'), context);
   vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
 
-  const model = context.buildSequenceChannelDetailModel({
+  const channel = {
     channel_index: 0,
     name: 'CH0',
+    running: true,
+    current_position: 1,
+    current_name: 'Unexpected header result',
+    current_step_elapsed_ms: 10,
     steps: [
-      { position: 1, name: 'Unexpected header result', status: 'pass' },
-      { position: 2, name: 'Measure', status: 'pass' },
+      { position: 1, name: 'Unexpected header result', status: 'fail', elapsed_ms: 10 },
+      { position: 2, name: 'Measure', status: 'pass', elapsed_ms: 20 },
     ],
-  }, [
+  };
+  const queue = [
     { position: 1, template_source: 'group', name: '校准' },
     { position: 2, name: 'Measure' },
-  ]);
+  ];
+  const card = context.buildSequenceChannelCardModel(channel, queue);
+  const model = context.buildSequenceChannelDetailModel(channel, queue);
 
   assert.deepEqual(
-    JSON.parse(JSON.stringify(model.steps.map((step) => step.position))),
-    [2]
+    JSON.parse(JSON.stringify({
+      total: card.total,
+      completed: card.completed,
+      passed: card.passed,
+      failed: card.failed,
+      skipped: card.skipped,
+      currentPosition: card.currentPosition,
+      currentName: card.currentName,
+      currentElapsedMs: card.currentElapsedMs,
+    })),
+    {
+      total: 1,
+      completed: 1,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      currentPosition: null,
+      currentName: '准备下一步骤',
+      currentElapsedMs: null,
+    }
   );
   assert.deepEqual(
-    JSON.parse(JSON.stringify(model.sections[0].steps.map((step) => step.position))),
-    [2]
+    JSON.parse(JSON.stringify({
+      namedGroupCount: model.namedGroupCount,
+      currentPosition: model.currentPosition,
+      currentName: model.currentName,
+      currentElapsedMs: model.currentElapsedMs,
+      steps: model.steps.map((step) => ({ position: step.position, elapsedMs: step.elapsedMs })),
+      summary: model.sections[0].summary,
+    })),
+    {
+      namedGroupCount: 1,
+      currentPosition: null,
+      currentName: null,
+      currentElapsedMs: null,
+      steps: [{ position: 2, elapsedMs: 20 }],
+      summary: { state: 'pass', completed: 1, total: 1, passed: 1, failed: 0, skipped: 0, open: true },
+    }
   );
 });
 
