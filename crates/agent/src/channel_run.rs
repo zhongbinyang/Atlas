@@ -43,12 +43,15 @@ pub struct ChannelRunRequest {
 pub struct ChannelSequenceResponse {
     pub channel_index: usize,
     pub channel_name: String,
+    pub run_generation: u64,
     pub response: SequenceResponse,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiChannelSequenceResponse {
     pub channels: Vec<ChannelSequenceResponse>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_channel_indexes: Vec<usize>,
     /// `fail` if any channel is fail/error/aborted/stop-fail; else `pass`.
     pub overall: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,12 +65,10 @@ pub fn aggregate_overall(overalls: &[&str]) -> String {
     if overalls.is_empty() {
         return "pass".into();
     }
-    if overalls.iter().any(|o| {
-        matches!(
-            *o,
-            "fail" | "error" | "aborted" | "stop-fail" | "failed"
-        )
-    }) {
+    if overalls
+        .iter()
+        .any(|o| matches!(*o, "fail" | "error" | "aborted" | "stop-fail" | "failed"))
+    {
         "fail".into()
     } else {
         "pass".into()
@@ -147,8 +148,7 @@ where
         let work_order = wo_opt.clone();
         let run_one = run_one.clone();
         handles.push(tokio::spawn(async move {
-            let vars =
-                apply_channel_overlay(&base_vars, ch.channel_index, &ch.name, &ch.overlay);
+            let vars = apply_channel_overlay(&base_vars, ch.channel_index, &ch.name, &ch.overlay);
             let vars_for_step = vars.clone();
             let opts = SequenceRunOpts {
                 sn,
@@ -162,22 +162,17 @@ where
                 resource_timeout: timeout,
                 cancel: Some(cancel),
             };
-            let response = run_sequence_from_with_opts(
-                &items,
-                0,
-                opts,
-                Vec::new(),
-                move |item| {
-                    let run_one = run_one.clone();
-                    let vars_for_step = vars_for_step.clone();
-                    let item = item.clone();
-                    async move { run_one(&item, &vars_for_step).await }
-                },
-            )
+            let response = run_sequence_from_with_opts(&items, 0, opts, Vec::new(), move |item| {
+                let run_one = run_one.clone();
+                let vars_for_step = vars_for_step.clone();
+                let item = item.clone();
+                async move { run_one(&item, &vars_for_step).await }
+            })
             .await;
             ChannelSequenceResponse {
                 channel_index: ch.channel_index,
                 channel_name: ch.name,
+                run_generation,
                 response,
             }
         }));
@@ -192,6 +187,7 @@ where
                 channel_results.push(ChannelSequenceResponse {
                     channel_index: i,
                     channel_name: format!("ch-{i}"),
+                    run_generation,
                     response: SequenceResponse {
                         stopped: true,
                         failed_at: None,
@@ -237,6 +233,7 @@ where
 
     MultiChannelSequenceResponse {
         channels: channel_results,
+        skipped_channel_indexes: Vec::new(),
         overall,
         sn,
         work_order,
@@ -276,11 +273,10 @@ pub fn channel_specs_from_list(
         if !enabled {
             continue;
         }
-        let channel_index = c
-            .get("channel_index")
-            .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|i| i as u64)))
-            .ok_or_else(|| "channel missing channel_index".to_string())?
-            as usize;
+        let channel_index =
+            c.get("channel_index")
+                .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|i| i as u64)))
+                .ok_or_else(|| "channel missing channel_index".to_string())? as usize;
         if let Some(filter) = channel_indexes {
             if !filter.contains(&channel_index) {
                 continue;
@@ -309,7 +305,11 @@ pub fn channel_specs_from_list(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::watch;
 
     #[test]
     fn multi_overall_fails_if_any_channel_fails() {
@@ -438,6 +438,65 @@ mod tests {
         let ch1 = resp.channels.iter().find(|c| c.channel_index == 1).unwrap();
         assert_eq!(ch0.response.overall, "pass");
         assert_eq!(ch1.response.overall, "fail");
+    }
+
+    #[tokio::test]
+    async fn independent_requests_keep_both_channel_progress_entries() {
+        let progress = SequenceProgressSlot::new();
+        let locks = ResourceLockManager::new();
+        let req0 = request_for_channel(0, 40, progress.clone(), locks.clone());
+        let req1 = request_for_channel(1, 41, progress.clone(), locks.clone());
+
+        let (r0, r1) = tokio::join!(
+            run_multi_channel_with(req0, |_item, _vars| async { Ok(json!({"sum": 20})) }),
+            run_multi_channel_with(req1, |_item, _vars| async { Ok(json!({"sum": 20})) })
+        );
+
+        assert_eq!(r0.channels[0].run_generation, 40);
+        assert_eq!(r1.channels[0].run_generation, 41);
+        let snapshot = progress.snapshot().await;
+        assert_eq!(snapshot.channels.len(), 2);
+        assert!(snapshot.channels.iter().all(|channel| !channel.running));
+    }
+
+    fn request_for_channel(
+        channel_index: usize,
+        generation: u64,
+        progress: Arc<SequenceProgressSlot>,
+        resource_locks: Arc<ResourceLockManager>,
+    ) -> ChannelRunRequest {
+        let (_cancel_tx, cancel) = watch::channel(false);
+        ChannelRunRequest {
+            items: vec![QueueItemForRun {
+                position: 0,
+                queue_item_id: format!("q-{channel_index}"),
+                template_id: "add".into(),
+                name: "Add".into(),
+                kind: "general".into(),
+                vi_path: String::new(),
+                inputs: json!({"a": 10, "b": 10}),
+                show_front_panel: false,
+                timeout_secs: None,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits: vec![],
+                resources: vec![],
+            }],
+            base_vars: HashMap::new(),
+            channels: vec![ChannelSpec {
+                channel_index,
+                name: format!("CH{channel_index}"),
+                overlay: json!({}),
+            }],
+            resource_locks,
+            resource_timeout: Duration::from_secs(1),
+            sn: None,
+            work_order: None,
+            progress,
+            cancel,
+            run_generation: generation,
+        }
     }
 
     #[tokio::test]

@@ -194,9 +194,8 @@ impl ResourceLockManager {
                                 // Grant raced with timeout — take ownership then unwind.
                                 progress.held.push(w.name.clone());
                             }
-                            return Err(progress.abort_with(ResourceLockError::Timeout {
-                                resource: w.name,
-                            }));
+                            return Err(progress
+                                .abort_with(ResourceLockError::Timeout { resource: w.name }));
                         }
                         WaitOutcome::Cancelled => {
                             let mut w = progress.waiting.take().expect("waiting during cancel");
@@ -210,7 +209,10 @@ impl ResourceLockManager {
                         }
                         WaitOutcome::CancelledAfterGrant => {
                             // oneshot already received; we own the lock and must unwind.
-                            let w = progress.waiting.take().expect("waiting during cancel-after-grant");
+                            let w = progress
+                                .waiting
+                                .take()
+                                .expect("waiting during cancel-after-grant");
                             progress.held.push(w.name);
                             return Err(progress.abort_with(ResourceLockError::Cancelled));
                         }
@@ -398,13 +400,23 @@ mod tests {
     async fn second_acquirer_waits_until_release() {
         let m = ResourceLockManager::new();
         let g1 = m
-            .acquire(&["station.dca".into()], "ch-1", Duration::from_secs(5), None)
+            .acquire(
+                &["station.dca".into()],
+                "ch-1",
+                Duration::from_secs(5),
+                None,
+            )
             .await
             .unwrap();
         let m2 = m.clone();
         let h = tokio::spawn(async move {
-            m2.acquire(&["station.dca".into()], "ch-2", Duration::from_secs(5), None)
-                .await
+            m2.acquire(
+                &["station.dca".into()],
+                "ch-2",
+                Duration::from_secs(5),
+                None,
+            )
+            .await
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!h.is_finished());
@@ -447,17 +459,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unrelated_resources_do_not_block_each_other() {
+        let manager = ResourceLockManager::new();
+        let _dca = manager
+            .acquire(
+                &["station.dca".into()],
+                "ch-0",
+                Duration::from_secs(1),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let second = tokio::time::timeout(
+            Duration::from_millis(50),
+            manager.acquire(
+                &["station.switch".into()],
+                "ch-1",
+                Duration::from_secs(1),
+                None,
+            ),
+        )
+        .await
+        .expect("different resource must not wait");
+        assert!(second.is_ok());
+    }
+
+    #[tokio::test]
     async fn drop_during_wait_does_not_leak() {
         let m = ResourceLockManager::new();
         let g1 = m
-            .acquire(&["station.dca".into()], "ch-1", Duration::from_secs(5), None)
+            .acquire(
+                &["station.dca".into()],
+                "ch-1",
+                Duration::from_secs(5),
+                None,
+            )
             .await
             .unwrap();
 
         let m2 = m.clone();
         let h = tokio::spawn(async move {
-            m2.acquire(&["station.dca".into()], "ch-2", Duration::from_secs(5), None)
-                .await
+            m2.acquire(
+                &["station.dca".into()],
+                "ch-2",
+                Duration::from_secs(5),
+                None,
+            )
+            .await
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!h.is_finished());
@@ -486,7 +535,12 @@ mod tests {
     async fn cancel_returns_cancelled_without_holding() {
         let m = ResourceLockManager::new();
         let g1 = m
-            .acquire(&["station.dca".into()], "ch-1", Duration::from_secs(5), None)
+            .acquire(
+                &["station.dca".into()],
+                "ch-1",
+                Duration::from_secs(5),
+                None,
+            )
             .await
             .unwrap();
 
