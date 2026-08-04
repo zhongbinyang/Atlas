@@ -476,7 +476,15 @@ async fn slot_force_release(State(s): State<AppState>) -> impl IntoResponse {
     };
 
     let _ = signal_sequence_cancel_if(&s, gen).await;
-    let _ = s.sequence_progress.clear_if(gen).await;
+    let progress_channels = s.sequence_progress.snapshot().await.channels;
+    for channel in progress_channels {
+        if channel.generation == gen {
+            let _ = s
+                .sequence_progress
+                .clear_channel_if(channel.channel_index, gen)
+                .await;
+        }
+    }
     clear_sequence_cancel_if(&s, gen).await;
     let released = s.slot.force_release_if(gen).await;
 
@@ -2651,7 +2659,7 @@ mod tests {
         assert!(state.slot.is_busy().await);
         assert!(signal_sequence_cancel_if(&state, gen_a).await);
         assert!(*rx_a.borrow(), "cancel must be visible before slot free");
-        assert!(state.sequence_progress.clear_if(gen_a).await);
+        assert!(state.sequence_progress.clear_channel_if(0, gen_a).await);
         assert!(!state.sequence_progress.snapshot().await.running);
 
         // New run cannot acquire until force_release_if.
@@ -2662,13 +2670,13 @@ mod tests {
         clear_sequence_cancel_if(&state, gen_a).await;
         assert!(state.slot.force_release_if(gen_a).await);
 
-        // Newer run B's progress must survive a stale clear_if(A).
+        // Newer run B's progress must survive a stale exact clear for A.
         let gen_b = state.slot.try_acquire("sequence").await.unwrap();
         state
             .sequence_progress
             .begin_channels(gen_b, &[(0, "B".into())])
             .await;
-        assert!(!state.sequence_progress.clear_if(gen_a).await);
+        assert!(!state.sequence_progress.clear_channel_if(0, gen_a).await);
         assert_eq!(state.sequence_progress.snapshot().await.channels[0].name, "B");
 
         // Full HTTP force-release path also cancels B and frees the slot.

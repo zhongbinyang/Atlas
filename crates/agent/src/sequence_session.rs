@@ -35,9 +35,6 @@ pub struct ChannelProgressSnapshot {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct SequenceProgressSnapshot {
     pub running: bool,
-    /// Compatibility-only generation derived from the first channel in `channels`.
-    #[serde(skip)]
-    pub generation: u64,
     pub channels: Vec<ChannelProgressSnapshot>,
     /// Legacy flat view: steps of the first channel (Task 7 migrates UI to `channels`).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -65,21 +62,6 @@ impl SequenceProgressSlot {
         })
     }
 
-    /// Compatibility-only generation derived from the lowest channel index.
-    pub async fn generation(&self) -> u64 {
-        self.inner
-            .lock()
-            .await
-            .iter()
-            .min_by_key(|(index, _)| *index)
-            .map(|(_, channel)| channel.generation)
-            .unwrap_or_default()
-    }
-
-    pub async fn begin(&self) {
-        self.begin_channels(0, &[(0, "CH0".into())]).await;
-    }
-
     pub async fn begin_channels(&self, generation: u64, channels: &[(usize, String)]) {
         let mut entries = self.inner.lock().await;
         for (idx, name) in channels {
@@ -103,28 +85,6 @@ impl SequenceProgressSlot {
         }
     }
 
-    pub async fn set_current(&self, position: usize, name: String) {
-        self.set_channel_current(0, position, name).await;
-    }
-
-    pub async fn set_steps(&self, steps: Vec<SequenceStepResult>) {
-        self.set_channel_steps(0, steps).await;
-    }
-
-    pub async fn finish(&self, steps: Vec<SequenceStepResult>) {
-        let overall = channel_overall_from_steps(&steps);
-        let generation = self.generation().await;
-        self.finish_channels(generation, &[(0, "CH0".into(), steps, overall)])
-            .await;
-    }
-
-    pub async fn set_channel_current(&self, channel_index: usize, position: usize, name: String) {
-        let mut entries = self.inner.lock().await;
-        if let Some(channel) = entries.get_mut(&channel_index) {
-            set_channel_current(channel, position, name);
-        }
-    }
-
     /// Generation-scoped current-step update (no-op if this channel generation is stale).
     pub async fn set_channel_current_if(
         &self,
@@ -142,12 +102,6 @@ impl SequenceProgressSlot {
         }
     }
 
-    pub async fn set_channel_steps(&self, channel_index: usize, steps: Vec<SequenceStepResult>) {
-        if let Some(channel) = self.inner.lock().await.get_mut(&channel_index) {
-            set_channel_steps(channel, steps);
-        }
-    }
-
     pub async fn set_channel_steps_if(
         &self,
         generation: u64,
@@ -160,20 +114,6 @@ impl SequenceProgressSlot {
             .filter(|c| c.generation == generation)
         {
             set_channel_steps(channel, steps);
-        }
-    }
-
-    /// Mark one channel finished without ending the other channel generations.
-    pub async fn set_channel_overall(
-        &self,
-        channel_index: usize,
-        name: String,
-        steps: Vec<SequenceStepResult>,
-        overall: String,
-    ) {
-        let mut entries = self.inner.lock().await;
-        if let Some(channel) = entries.get_mut(&channel_index) {
-            set_channel_overall(channel, name, steps, overall);
         }
     }
 
@@ -208,10 +148,6 @@ impl SequenceProgressSlot {
         }
     }
 
-    pub async fn clear(&self) {
-        self.inner.lock().await.clear();
-    }
-
     /// Clear only an exact channel generation pair.
     pub async fn clear_channel_if(&self, channel_index: usize, generation: u64) -> bool {
         let mut entries = self.inner.lock().await;
@@ -224,19 +160,6 @@ impl SequenceProgressSlot {
         } else {
             false
         }
-    }
-
-    /// Compatibility wrapper: clear every entry still owned by this generation.
-    pub async fn clear_if(&self, generation: u64) -> bool {
-        let mut entries = self.inner.lock().await;
-        let owned: Vec<usize> = entries
-            .iter()
-            .filter_map(|(index, channel)| (channel.generation == generation).then_some(*index))
-            .collect();
-        for index in &owned {
-            entries.remove(index);
-        }
-        !owned.is_empty()
     }
 
     pub async fn snapshot(&self) -> SequenceProgressSnapshot {
@@ -255,7 +178,6 @@ impl SequenceProgressSlot {
         let first = channels.first();
         SequenceProgressSnapshot {
             running: channels.iter().any(|channel| channel.running),
-            generation: first.map(|channel| channel.generation).unwrap_or_default(),
             steps: first
                 .map(|channel| channel.steps.clone())
                 .unwrap_or_default(),
@@ -369,32 +291,22 @@ impl SequenceCancelRegistry {
     }
 }
 
-fn channel_overall_from_steps(steps: &[SequenceStepResult]) -> String {
-    if steps.iter().any(|s| s.status == "fail") {
-        "fail".into()
-    } else if steps.iter().any(|s| s.status == "error") {
-        "error".into()
-    } else {
-        "pass".into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
 
     #[tokio::test]
-    async fn clear_if_does_not_wipe_newer_generation() {
+    async fn clear_channel_if_does_not_wipe_another_channel_in_same_generation() {
         let slot = SequenceProgressSlot::new();
-        slot.begin_channels(1, &[(0, "A".into())]).await;
-        slot.begin_channels(2, &[(0, "B".into())]).await;
-        assert!(!slot.clear_if(1).await);
-        assert_eq!(slot.generation().await, 2);
-        assert!(slot.snapshot().await.running);
-        assert_eq!(slot.snapshot().await.channels[0].name, "B");
-        assert!(slot.clear_if(2).await);
-        assert!(!slot.snapshot().await.running);
+        slot.begin_channels(7, &[(0, "A".into()), (1, "B".into())])
+            .await;
+
+        assert!(slot.clear_channel_if(0, 7).await);
+        let snapshot = slot.snapshot().await;
+        assert_eq!(snapshot.channels.len(), 1);
+        assert_eq!(snapshot.channels[0].channel_index, 1);
+        assert_eq!(snapshot.channels[0].name, "B");
     }
 
     #[tokio::test]
