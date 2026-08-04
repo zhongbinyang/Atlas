@@ -6299,11 +6299,6 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
       seqPendingChannelStartRecovery[index] = true;
     });
     if (!resp.ok) {
-      if (!skippedIndexes.length) {
-        idleChannelIndexes.forEach(function (index) {
-          seqPendingChannelStartRecovery[Number(index)] = true;
-        });
-      }
       await refreshSequenceProgress();
       if (resp.status === 409) {
         const tip = formatBusyConflictMessage(data);

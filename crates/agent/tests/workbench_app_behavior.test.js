@@ -1231,6 +1231,56 @@ test('sequence request failures refresh progress instead of replacing aggregate 
   }
 });
 
+test('definitive delay-busy 409 releases requested starts after empty reconciliation', async () => {
+  const clearedTimers = [];
+  const messages = [];
+  const context = {
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqPendingChannelStarts: {},
+    seqChannelProgress: [],
+    seqProgressGeneration: 0,
+    seqProgressPollTimer: null,
+    selectedChannelIndexesForRun() { return [0]; },
+    enabledAgentChannels() { return [{ channel_index: 0 }]; },
+    captureSequenceChannelCardFocus() { return null; },
+    clearSequenceChannelResults() {},
+    syncSeqControlsState() {},
+    applyMultiChannelProgress() {},
+    setInterval() { return 42; },
+    clearInterval(timer) { clearedTimers.push(timer); },
+    document: { getElementById() { return { innerHTML: '' }; } },
+    showSeqMsg(message) { messages.push(message); },
+    formatBusyConflictMessage() { return '延迟操作正在执行'; },
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch(path) {
+      if (path === '/api/sequence/run') {
+        return { ok: false, status: 409, async json() { return { busy_reason: 'delay' }; } };
+      }
+      return { ok: true, async json() { return { running: false, channels: [] }; } };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('shouldPollSequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('stopSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('reconcileSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery || {})), {});
+  assert.deepEqual(clearedTimers, [42]);
+  assert.match(messages.at(-1), /延迟操作正在执行/);
+});
+
 test('all-skipped 409 keeps pending channels through immediate progress reconciliation', async () => {
   let intervalCallback = null;
   let progressPolls = 0;
