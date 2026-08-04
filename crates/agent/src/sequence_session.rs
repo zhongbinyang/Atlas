@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::labview_sequence::SequenceStepResult;
 
@@ -11,6 +12,8 @@ use crate::labview_sequence::SequenceStepResult;
 pub struct ChannelProgressSnapshot {
     pub channel_index: usize,
     pub name: String,
+    pub running: bool,
+    pub generation: u64,
     pub steps: Vec<SequenceStepResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overall: Option<String>,
@@ -32,7 +35,7 @@ pub struct ChannelProgressSnapshot {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct SequenceProgressSnapshot {
     pub running: bool,
-    /// Slot/run generation that owns this snapshot; writers must match.
+    /// Compatibility-only generation derived from the first channel in `channels`.
     #[serde(skip)]
     pub generation: u64,
     pub channels: Vec<ChannelProgressSnapshot>,
@@ -46,7 +49,7 @@ pub struct SequenceProgressSnapshot {
 }
 
 pub struct SequenceProgressSlot {
-    inner: Mutex<SequenceProgressSnapshot>,
+    inner: Mutex<HashMap<usize, ChannelProgressSnapshot>>,
 }
 
 impl std::fmt::Debug for SequenceProgressSlot {
@@ -58,12 +61,19 @@ impl std::fmt::Debug for SequenceProgressSlot {
 impl SequenceProgressSlot {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(SequenceProgressSnapshot::default()),
+            inner: Mutex::new(HashMap::new()),
         })
     }
 
+    /// Compatibility-only generation derived from the lowest channel index.
     pub async fn generation(&self) -> u64 {
-        self.inner.lock().await.generation
+        self.inner
+            .lock()
+            .await
+            .iter()
+            .min_by_key(|(index, _)| *index)
+            .map(|(_, channel)| channel.generation)
+            .unwrap_or_default()
     }
 
     pub async fn begin(&self) {
@@ -71,23 +81,26 @@ impl SequenceProgressSlot {
     }
 
     pub async fn begin_channels(&self, generation: u64, channels: &[(usize, String)]) {
-        let started_at = Instant::now();
-        *self.inner.lock().await = SequenceProgressSnapshot {
-            running: true,
-            generation,
-            channels: channels
-                .iter()
-                .map(|(idx, name)| ChannelProgressSnapshot {
+        let mut entries = self.inner.lock().await;
+        for (idx, name) in channels {
+            if entries
+                .get(idx)
+                .is_some_and(|channel| channel.generation > generation)
+            {
+                continue;
+            }
+            entries.insert(
+                *idx,
+                ChannelProgressSnapshot {
                     channel_index: *idx,
                     name: name.clone(),
-                    started_at: Some(started_at),
+                    running: true,
+                    generation,
+                    started_at: Some(Instant::now()),
                     ..Default::default()
-                })
-                .collect(),
-            steps: Vec::new(),
-            current_position: None,
-            current_name: None,
-        };
+                },
+            );
+        }
     }
 
     pub async fn set_current(&self, position: usize, name: String) {
@@ -100,40 +113,19 @@ impl SequenceProgressSlot {
 
     pub async fn finish(&self, steps: Vec<SequenceStepResult>) {
         let overall = channel_overall_from_steps(&steps);
-        let gen = self.inner.lock().await.generation;
-        self.finish_channels(gen, &[(0, "CH0".into(), steps, overall)])
+        let generation = self.generation().await;
+        self.finish_channels(generation, &[(0, "CH0".into(), steps, overall)])
             .await;
     }
 
     pub async fn set_channel_current(&self, channel_index: usize, position: usize, name: String) {
-        let mut g = self.inner.lock().await;
-        if !g.running {
-            return;
-        }
-        if let Some(ch) = g
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_index == channel_index)
-        {
-            if ch.started_at.is_none() {
-                ch.started_at = Some(Instant::now());
-            }
-            ch.current_position = Some(position);
-            ch.current_name = Some(name.clone());
-            ch.current_step_elapsed_ms = Some(0);
-            ch.current_step_started_at = Some(Instant::now());
-        }
-        if g.channels
-            .first()
-            .map(|c| c.channel_index == channel_index)
-            .unwrap_or(channel_index == 0)
-        {
-            g.current_position = Some(position);
-            g.current_name = Some(name);
+        let mut entries = self.inner.lock().await;
+        if let Some(channel) = entries.get_mut(&channel_index) {
+            set_channel_current(channel, position, name);
         }
     }
 
-    /// Generation-scoped current-step update (no-op if `generation` is stale).
+    /// Generation-scoped current-step update (no-op if this channel generation is stale).
     pub async fn set_channel_current_if(
         &self,
         generation: u64,
@@ -141,59 +133,18 @@ impl SequenceProgressSlot {
         position: usize,
         name: String,
     ) {
-        let mut g = self.inner.lock().await;
-        if g.generation != generation {
-            return;
-        }
-        g.running = true;
-        if let Some(ch) = g
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_index == channel_index)
+        let mut entries = self.inner.lock().await;
+        if let Some(channel) = entries
+            .get_mut(&channel_index)
+            .filter(|c| c.generation == generation)
         {
-            if ch.started_at.is_none() {
-                ch.started_at = Some(Instant::now());
-            }
-            ch.current_position = Some(position);
-            ch.current_name = Some(name.clone());
-            ch.current_step_elapsed_ms = Some(0);
-            ch.current_step_started_at = Some(Instant::now());
-        }
-        if g.channels
-            .first()
-            .map(|c| c.channel_index == channel_index)
-            .unwrap_or(channel_index == 0)
-        {
-            g.current_position = Some(position);
-            g.current_name = Some(name);
+            set_channel_current(channel, position, name);
         }
     }
 
     pub async fn set_channel_steps(&self, channel_index: usize, steps: Vec<SequenceStepResult>) {
-        let mut g = self.inner.lock().await;
-        if !g.running && g.generation == 0 {
-            return;
-        }
-        g.running = true;
-        if let Some(ch) = g
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_index == channel_index)
-        {
-            ch.steps = steps.clone();
-            ch.current_position = None;
-            ch.current_name = None;
-            ch.current_step_elapsed_ms = None;
-            ch.current_step_started_at = None;
-        }
-        if g.channels
-            .first()
-            .map(|c| c.channel_index == channel_index)
-            .unwrap_or(channel_index == 0)
-        {
-            g.steps = steps;
-            g.current_position = None;
-            g.current_name = None;
+        if let Some(channel) = self.inner.lock().await.get_mut(&channel_index) {
+            set_channel_steps(channel, steps);
         }
     }
 
@@ -203,34 +154,16 @@ impl SequenceProgressSlot {
         channel_index: usize,
         steps: Vec<SequenceStepResult>,
     ) {
-        let mut g = self.inner.lock().await;
-        if g.generation != generation {
-            return;
-        }
-        g.running = true;
-        if let Some(ch) = g
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_index == channel_index)
+        let mut entries = self.inner.lock().await;
+        if let Some(channel) = entries
+            .get_mut(&channel_index)
+            .filter(|c| c.generation == generation)
         {
-            ch.steps = steps.clone();
-            ch.current_position = None;
-            ch.current_name = None;
-            ch.current_step_elapsed_ms = None;
-            ch.current_step_started_at = None;
-        }
-        if g.channels
-            .first()
-            .map(|c| c.channel_index == channel_index)
-            .unwrap_or(channel_index == 0)
-        {
-            g.steps = steps;
-            g.current_position = None;
-            g.current_name = None;
+            set_channel_steps(channel, steps);
         }
     }
 
-    /// Mark one channel finished without ending the multi-channel session (`running` stays true).
+    /// Mark one channel finished without ending the other channel generations.
     pub async fn set_channel_overall(
         &self,
         channel_index: usize,
@@ -238,9 +171,10 @@ impl SequenceProgressSlot {
         steps: Vec<SequenceStepResult>,
         overall: String,
     ) {
-        let gen = self.inner.lock().await.generation;
-        self.set_channel_overall_if(gen, channel_index, name, steps, overall)
-            .await;
+        let mut entries = self.inner.lock().await;
+        if let Some(channel) = entries.get_mut(&channel_index) {
+            set_channel_overall(channel, name, steps, overall);
+        }
     }
 
     pub async fn set_channel_overall_if(
@@ -251,44 +185,12 @@ impl SequenceProgressSlot {
         steps: Vec<SequenceStepResult>,
         overall: String,
     ) {
-        let mut g = self.inner.lock().await;
-        if g.generation != generation {
-            return;
-        }
-        if let Some(ch) = g
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_index == channel_index)
+        let mut entries = self.inner.lock().await;
+        if let Some(channel) = entries
+            .get_mut(&channel_index)
+            .filter(|c| c.generation == generation)
         {
-            if let Some(started_at) = ch.started_at.take() {
-                ch.elapsed_ms = started_at.elapsed().as_millis() as u64;
-            }
-            ch.name = name;
-            ch.steps = steps.clone();
-            ch.overall = Some(overall);
-            ch.current_position = None;
-            ch.current_name = None;
-            ch.current_step_elapsed_ms = None;
-            ch.current_step_started_at = None;
-        } else {
-            g.channels.push(ChannelProgressSnapshot {
-                channel_index,
-                name,
-                steps: steps.clone(),
-                overall: Some(overall),
-                current_position: None,
-                current_name: None,
-                ..Default::default()
-            });
-        }
-        if g.channels
-            .first()
-            .map(|c| c.channel_index == channel_index)
-            .unwrap_or(channel_index == 0)
-        {
-            g.steps = steps;
-            g.current_position = None;
-            g.current_name = None;
+            set_channel_overall(channel, name, steps, overall);
         }
     }
 
@@ -297,63 +199,49 @@ impl SequenceProgressSlot {
         generation: u64,
         channels: &[(usize, String, Vec<SequenceStepResult>, String)],
     ) {
-        let mut g = self.inner.lock().await;
-        if g.generation != generation {
-            return;
-        }
-        g.running = false;
-        g.current_position = None;
-        g.current_name = None;
+        let mut entries = self.inner.lock().await;
         for (idx, name, steps, overall) in channels {
-            if let Some(ch) = g.channels.iter_mut().find(|c| c.channel_index == *idx) {
-                if let Some(started_at) = ch.started_at.take() {
-                    ch.elapsed_ms = started_at.elapsed().as_millis() as u64;
-                }
-                ch.name = name.clone();
-                ch.steps = steps.clone();
-                ch.overall = Some(overall.clone());
-                ch.current_position = None;
-                ch.current_name = None;
-                ch.current_step_elapsed_ms = None;
-                ch.current_step_started_at = None;
-            } else {
-                g.channels.push(ChannelProgressSnapshot {
-                    channel_index: *idx,
-                    name: name.clone(),
-                    steps: steps.clone(),
-                    overall: Some(overall.clone()),
-                    current_position: None,
-                    current_name: None,
-                    ..Default::default()
-                });
+            if let Some(channel) = entries.get_mut(idx).filter(|c| c.generation == generation) {
+                set_channel_overall(channel, name.clone(), steps.clone(), overall.clone());
+                channel.running = false;
             }
         }
-        g.channels.sort_by_key(|c| c.channel_index);
-        g.steps = g
-            .channels
-            .first()
-            .map(|c| c.steps.clone())
-            .unwrap_or_default();
     }
 
     pub async fn clear(&self) {
-        *self.inner.lock().await = SequenceProgressSnapshot::default();
+        self.inner.lock().await.clear();
     }
 
-    /// Clear only if `generation` still owns the snapshot (won’t wipe a newer run).
-    pub async fn clear_if(&self, generation: u64) -> bool {
-        let mut g = self.inner.lock().await;
-        if g.generation == generation {
-            *g = SequenceProgressSnapshot::default();
+    /// Clear only an exact channel generation pair.
+    pub async fn clear_channel_if(&self, channel_index: usize, generation: u64) -> bool {
+        let mut entries = self.inner.lock().await;
+        if entries
+            .get(&channel_index)
+            .is_some_and(|channel| channel.generation == generation)
+        {
+            entries.remove(&channel_index);
             true
         } else {
             false
         }
     }
 
+    /// Compatibility wrapper: clear every entry still owned by this generation.
+    pub async fn clear_if(&self, generation: u64) -> bool {
+        let mut entries = self.inner.lock().await;
+        let owned: Vec<usize> = entries
+            .iter()
+            .filter_map(|(index, channel)| (channel.generation == generation).then_some(*index))
+            .collect();
+        for index in &owned {
+            entries.remove(index);
+        }
+        !owned.is_empty()
+    }
+
     pub async fn snapshot(&self) -> SequenceProgressSnapshot {
-        let mut snapshot = self.inner.lock().await;
-        for channel in &mut snapshot.channels {
+        let mut entries = self.inner.lock().await;
+        for channel in entries.values_mut() {
             if let Some(started_at) = channel.started_at {
                 channel.elapsed_ms = started_at.elapsed().as_millis() as u64;
             }
@@ -361,7 +249,123 @@ impl SequenceProgressSlot {
                 .current_step_started_at
                 .map(|started_at| started_at.elapsed().as_millis() as u64);
         }
-        snapshot.clone()
+
+        let mut channels: Vec<_> = entries.values().cloned().collect();
+        channels.sort_by_key(|channel| channel.channel_index);
+        let first = channels.first();
+        SequenceProgressSnapshot {
+            running: channels.iter().any(|channel| channel.running),
+            generation: first.map(|channel| channel.generation).unwrap_or_default(),
+            steps: first
+                .map(|channel| channel.steps.clone())
+                .unwrap_or_default(),
+            current_position: first.and_then(|channel| channel.current_position),
+            current_name: first.and_then(|channel| channel.current_name.clone()),
+            channels,
+        }
+    }
+}
+
+fn set_channel_current(channel: &mut ChannelProgressSnapshot, position: usize, name: String) {
+    if channel.started_at.is_none() {
+        channel.started_at = Some(Instant::now());
+    }
+    channel.current_position = Some(position);
+    channel.current_name = Some(name);
+    channel.current_step_elapsed_ms = Some(0);
+    channel.current_step_started_at = Some(Instant::now());
+}
+
+fn set_channel_steps(channel: &mut ChannelProgressSnapshot, steps: Vec<SequenceStepResult>) {
+    channel.steps = steps;
+    channel.current_position = None;
+    channel.current_name = None;
+    channel.current_step_elapsed_ms = None;
+    channel.current_step_started_at = None;
+}
+
+fn set_channel_overall(
+    channel: &mut ChannelProgressSnapshot,
+    name: String,
+    steps: Vec<SequenceStepResult>,
+    overall: String,
+) {
+    if let Some(started_at) = channel.started_at.take() {
+        channel.elapsed_ms = started_at.elapsed().as_millis() as u64;
+    }
+    channel.name = name;
+    channel.steps = steps;
+    channel.overall = Some(overall);
+    channel.current_position = None;
+    channel.current_name = None;
+    channel.current_step_elapsed_ms = None;
+    channel.current_step_started_at = None;
+}
+
+#[derive(Clone)]
+struct ActiveChannelCancel {
+    generation: u64,
+    tx: watch::Sender<bool>,
+}
+
+pub struct SequenceCancelRegistry {
+    inner: Mutex<HashMap<usize, ActiveChannelCancel>>,
+}
+
+impl SequenceCancelRegistry {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub async fn install(
+        &self,
+        channel_index: usize,
+        generation: u64,
+    ) -> Result<watch::Receiver<bool>, &'static str> {
+        let mut entries = self.inner.lock().await;
+        if let Some(active) = entries.get(&channel_index) {
+            if active.generation > generation {
+                return Err("stale generation");
+            }
+            let _ = active.tx.send(true);
+        }
+        let (tx, rx) = watch::channel(false);
+        entries.insert(channel_index, ActiveChannelCancel { generation, tx });
+        Ok(rx)
+    }
+
+    pub async fn clear_if(&self, channel_index: usize, generation: u64) -> bool {
+        let mut entries = self.inner.lock().await;
+        if entries
+            .get(&channel_index)
+            .is_some_and(|active| active.generation == generation)
+        {
+            entries.remove(&channel_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn signal_channel(&self, channel_index: usize) -> bool {
+        let entries = self.inner.lock().await;
+        entries
+            .get(&channel_index)
+            .is_some_and(|active| !*active.tx.borrow() && active.tx.send(true).is_ok())
+    }
+
+    pub async fn signal_all(&self) -> Vec<usize> {
+        let entries = self.inner.lock().await;
+        let mut signalled: Vec<usize> = entries
+            .iter()
+            .filter_map(|(index, active)| {
+                (!*active.tx.borrow() && active.tx.send(true).is_ok()).then_some(*index)
+            })
+            .collect();
+        signalled.sort_unstable();
+        signalled
     }
 }
 
@@ -410,6 +414,82 @@ mod tests {
         assert!(finished.elapsed_ms >= 20);
         assert!(finished.current_step_elapsed_ms.is_none());
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(slot.snapshot().await.channels[0].elapsed_ms, finished.elapsed_ms);
+        assert_eq!(
+            slot.snapshot().await.channels[0].elapsed_ms,
+            finished.elapsed_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn finishing_one_generation_keeps_another_channel_running() {
+        let progress = SequenceProgressSlot::new();
+        progress.begin_channels(11, &[(0, "CH0".into())]).await;
+        progress.begin_channels(12, &[(1, "CH1".into())]).await;
+        progress
+            .finish_channels(11, &[(0, "CH0".into(), vec![], "pass".into())])
+            .await;
+
+        let snapshot = progress.snapshot().await;
+        assert!(snapshot.running);
+        assert_eq!(snapshot.channels.len(), 2);
+        assert!(
+            !snapshot
+                .channels
+                .iter()
+                .find(|c| c.channel_index == 0)
+                .unwrap()
+                .running
+        );
+        assert!(
+            snapshot
+                .channels
+                .iter()
+                .find(|c| c.channel_index == 1)
+                .unwrap()
+                .running
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_channel_write_does_not_replace_newer_run() {
+        let progress = SequenceProgressSlot::new();
+        progress.begin_channels(20, &[(2, "old".into())]).await;
+        progress.begin_channels(21, &[(2, "new".into())]).await;
+        progress
+            .begin_channels(20, &[(2, "late old begin".into())])
+            .await;
+        progress
+            .set_channel_current_if(20, 2, 7, "stale".into())
+            .await;
+
+        let channel = progress.snapshot().await.channels.remove(0);
+        assert_eq!(channel.generation, 21);
+        assert_eq!(channel.name, "new");
+        assert_eq!(channel.current_name, None);
+    }
+
+    #[tokio::test]
+    async fn channel_cancel_and_global_cancel_signal_the_expected_receivers() {
+        let registry = SequenceCancelRegistry::new();
+        let rx0 = registry.install(0, 31).await.unwrap();
+        let rx1 = registry.install(1, 32).await.unwrap();
+
+        assert!(registry.signal_channel(0).await);
+        assert!(*rx0.borrow());
+        assert!(!*rx1.borrow());
+        assert_eq!(registry.signal_all().await, vec![1]);
+        assert!(*rx1.borrow());
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_install_cannot_replace_a_newer_generation() {
+        let registry = SequenceCancelRegistry::new();
+        let new_rx = registry.install(4, 42).await.unwrap();
+        assert_eq!(
+            registry.install(4, 41).await.unwrap_err(),
+            "stale generation"
+        );
+        assert!(registry.signal_channel(4).await);
+        assert!(*new_rx.borrow());
     }
 }
