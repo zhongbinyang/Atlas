@@ -155,36 +155,208 @@ test('sequence result labels are consistent Chinese operator statuses', () => {
   );
 });
 
-test('first sequence issue identifies the earliest abnormal channel step', () => {
+test('measurement rows align measured values with range and equality specs', () => {
   const context = {};
   vm.createContext(context);
-  vm.runInContext(functionSource('findFirstSequenceIssue'), context);
+  vm.runInContext(functionSource('normalizeSpecOp'), context);
+  vm.runInContext(functionSource('lookupMeasuredValue'), context);
+  vm.runInContext(functionSource('formatLimitBoundDisplay'), context);
+  vm.runInContext(functionSource('formatStepStatus'), context);
+  vm.runInContext(functionSource('buildSequenceMetricRows'), context);
 
-  assert.equal(
-    JSON.stringify(context.findFirstSequenceIssue([
-      {
-        channel_index: 0,
-        steps: [
-          { position: 0, status: 'pass' },
-          { position: 1, status: 'skipped' },
-        ],
-      },
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceMetricRows({
+      limits: [
+        { output: 'voltage', op: 'range', min: 4.5, max: 5.5, unit: 'V' },
+        { output: 'mode', op: 'eq', expect: 'AUTO' },
+      ],
+    }, {
+      status: 'fail',
+      measured: { voltage: 4.9, mode: 'MANUAL' },
+    }))),
+    [
+      { output: 'voltage', value: '4.9', min: '4.5', max: '5.5', unit: 'V', result: '失败' },
+      { output: 'mode', value: 'MANUAL', min: 'AUTO', max: '—', unit: '—', result: '失败' },
+    ]
+  );
+});
+
+test('multi-channel progress keeps unfinished channels running between step publications', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
+
+  const channels = context.channelProgressFromEnvelope({
+    running: true,
+    channels: [
+      { channel_index: 0, name: 'CH0', steps: [], current_position: null },
       {
         channel_index: 1,
-        steps: [
-          { position: 0, status: 'pass' },
-          { position: 3, status: 'error' },
-          { position: 4, status: 'fail' },
-        ],
+        name: 'CH1',
+        steps: [],
+        current_position: 2,
+        current_name: 'Measure',
+        elapsed_ms: 900,
+        current_step_elapsed_ms: 250,
       },
-    ])),
-    JSON.stringify({ channel_index: 1, position: 3 })
+      { channel_index: 2, name: 'CH2', steps: [], overall: 'pass' },
+    ],
+  });
+
+  assert.deepEqual(Array.from(channels, (channel) => channel.running), [true, true, false]);
+  assert.equal(channels[1].elapsed_ms, 900);
+  assert.equal(channels[1].current_step_elapsed_ms, 250);
+});
+
+test('final multi-channel envelope preserves backend channel and step timing', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('multiEnvelopeToProgress'), context);
+
+  const progress = context.multiEnvelopeToProgress({
+    overall: 'pass',
+    channels: [{
+      channel_index: 0,
+      channel_name: 'CH0',
+      response: {
+        overall: 'pass',
+        elapsed_ms: 87,
+        steps: [{ position: 0, status: 'pass', elapsed_ms: 61 }],
+      },
+    }],
+  });
+
+  assert.equal(progress.channels[0].elapsed_ms, 87);
+  assert.equal(progress.channels[0].steps[0].elapsed_ms, 61);
+});
+
+test('channel card model exposes current work, counts, and backend timing', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceChannelCardModel({
+      channel_index: 1,
+      name: 'CH1',
+      running: true,
+      current_position: 2,
+      current_name: 'Measure',
+      elapsed_ms: 1326,
+      current_step_elapsed_ms: 418,
+      steps: [
+        { position: 0, status: 'pass' },
+        { position: 1, status: 'skipped' },
+      ],
+    }, [{}, {}, {}, {}]))),
+    {
+      state: 'running',
+      currentName: 'Measure',
+      currentPosition: 2,
+      completed: 2,
+      total: 4,
+      passed: 1,
+      failed: 0,
+      skipped: 1,
+      elapsedMs: 1326,
+      currentElapsedMs: 418,
+    }
   );
-  assert.equal(
-    context.findFirstSequenceIssue([
-      { channel_index: 0, steps: [{ position: 0, status: 'ok' }] },
-    ]),
-    null
+});
+
+test('channel card model is ready before the first run', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceChannelCardModel'), context);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceChannelCardModel({
+      channel_index: 0,
+      name: 'CH0',
+      steps: [],
+      overall: null,
+      running: false,
+    }, [{}, {}, {}]))),
+    {
+      state: 'idle',
+      currentName: '等待运行',
+      currentPosition: null,
+      completed: 0,
+      total: 3,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      elapsedMs: 0,
+      currentElapsedMs: null,
+    }
+  );
+});
+
+test('channel detail model keeps the complete queue pending before execution', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.buildSequenceChannelDetailModel(
+      { channel_index: 0, name: 'CH0', steps: [], overall: null },
+      [
+        { position: 0, name: 'Prepare' },
+        { position: 1, name: 'Measure', inputs: { target: 20 } },
+      ]
+    ).steps)),
+    [
+      { position: 0, name: 'Prepare', status: 'pending', elapsedMs: null, item: { position: 0, name: 'Prepare' }, result: null },
+      { position: 1, name: 'Measure', status: 'pending', elapsedMs: null, item: { position: 1, name: 'Measure', inputs: { target: 20 } }, result: null },
+    ]
+  );
+});
+
+test('channel detail model preserves terminal status and recorded step time', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('buildSequenceChannelDetailModel'), context);
+
+  const model = context.buildSequenceChannelDetailModel({
+    channel_index: 0,
+    name: 'CH0',
+    elapsed_ms: 80,
+    overall: 'pass',
+    steps: [{ position: 0, name: 'Measure', status: 'pass', elapsed_ms: 61 }],
+  }, [{ position: 0, name: 'Measure' }]);
+
+  assert.equal(model.elapsedMs, 80);
+  assert.equal(model.steps[0].status, 'pass');
+  assert.equal(model.steps[0].elapsedMs, 61);
+});
+
+test('sequence elapsed formatter is stable from milliseconds through hours', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('formatSequenceElapsed'), context);
+
+  assert.equal(context.formatSequenceElapsed(0), '00:00.000');
+  assert.equal(context.formatSequenceElapsed(1326), '00:01.326');
+  assert.equal(context.formatSequenceElapsed(3661007), '01:01:01.007');
+  assert.equal(context.formatSequenceElapsed(null), '—');
+});
+
+test('operator console creates pending cards for the currently selected channels', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(functionSource('pendingSequenceChannelsForOperator'), context);
+
+  const pending = context.pendingSequenceChannelsForOperator([
+    { channel_index: 0, name: 'CH0' },
+    { channel_index: 1, name: 'CH1' },
+  ], [1]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(pending)), [
+    { channel_index: 1, name: 'CH1', steps: [], overall: null, running: false },
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.pendingSequenceChannelsForOperator([], null))),
+    [{ channel_index: 0, name: 'CH0', steps: [], overall: null, running: false }]
   );
 });
 
@@ -265,34 +437,6 @@ test('stale sequence progress response is ignored after poll generation changes'
   await pending;
 
   assert.equal(applied, 0);
-});
-
-test('failure report is visible before render performs focus scrolling', () => {
-  const report = { hidden: true };
-  const reportOpen = { hidden: true };
-  let hiddenWhenRendered = null;
-  const context = {
-    seqChannelProgress: [{ channel_index: 1, steps: [{ position: 3, status: 'fail' }] }],
-    seqReportFocusChannelIndex: null,
-    seqReportFocusPosition: null,
-    document: {
-      getElementById(id) {
-        if (id === 'seq-run-report') return report;
-        if (id === 'seq-run-report-open') return reportOpen;
-        return null;
-      },
-    },
-    findFirstSequenceIssue() { return { channel_index: 1, position: 3 }; },
-    renderSeqRunReport() { hiddenWhenRendered = report.hidden; },
-  };
-  vm.createContext(context);
-  vm.runInContext(functionSource('setSeqReportVisibilityForResult'), context);
-
-  context.setSeqReportVisibilityForResult({ overall: 'fail' });
-
-  assert.equal(hiddenWhenRendered, false);
-  assert.equal(context.seqReportFocusChannelIndex, 1);
-  assert.equal(context.seqReportFocusPosition, 3);
 });
 
 test('VI status copy distinguishes not run, run awaiting Name, and ready to register', () => {

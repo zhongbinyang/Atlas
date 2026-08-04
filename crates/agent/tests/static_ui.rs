@@ -20,7 +20,8 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         .expect("a mobile breakpoint for the sequence page");
 
     assert!(
-        style.contains("#page-sequence-edit,\n#page-sequence-run {\n  padding-bottom: 5.5rem;\n  min-width: 0;\n}"),
+        style.contains("#page-sequence-edit,\n#page-sequence-run {")
+            && style.contains("min-width: 0;"),
         "the sequence pages must shrink without page-level overflow"
     );
     assert!(
@@ -32,26 +33,15 @@ fn sequence_page_has_mobile_safe_layout_rules() {
         "registered functions and templates must use collapsible drawers"
     );
     assert!(
-        mobile_rules.contains("#page-sequence-edit,\n  #page-sequence-run {\n    padding-bottom: 0;\n  }"),
-        "the fixed-bar spacer must be removed on small screens"
-    );
-    assert!(
-        mobile_rules.contains(".seq-run-bar-fixed {\n    position: static;"),
-        "the run bar must return to document flow on small screens"
-    );
-    assert!(
-        mobile_rules
-            .contains(".seq-run-bar-selection,\n  .seq-run-bar-actions {\n    flex: 1 1 100%;"),
-        "the grouped run controls must stack safely on small screens"
-    );
-    assert!(
-        mobile_rules.contains("#seq-overall {\n    margin-left: 0;\n    flex: 1 1 100%;"),
-        "the overall status must wrap below controls on small screens"
+        mobile_rules.contains(".seq-channel-cards")
+            && mobile_rules.contains("grid-template-columns: 1fr;")
+            && mobile_rules.contains(".seq-run-controls"),
+        "operator cards and top run controls must stack safely on small screens"
     );
 }
 
 #[test]
-fn sequence_run_page_uses_operator_first_layout() {
+fn sequence_run_page_uses_persistent_channel_cards_and_detail_view() {
     assert!(
         !INDEX.contains("id=\"seq-sn\"")
             && !INDEX.contains("id=\"seq-work-order\"")
@@ -63,22 +53,46 @@ fn sequence_run_page_uses_operator_first_layout() {
         INDEX.contains("id=\"seq-run-status-card\"")
             && INDEX.contains("id=\"seq-run-status-label\"")
             && INDEX.contains("id=\"seq-run-meta\"")
-            && INDEX.contains("id=\"seq-run-report-open\""),
-        "the run page needs a compact status summary with an explicit report action"
+            && INDEX.contains("class=\"seq-run-controls\"")
+            && INDEX.contains("id=\"seq-channel-pick\"")
+            && INDEX.contains("id=\"seq-run-btn\"")
+            && INDEX.contains("id=\"seq-abort-btn\""),
+        "the run page needs a compact status summary with controls in document flow"
     );
     assert!(
-        INDEX.contains("class=\"seq-run-bar-selection\"")
-            && INDEX.contains("class=\"seq-run-bar-actions\"")
-            && STYLE.contains(".seq-progress-table th:last-child")
-            && STYLE.contains(".seq-run-bar-selection")
-            && STYLE.contains(".seq-run-bar-actions"),
-        "the matrix edges and fixed run bar must use the grouped operator layout"
+        INDEX.contains("id=\"seq-channel-overview\"")
+            && INDEX.contains("id=\"seq-channel-cards\"")
+            && INDEX.contains("id=\"seq-channel-detail\"")
+            && INDEX.contains("id=\"seq-channel-detail-back\"")
+            && INDEX.contains("id=\"seq-channel-detail-prev\"")
+            && INDEX.contains("id=\"seq-channel-detail-next\"")
+            && INDEX.contains("id=\"seq-channel-detail-title\"")
+            && INDEX.contains("id=\"seq-channel-detail-status\"")
+            && INDEX.contains("id=\"seq-channel-detail-elapsed\"")
+            && INDEX.contains("id=\"seq-channel-detail-counts\"")
+            && INDEX.contains("id=\"seq-channel-current\"")
+            && INDEX.contains("id=\"seq-channel-detail-steps\"")
+            && !INDEX.contains("seq-run-bar-fixed"),
+        "fixed channel cards must lead to a dedicated channel detail screen"
     );
     assert!(
-        APP.contains("formatSequenceOverall")
-            && APP.contains("findFirstSequenceIssue")
-            && APP.contains("setSeqReportVisibilityForResult"),
-        "sequence status and failure-first report visibility must be explicit helpers"
+        !INDEX.contains("id=\"seq-channel-cards\" class=\"seq-channel-cards\" aria-live"),
+        "the card grid is rebuilt during polling and must not announce the entire grid on every update"
+    );
+    assert!(
+        APP.contains("buildSequenceChannelCardModel")
+            && APP.contains("buildSequenceChannelDetailModel")
+            && APP.contains("formatSequenceElapsed")
+            && APP.contains("renderSeqChannelCards")
+            && APP.contains("renderSeqChannelDetail")
+            && APP.contains("openSeqChannelDetail")
+            && !INDEX.contains("id=\"seq-progress-matrix\"")
+            && !INDEX.contains("id=\"seq-operator-view\"")
+            && !INDEX.contains("id=\"seq-engineer-view\"")
+            && !INDEX.contains("id=\"seq-step-inspector\"")
+            && !INDEX.contains("id=\"seq-run-report\"")
+            && !INDEX.contains("id=\"seq-exception-filter-btn\""),
+        "the old matrix, mode switch, inspector, report, and exception filter must be removed"
     );
 }
 
@@ -211,22 +225,21 @@ fn settings_and_sequence_expose_channels_and_step_resources() {
     );
     assert!(
         INDEX.contains("id=\"seq-channel-pick\"")
-            && INDEX.contains("id=\"seq-progress-matrix\"")
+            && INDEX.contains("id=\"seq-channel-overview\"")
+            && INDEX.contains("id=\"seq-channel-cards\"")
+            && INDEX.contains("id=\"seq-channel-detail\"")
+            && INDEX.contains("id=\"seq-channel-detail-steps\"")
             && INDEX.contains("id=\"seq-results-section\"")
-            && INDEX.contains("id=\"seq-run-report\"")
-            && INDEX.contains("id=\"seq-run-report-tabs\"")
-            && INDEX.contains("id=\"seq-run-report-body\"")
             && APP.contains("channel_indexes")
             && APP.contains("applyMultiChannelProgress")
-            && APP.contains("renderSeqProgressMatrix")
-            && APP.contains("renderSeqRunReport")
-            && APP.contains("openSeqRunReport")
-            && APP.contains("seq-progress-heading")
+            && APP.contains("renderSeqChannelCards")
+            && APP.contains("renderSeqChannelDetail")
+            && APP.contains("openSeqChannelDetail")
             && APP.contains("handleSequenceResponse")
             && APP.contains("data.channels")
             && APP.contains("Keep the edit queue free of per-channel")
             && (INDEX.contains("序列运行") || INDEX.contains("不写回本队列")),
-        "run page must pick channels, matrix + channel-tabbed run report; edit queue stays edit-only"
+        "run page must provide persistent channel cards and a per-channel detail screen; edit queue stays edit-only"
     );
     assert!(
         INDEX.contains("共用仪表填相同资源名")

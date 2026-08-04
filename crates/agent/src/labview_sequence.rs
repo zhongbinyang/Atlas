@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::labview::{
     build_run_args, ensure_vi, error_message, inputs_to_cli_object, normalize_fs_path, run_cli,
@@ -44,6 +44,8 @@ pub struct SequenceStepResult {
     pub name: String,
     pub ok: bool,
     pub status: String,
+    #[serde(default)]
+    pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,6 +66,8 @@ pub struct SequenceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_order: Option<String>,
     pub overall: String,
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -437,6 +441,7 @@ where
     F: FnMut(&QueueItemForRun) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
 {
+    let sequence_started = Instant::now();
     let mut stopped = false;
     let mut failed_at = None;
     let mut aborted = false;
@@ -502,6 +507,7 @@ where
                 name: item.name.clone(),
                 ok: true,
                 status: "skipped".into(),
+                elapsed_ms: 0,
                 measured: None,
                 limits: limits_value(&item.limits),
                 result: None,
@@ -512,6 +518,7 @@ where
         }
 
         let _ = item.breakpoint;
+        let step_started = Instant::now();
 
         publish_current(
             &progress,
@@ -547,6 +554,7 @@ where
                     } else {
                         "error".into()
                     },
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
                     measured: None,
                     limits: limits_value(&item.limits),
                     result: None,
@@ -587,6 +595,7 @@ where
                     name: item.name.clone(),
                     ok,
                     status: status.clone(),
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
                     measured: measured_from_limits(&item.limits, &result),
                     limits: limits_value(&item.limits),
                     result: Some(result.clone()),
@@ -617,6 +626,7 @@ where
                     name: item.name.clone(),
                     ok: false,
                     status: "error".into(),
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
                     measured: None,
                     limits: limits_value(&item.limits),
                     result: None,
@@ -666,6 +676,7 @@ where
         sn,
         work_order,
         overall,
+        elapsed_ms: sequence_started.elapsed().as_millis() as u64,
     }
 }
 
@@ -906,6 +917,10 @@ mod tests {
         assert_eq!(resp.steps.len(), 1);
         assert_eq!(resp.steps[0].status, "error");
         assert!(!resp.steps[0].ok);
+        assert!(
+            resp.steps[0].elapsed_ms >= 30,
+            "lock wait must be included in elapsed time"
+        );
         let err = resp.steps[0].error.as_deref().unwrap_or("");
         assert!(
             err.contains("station.dca"),
@@ -935,6 +950,42 @@ mod tests {
         assert!(resp.steps[0].ok);
         assert_eq!(resp.steps[1].status, "ok");
         assert_eq!(resp.overall, "pass");
+    }
+
+    #[tokio::test]
+    async fn records_step_and_channel_elapsed_milliseconds() {
+        let mut disabled = sample_item(0, "disabled");
+        disabled.enabled = false;
+        let items = vec![
+            disabled,
+            sample_item(1, "timed"),
+            sample_item(2, "errored"),
+        ];
+
+        let resp = run_sequence_with(&items, |item| {
+            let should_error = item.name == "errored";
+            async move {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if should_error {
+                    Err("boom".into())
+                } else {
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(resp.steps[0].elapsed_ms, 0);
+        assert!(
+            resp.steps[1].elapsed_ms >= 20,
+            "enabled step must include execution time"
+        );
+        assert_eq!(resp.steps[2].status, "error");
+        assert!(
+            resp.steps[2].elapsed_ms >= 20,
+            "failed step must keep execution time"
+        );
+        assert!(resp.elapsed_ms >= resp.steps[1].elapsed_ms);
     }
 
     #[tokio::test]

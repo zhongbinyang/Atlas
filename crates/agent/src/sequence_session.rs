@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -17,6 +18,13 @@ pub struct ChannelProgressSnapshot {
     pub current_position: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_name: Option<String>,
+    pub elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_step_elapsed_ms: Option<u64>,
+    #[serde(skip)]
+    started_at: Option<Instant>,
+    #[serde(skip)]
+    current_step_started_at: Option<Instant>,
 }
 
 /// Live progress while a sequence POST is in flight (polled by the UI).
@@ -63,6 +71,7 @@ impl SequenceProgressSlot {
     }
 
     pub async fn begin_channels(&self, generation: u64, channels: &[(usize, String)]) {
+        let started_at = Instant::now();
         *self.inner.lock().await = SequenceProgressSnapshot {
             running: true,
             generation,
@@ -71,6 +80,7 @@ impl SequenceProgressSlot {
                 .map(|(idx, name)| ChannelProgressSnapshot {
                     channel_index: *idx,
                     name: name.clone(),
+                    started_at: Some(started_at),
                     ..Default::default()
                 })
                 .collect(),
@@ -105,8 +115,13 @@ impl SequenceProgressSlot {
             .iter_mut()
             .find(|c| c.channel_index == channel_index)
         {
+            if ch.started_at.is_none() {
+                ch.started_at = Some(Instant::now());
+            }
             ch.current_position = Some(position);
             ch.current_name = Some(name.clone());
+            ch.current_step_elapsed_ms = Some(0);
+            ch.current_step_started_at = Some(Instant::now());
         }
         if g.channels
             .first()
@@ -136,8 +151,13 @@ impl SequenceProgressSlot {
             .iter_mut()
             .find(|c| c.channel_index == channel_index)
         {
+            if ch.started_at.is_none() {
+                ch.started_at = Some(Instant::now());
+            }
             ch.current_position = Some(position);
             ch.current_name = Some(name.clone());
+            ch.current_step_elapsed_ms = Some(0);
+            ch.current_step_started_at = Some(Instant::now());
         }
         if g.channels
             .first()
@@ -163,6 +183,8 @@ impl SequenceProgressSlot {
             ch.steps = steps.clone();
             ch.current_position = None;
             ch.current_name = None;
+            ch.current_step_elapsed_ms = None;
+            ch.current_step_started_at = None;
         }
         if g.channels
             .first()
@@ -194,6 +216,8 @@ impl SequenceProgressSlot {
             ch.steps = steps.clone();
             ch.current_position = None;
             ch.current_name = None;
+            ch.current_step_elapsed_ms = None;
+            ch.current_step_started_at = None;
         }
         if g.channels
             .first()
@@ -236,11 +260,16 @@ impl SequenceProgressSlot {
             .iter_mut()
             .find(|c| c.channel_index == channel_index)
         {
+            if let Some(started_at) = ch.started_at.take() {
+                ch.elapsed_ms = started_at.elapsed().as_millis() as u64;
+            }
             ch.name = name;
             ch.steps = steps.clone();
             ch.overall = Some(overall);
             ch.current_position = None;
             ch.current_name = None;
+            ch.current_step_elapsed_ms = None;
+            ch.current_step_started_at = None;
         } else {
             g.channels.push(ChannelProgressSnapshot {
                 channel_index,
@@ -249,6 +278,7 @@ impl SequenceProgressSlot {
                 overall: Some(overall),
                 current_position: None,
                 current_name: None,
+                ..Default::default()
             });
         }
         if g.channels
@@ -276,11 +306,16 @@ impl SequenceProgressSlot {
         g.current_name = None;
         for (idx, name, steps, overall) in channels {
             if let Some(ch) = g.channels.iter_mut().find(|c| c.channel_index == *idx) {
+                if let Some(started_at) = ch.started_at.take() {
+                    ch.elapsed_ms = started_at.elapsed().as_millis() as u64;
+                }
                 ch.name = name.clone();
                 ch.steps = steps.clone();
                 ch.overall = Some(overall.clone());
                 ch.current_position = None;
                 ch.current_name = None;
+                ch.current_step_elapsed_ms = None;
+                ch.current_step_started_at = None;
             } else {
                 g.channels.push(ChannelProgressSnapshot {
                     channel_index: *idx,
@@ -289,6 +324,7 @@ impl SequenceProgressSlot {
                     overall: Some(overall.clone()),
                     current_position: None,
                     current_name: None,
+                    ..Default::default()
                 });
             }
         }
@@ -316,7 +352,16 @@ impl SequenceProgressSlot {
     }
 
     pub async fn snapshot(&self) -> SequenceProgressSnapshot {
-        self.inner.lock().await.clone()
+        let mut snapshot = self.inner.lock().await;
+        for channel in &mut snapshot.channels {
+            if let Some(started_at) = channel.started_at {
+                channel.elapsed_ms = started_at.elapsed().as_millis() as u64;
+            }
+            channel.current_step_elapsed_ms = channel
+                .current_step_started_at
+                .map(|started_at| started_at.elapsed().as_millis() as u64);
+        }
+        snapshot.clone()
     }
 }
 
@@ -333,6 +378,7 @@ fn channel_overall_from_steps(steps: &[SequenceStepResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn clear_if_does_not_wipe_newer_generation() {
@@ -345,5 +391,25 @@ mod tests {
         assert_eq!(slot.snapshot().await.channels[0].name, "B");
         assert!(slot.clear_if(2).await);
         assert!(!slot.snapshot().await.running);
+    }
+
+    #[tokio::test]
+    async fn snapshot_reports_live_and_final_channel_timing() {
+        let slot = SequenceProgressSlot::new();
+        slot.begin_channels(1, &[(0, "CH0".into())]).await;
+        slot.set_channel_current_if(1, 0, 0, "step".into()).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let live = slot.snapshot().await.channels.remove(0);
+        assert!(live.elapsed_ms >= 20);
+        assert!(live.current_step_elapsed_ms.unwrap_or_default() >= 20);
+
+        slot.set_channel_overall_if(1, 0, "CH0".into(), vec![], "pass".into())
+            .await;
+        let finished = slot.snapshot().await.channels.remove(0);
+        assert!(finished.elapsed_ms >= 20);
+        assert!(finished.current_step_elapsed_ms.is_none());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(slot.snapshot().await.channels[0].elapsed_ms, finished.elapsed_ms);
     }
 }

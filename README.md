@@ -88,9 +88,9 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec；支持 range / eq / ne / in）、`inputs`（步骤级入参覆盖）。历史字段 `breakpoint` 仍可出现在 PUT 中，但会被忽略并落库为 `false`。
 4. **主表与详情**：主表列含 `# / 启用 / 名称 / 类型 / 结果 / 值 / 下限 / 上限 / 单位 / 操作`；点「**详情**」展开编辑入参 / Spec / Fail 策略，并查看实测与原始返回 JSON。
 5. **按序执行**：`POST /api/sequence/run` 可选 body `{ "sn", "work_order", "sequence_template_id", "channel_indexes" }`；开始时清空结果，执行中可轮询 `GET /api/sequence/run/progress` 按步刷新。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 Delay/REST 试跑共用 busy 槽，忙碌时返回 409。序列一次性跑完，不再支持断点暂停。
-6. **中止**：保留 `POST /api/sequence/run/abort`；`POST /api/sequence/run/continue` 已移除（410 Gone）。WebUI **吸底运行栏** 提供通道选择、开始/中止与总体结果；SN/工单当前不在 WebUI 展示或提交，API 字段仍保留兼容性。
+6. **中止**：保留 `POST /api/sequence/run/abort`；`POST /api/sequence/run/continue` 已移除（410 Gone）。WebUI 顶部状态区集中提供通道选择、开始/中止与总体结果；SN/工单当前不在 WebUI 展示或提交，API 字段仍保留兼容性。
 7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
-8. **运行结果**：不落库「最近一次结果」；完成后结果展示在步骤行/详情中，并写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
+8. **运行结果**：不落库「最近一次结果」；运行页始终按所选通道展示固定卡片，卡片实时显示当前步骤、完成统计、当前步耗时和通道总耗时。点击整张卡片进入对应通道详情，按原队列顺序查看每步状态、实测/Spec、输入输出、原始 JSON 和实际耗时。详细结果（含毫秒耗时）写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
 
 ### WebUI 入口
 
@@ -149,7 +149,7 @@ cargo run --release -p agent
 6. **LabVIEW VI（需本机 LabVIEW + labview-runner-cli）**：
    - Agent：对 `Add.vi`（或任意测试 VI）执行 **查询参数** → 编辑 inputs → **试跑** → **注册到中心**；「中心 VI 功能」出现该项且可试跑；入参列可悬停查看。
    - 中心 `#/functions`：模板表可见刚注册项，**来源机台** 为注册 Agent。
-   - Agent「序列」：左侧可搜索/筛选中心功能，添加到本机队列；编辑步骤详情（入参/Spec/Fail）；**开始** 后结果出现在步骤行；可 **保存为模板** 并在中心 `#/sequences` 看到。
+   - Agent「序列编排」：可搜索/筛选中心功能，添加到本机队列并编辑步骤详情（入参/Spec/Fail）；「序列运行」顶部选择通道，运行前即显示固定通道卡片，点击卡片查看该通道的完整步骤与耗时；可 **保存为模板** 并在中心 `#/sequences` 看到。
    - 覆盖 `AGENT_LABVIEW_CLI` / `AGENT_LABVIEW_GETINFO_VI` 后重启 Agent，`GET /api/labview/config` 与 WebUI 只读路径应反映新值。
 
 ## 测试

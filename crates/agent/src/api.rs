@@ -1588,6 +1588,7 @@ fn steps_log_json(
                 "kind": item.map(|i| i.kind.clone()).unwrap_or_default(),
                 "ok": step.ok,
                 "status": step.status,
+                "elapsed_ms": step.elapsed_ms,
                 "measured": step.measured,
                 "limits": step.limits,
                 "result": step.result,
@@ -1614,6 +1615,7 @@ async fn log_multi_channel_run(
                 "overall": ch.response.overall,
                 "stopped": ch.response.stopped,
                 "failed_at": ch.response.failed_at,
+                "elapsed_ms": ch.response.elapsed_ms,
                 "sn": ch.response.sn,
                 "steps": steps_log_json(items, &ch.response.steps),
             })

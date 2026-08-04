@@ -199,6 +199,7 @@ where
                         sn: None,
                         work_order: None,
                         overall: "error".into(),
+                        elapsed_ms: 0,
                     },
                 });
             }
