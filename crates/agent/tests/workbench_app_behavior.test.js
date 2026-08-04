@@ -734,6 +734,54 @@ test('sequence request failures leave running state on busy and network errors',
   }
 });
 
+test('sequence card run posts only its explicit channel without changing top selection', async () => {
+  const selected = [0, 1];
+  let request = null;
+  const results = { innerHTML: '' };
+  const context = {
+    seqRunning: false,
+    seqSelected: [{}],
+    seqActiveTemplateId: 12,
+    selectedChannelIndexesForRun() { return selected; },
+    setSeqControlsDisabled() {},
+    clearSequenceResultsUi() {},
+    document: {
+      getElementById(id) {
+        assert.equal(id, 'seq-results');
+        return results;
+      },
+    },
+    updateSeqOverall() {},
+    showSeqMsg() {},
+    startSequenceProgressPoll() {},
+    stopSequenceProgressPoll() {},
+    handleSequenceResponse() {},
+    setSeqRequestFailureState() {},
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch(path, options) {
+      request = { path, options };
+      return {
+        ok: true,
+        async json() { return {}; },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence([3]);
+
+  assert.equal(request.path, '/api/sequence/run');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    sequence_template_id: 12,
+    channel_indexes: [3],
+  });
+  assert.deepEqual(selected, [0, 1]);
+});
+
 test('stale sequence progress response is ignored after poll generation changes', async () => {
   let intervalCallback = null;
   let resolveJson = null;
