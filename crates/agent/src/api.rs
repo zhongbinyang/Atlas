@@ -195,7 +195,11 @@ async fn admit_sequence_channels(
             pause.resume.wait().await;
         }
 
-        match state.sequence_cancel.install(channel_index, generation).await {
+        match state
+            .sequence_cancel
+            .install(channel_index, generation)
+            .await
+        {
             Ok(cancel) => admission.started.push(AdmittedChannelRun {
                 spec,
                 generation,
@@ -1817,8 +1821,7 @@ async fn labview_run_sequence(
     let work_order = normalize_run_sequence_opt(req.work_order.clone());
     let channel_indexes = req.channel_indexes.clone();
 
-    if s
-        .slot
+    if s.slot
         .owner()
         .await
         .as_deref()
@@ -2267,18 +2270,20 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/agents"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                "id": "agent-uuid-1",
-                "name": "test-host",
-                "ip": "127.0.0.1",
-                "port": 8080,
-                "status": "online",
-                "cpu_percent": 0.0,
-                "memory_percent": 0.0,
-                "busy": false,
-                "last_seen_at": null,
-                "created_at": "2026-01-01T00:00:00Z"
-            }])))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "agent-uuid-1",
+                    "name": "test-host",
+                    "ip": "127.0.0.1",
+                    "port": 8080,
+                    "status": "online",
+                    "cpu_percent": 0.0,
+                    "memory_percent": 0.0,
+                    "busy": false,
+                    "last_seen_at": null,
+                    "created_at": "2026-01-01T00:00:00Z"
+                }])),
+            )
             .mount(mock_server)
             .await;
         Mock::given(method("GET"))
@@ -2378,13 +2383,31 @@ mod tests {
     async fn admission_starts_idle_channels_and_skips_only_duplicates() {
         let state = test_state();
         let existing = state.slot.try_acquire_sequence(0).await.unwrap();
-        let mut admitted = admit_sequence_channels(&state, vec![
-            ChannelSpec { channel_index: 0, name: "CH0".into(), overlay: serde_json::json!({}) },
-            ChannelSpec { channel_index: 1, name: "CH1".into(), overlay: serde_json::json!({}) },
-        ])
-            .await
-            .unwrap();
-        assert_eq!(admitted.started.iter().map(|run| run.spec.channel_index).collect::<Vec<_>>(), vec![1]);
+        let mut admitted = admit_sequence_channels(
+            &state,
+            vec![
+                ChannelSpec {
+                    channel_index: 0,
+                    name: "CH0".into(),
+                    overlay: serde_json::json!({}),
+                },
+                ChannelSpec {
+                    channel_index: 1,
+                    name: "CH1".into(),
+                    overlay: serde_json::json!({}),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            admitted
+                .started
+                .iter()
+                .map(|run| run.spec.channel_index)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
         assert_eq!(admitted.skipped_channel_indexes, vec![0]);
         admitted.started.pop().unwrap().lease.release().await;
         assert!(state.slot.release_sequence(0, existing).await);
@@ -2394,12 +2417,15 @@ mod tests {
     async fn admission_rejects_exclusive_delay_without_admitting_channels() {
         let state = test_state();
         let delay = state.slot.try_acquire("delay").await.unwrap();
-        let result = admit_sequence_channels(&state, vec![ChannelSpec {
-            channel_index: 0,
-            name: "CH0".into(),
-            overlay: serde_json::json!({}),
-        }])
-            .await;
+        let result = admit_sequence_channels(
+            &state,
+            vec![ChannelSpec {
+                channel_index: 0,
+                name: "CH0".into(),
+                overlay: serde_json::json!({}),
+            }],
+        )
+        .await;
         assert!(matches!(result, Err("busy")));
         assert_eq!(state.slot.owner().await.as_deref(), Some("delay"));
         assert!(state.slot.release(delay).await);
