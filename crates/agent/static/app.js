@@ -3076,11 +3076,14 @@ let seqPendingChannelStarts = {};
 let seqPendingChannelAborts = {};
 /** Start requests whose outcome needs a successful progress snapshot to settle. */
 let seqPendingChannelStartRecovery = {};
+/** Confirmation rule and pre-request generation for each ambiguous/skipped start. */
+let seqPendingChannelStartRecoveryConfirmation = {};
 /** A non-sequence operation owns the machine slot and blocks new starts. */
 let seqExclusiveBusy = false;
 let seqStepResults = {};
 let seqProgressPollTimer = null;
 let seqProgressGeneration = 0;
+let seqProgressRequestRevision = 0;
 let seqDragIndex = null;
 let seqFocusIndex = null;
 let seqCheckedIndexes = {};
@@ -3229,6 +3232,24 @@ function isSequenceChannelRunning(channelIndex) {
   });
 }
 
+function sequenceChannelAbortKey(channelIndex, generation) {
+  return Number(channelIndex) + ':' + Number(generation);
+}
+
+function isSequenceChannelAbortPending(channelIndex, generation) {
+  const index = Number(channelIndex);
+  let observedGeneration = generation;
+  if (observedGeneration == null) {
+    const current = seqChannelProgress.find(function (channel) {
+      return Number(channel.channel_index) === index;
+    });
+    observedGeneration = current && current.generation;
+  }
+  const generationNumber = Number(observedGeneration);
+  if (!Number.isFinite(index) || !Number.isFinite(generationNumber)) return false;
+  return !!seqPendingChannelAborts[sequenceChannelAbortKey(index, generationNumber)];
+}
+
 function isSequenceChannelActive(channelIndex) {
   return isSequenceChannelRunning(channelIndex) || !!seqPendingChannelStarts[Number(channelIndex)];
 }
@@ -3239,8 +3260,7 @@ function anySequenceChannelRunning() {
 
 function anySequenceChannelActivity() {
   return anySequenceChannelRunning() ||
-    Object.keys(seqPendingChannelStarts).length > 0 ||
-    (typeof seqPendingChannelAborts !== 'undefined' && Object.keys(seqPendingChannelAborts).length > 0);
+    Object.keys(seqPendingChannelStarts).length > 0;
 }
 
 function syncSeqControlsState() {
@@ -3264,7 +3284,7 @@ function syncSeqControlsState() {
   });
   document.querySelectorAll('#seq-channel-cards .seq-channel-card-abort').forEach(function (button) {
     const index = Number(button.closest('.seq-channel-card').getAttribute('data-channel-index'));
-    button.disabled = !isSequenceChannelRunning(index) || !!seqPendingChannelAborts[index];
+    button.disabled = !isSequenceChannelRunning(index) || isSequenceChannelAbortPending(index);
   });
   if (abortBtn) abortBtn.disabled = !anyRunning;
   const insertGroupBtn = document.getElementById('seq-insert-group');
@@ -4004,11 +4024,21 @@ function channelProgressFromEnvelope(prog, syntheticChannel) {
   ];
 }
 
-function applyMultiChannelProgress(prog) {
+function applyMultiChannelProgress(prog, authoritative) {
+  const incomingChannels = channelProgressFromEnvelope(prog, seqRunUsesSyntheticChannel);
   seqChannelProgress = mergeSequenceChannels(
     seqChannelProgress,
-    channelProgressFromEnvelope(prog, seqRunUsesSyntheticChannel)
+    incomingChannels
   );
+  if (authoritative === true) {
+    const snapshotIndexes = {};
+    incomingChannels.forEach(function (channel) {
+      snapshotIndexes[Number(channel.channel_index)] = true;
+    });
+    seqChannelProgress = seqChannelProgress.filter(function (channel) {
+      return !!snapshotIndexes[Number(channel.channel_index)];
+    });
+  }
   // Keep the edit queue free of per-channel measured/status — results live in the run report.
   seqStepResults = {};
   updateSeqOverall({ overall: sequenceOverallFromChannels(seqChannelProgress) });
@@ -4025,10 +4055,34 @@ function settleSequenceStartRecovery(prog) {
   prog.channels.forEach(function (channel) {
     const index = Number(channel && channel.channel_index);
     if (!Number.isFinite(index) || !seqPendingChannelStartRecovery[index]) return;
+    const confirmation = typeof seqPendingChannelStartRecoveryConfirmation !== 'undefined'
+      ? seqPendingChannelStartRecoveryConfirmation[index]
+      : null;
+    const incomingGeneration = channel.generation != null ? channel.generation : channel.run_generation;
+    const incomingGenerationNumber = incomingGeneration == null ? NaN : Number(incomingGeneration);
+    const previousGeneration = confirmation && confirmation.previous_generation;
+    const previousGenerationNumber = previousGeneration == null ? NaN : Number(previousGeneration);
+    if (confirmation && confirmation.mode === 'newer_generation') {
+      if (
+        !Number.isFinite(incomingGenerationNumber) ||
+        !Number.isFinite(previousGenerationNumber) ||
+        incomingGenerationNumber <= previousGenerationNumber
+      ) {
+        return;
+      }
+    } else if (confirmation && confirmation.mode === 'existing_generation') {
+      if (
+        !Number.isFinite(incomingGenerationNumber) ||
+        (Number.isFinite(previousGenerationNumber) && incomingGenerationNumber < previousGenerationNumber)
+      ) {
+        return;
+      }
+    } else if (confirmation && confirmation.mode === 'first_observed_generation') {
+      if (!Number.isFinite(incomingGenerationNumber)) return;
+    }
     const current = seqChannelProgress.find(function (entry) {
       return Number(entry.channel_index) === index;
     });
-    const incomingGeneration = channel.generation != null ? channel.generation : channel.run_generation;
     if (
       current && current.generation != null && incomingGeneration != null &&
       Number(incomingGeneration) < Number(current.generation)
@@ -4037,12 +4091,15 @@ function settleSequenceStartRecovery(prog) {
     }
     delete seqPendingChannelStarts[index];
     delete seqPendingChannelStartRecovery[index];
+    if (typeof seqPendingChannelStartRecoveryConfirmation !== 'undefined') {
+      delete seqPendingChannelStartRecoveryConfirmation[index];
+    }
   });
 }
 
 function applySequenceProgress(prog) {
   if (!prog) return;
-  applyMultiChannelProgress(prog);
+  applyMultiChannelProgress(prog, true);
   settleSequenceStartRecovery(prog);
   if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
   if (typeof reconcileSequenceProgressPoll === 'function') reconcileSequenceProgressPoll();
@@ -4169,7 +4226,7 @@ function renderSeqChannelCards(preservedFocus) {
     abortButton.textContent = '中止此通道';
     abortButton.setAttribute('aria-label', '中止 ' + channelName + ' 通道');
     abortButton.disabled = !isSequenceChannelRunning(channel.channel_index) ||
-      !!seqPendingChannelAborts[Number(channel.channel_index)];
+      isSequenceChannelAbortPending(channel.channel_index, channel.generation);
     abortButton.addEventListener('click', function (event) {
       event.stopPropagation();
       abortSequenceChannel(channel.channel_index);
@@ -4527,19 +4584,28 @@ function clearSequenceResultsUi(preservedCardFocus) {
   renderSeqSelected();
 }
 
+async function requestSequenceProgressSnapshot(expectedPollGeneration) {
+  if (typeof seqProgressRequestRevision === 'undefined') seqProgressRequestRevision = 0;
+  const revision = ++seqProgressRequestRevision;
+  try {
+    const resp = await fetch('/api/sequence/run/progress');
+    if (!resp.ok) return false;
+    const prog = await resp.json();
+    if (revision !== seqProgressRequestRevision) return false;
+    if (expectedPollGeneration != null && expectedPollGeneration !== seqProgressGeneration) return false;
+    applySequenceProgress(prog);
+    return true;
+  } catch (e) {
+    /* Progress recovery is best-effort; a later shared-poll request retries. */
+    return false;
+  }
+}
+
 function startSequenceProgressPoll() {
   if (seqProgressPollTimer != null) return;
   const generation = seqProgressGeneration;
-  seqProgressPollTimer = setInterval(async function () {
-    try {
-      const resp = await fetch('/api/sequence/run/progress');
-      if (!resp.ok) return;
-      const prog = await resp.json();
-      if (generation !== seqProgressGeneration) return;
-      applySequenceProgress(prog);
-    } catch (e) {
-      /* ignore transient poll errors */
-    }
+  seqProgressPollTimer = setInterval(function () {
+    return requestSequenceProgressSnapshot(generation);
   }, 250);
 }
 
@@ -4561,13 +4627,7 @@ function reconcileSequenceProgressPoll() {
 
 async function refreshSequenceProgress() {
   try {
-    const resp = await fetch('/api/sequence/run/progress');
-    if (!resp.ok) return false;
-    applySequenceProgress(await resp.json());
-    return true;
-  } catch (e) {
-    /* Status recovery is best-effort; the shared poll retries while active. */
-    return false;
+    return await requestSequenceProgressSnapshot();
   } finally {
     reconcileSequenceProgressPoll();
   }
@@ -6286,11 +6346,28 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     showSeqMsg('所选通道正在执行中', false);
     return;
   }
+  const preRequestGenerations = {};
+  idleChannelIndexes.forEach(function (index) {
+    const current = seqChannelProgress.find(function (channel) {
+      return Number(channel.channel_index) === Number(index);
+    });
+    const generation = Number(current && current.generation);
+    preRequestGenerations[Number(index)] = Number.isFinite(generation) ? generation : null;
+  });
   const cardHost = document.getElementById('seq-channel-cards');
   const focusedCardControl = captureSequenceChannelCardFocus(cardHost);
   seqRunUsesSyntheticChannel = useSyntheticChannel;
   if (typeof seqPendingChannelStarts === 'undefined') seqPendingChannelStarts = {};
-  idleChannelIndexes.forEach(function (index) { seqPendingChannelStarts[Number(index)] = true; });
+  idleChannelIndexes.forEach(function (index) {
+    const numericIndex = Number(index);
+    seqPendingChannelStarts[numericIndex] = true;
+    if (typeof seqPendingChannelStartRecovery !== 'undefined') {
+      delete seqPendingChannelStartRecovery[numericIndex];
+    }
+    if (typeof seqPendingChannelStartRecoveryConfirmation !== 'undefined') {
+      delete seqPendingChannelStartRecoveryConfirmation[numericIndex];
+    }
+  });
   if (typeof clearSequenceChannelResults === 'function') {
     clearSequenceChannelResults(idleChannelIndexes);
     if (typeof renderSeqChannelCards === 'function') renderSeqChannelCards(focusedCardControl);
@@ -6319,8 +6396,15 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
       ? skippedSequenceChannelIndexes(data, idleChannelIndexes)
       : [];
     if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+    if (typeof seqPendingChannelStartRecoveryConfirmation === 'undefined') {
+      seqPendingChannelStartRecoveryConfirmation = {};
+    }
     skippedIndexes.forEach(function (index) {
       seqPendingChannelStartRecovery[index] = true;
+      seqPendingChannelStartRecoveryConfirmation[index] = {
+        mode: 'existing_generation',
+        previous_generation: preRequestGenerations[index],
+      };
     });
     if (!resp.ok) {
       await refreshSequenceProgress();
@@ -6345,8 +6429,19 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     }
   } catch (e) {
     if (typeof seqPendingChannelStartRecovery === 'undefined') seqPendingChannelStartRecovery = {};
+    if (typeof seqPendingChannelStartRecoveryConfirmation === 'undefined') {
+      seqPendingChannelStartRecoveryConfirmation = {};
+    }
     idleChannelIndexes.forEach(function (index) {
-      seqPendingChannelStartRecovery[Number(index)] = true;
+      const numericIndex = Number(index);
+      const previousGeneration = preRequestGenerations[numericIndex];
+      seqPendingChannelStartRecovery[numericIndex] = true;
+      // Without an observed baseline, the first generation-bearing record confirms the
+      // outcome; requiring a live record would strand a fast run already seen terminal.
+      seqPendingChannelStartRecoveryConfirmation[numericIndex] = {
+        mode: previousGeneration == null ? 'first_observed_generation' : 'newer_generation',
+        previous_generation: previousGeneration,
+      };
     });
     await refreshSequenceProgress();
     showSeqMsg('执行失败: ' + e.message, false);
@@ -6354,6 +6449,9 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
     idleChannelIndexes.forEach(function (index) {
       if (!seqPendingChannelStartRecovery[Number(index)]) {
         delete seqPendingChannelStarts[Number(index)];
+        if (typeof seqPendingChannelStartRecoveryConfirmation !== 'undefined') {
+          delete seqPendingChannelStartRecoveryConfirmation[Number(index)];
+        }
       }
     });
     if (typeof syncSeqControlsState === 'function') syncSeqControlsState();
@@ -6365,14 +6463,32 @@ async function runSequence(explicitChannelIndexes, syntheticChannel) {
 
 async function abortSequenceChannel(channelIndex) {
   const index = Number(channelIndex);
-  if (!Number.isFinite(index) || !isSequenceChannelRunning(index)) return;
-  seqPendingChannelAborts[index] = true;
+  const channel = seqChannelProgress.find(function (entry) {
+    return Number(entry.channel_index) === index && !!entry.running;
+  });
+  const generation = Number(channel && channel.generation);
+  if (!Number.isFinite(index) || !channel) return;
+  if (!Number.isFinite(generation)) {
+    showSeqMsg('通道中止失败: 无法确认当前运行版本', false);
+    return;
+  }
+  const pendingKey = sequenceChannelAbortKey(index, generation);
+  if (seqPendingChannelAborts[pendingKey]) return;
+  seqPendingChannelAborts[pendingKey] = true;
   syncSeqControlsState();
   reconcileSequenceProgressPoll();
   showSeqMsg('通道中止中…', true);
   try {
-    const resp = await fetch('/api/sequence/run/channels/' + encodeURIComponent(index) + '/abort', { method: 'POST' });
+    const resp = await fetch('/api/sequence/run/channels/' + encodeURIComponent(index) + '/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ generation: generation }),
+    });
     const data = await resp.json();
+    const current = seqChannelProgress.find(function (entry) {
+      return Number(entry.channel_index) === index;
+    });
+    if (!current || Number(current.generation) !== generation) return;
     if (!resp.ok) {
       const err = data.error && (data.error.message || data.error) || resp.status;
       showSeqMsg('通道中止失败: ' + err, false);
@@ -6380,9 +6496,14 @@ async function abortSequenceChannel(channelIndex) {
     }
     showSeqMsg('通道中止已请求…', true);
   } catch (e) {
-    showSeqMsg('通道中止失败: ' + e.message, false);
+    const current = seqChannelProgress.find(function (entry) {
+      return Number(entry.channel_index) === index;
+    });
+    if (current && Number(current.generation) === generation) {
+      showSeqMsg('通道中止失败: ' + e.message, false);
+    }
   } finally {
-    delete seqPendingChannelAborts[index];
+    delete seqPendingChannelAborts[pendingKey];
     syncSeqControlsState();
     reconcileSequenceProgressPoll();
   }

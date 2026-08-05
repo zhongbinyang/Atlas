@@ -271,11 +271,11 @@ impl SequenceCancelRegistry {
         }
     }
 
-    pub async fn signal_channel(&self, channel_index: usize) -> bool {
+    pub async fn signal_channel_if(&self, channel_index: usize, generation: u64) -> bool {
         let entries = self.inner.lock().await;
-        entries
-            .get(&channel_index)
-            .is_some_and(|active| !*active.tx.borrow() && active.tx.send(true).is_ok())
+        entries.get(&channel_index).is_some_and(|active| {
+            active.generation == generation && !*active.tx.borrow() && active.tx.send(true).is_ok()
+        })
     }
 
     pub async fn signal_all(&self) -> Vec<usize> {
@@ -386,7 +386,7 @@ mod tests {
         let rx0 = registry.install(0, 31).await.unwrap();
         let rx1 = registry.install(1, 32).await.unwrap();
 
-        assert!(registry.signal_channel(0).await);
+        assert!(registry.signal_channel_if(0, 31).await);
         assert!(*rx0.borrow());
         assert!(!*rx1.borrow());
         assert_eq!(registry.signal_all().await, vec![1]);
@@ -401,7 +401,20 @@ mod tests {
             registry.install(4, 41).await.unwrap_err(),
             "stale generation"
         );
-        assert!(registry.signal_channel(4).await);
+        assert!(registry.signal_channel_if(4, 42).await);
+        assert!(*new_rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn stale_channel_cancel_cannot_signal_a_replacement_generation() {
+        let registry = SequenceCancelRegistry::new();
+        let _old_rx = registry.install(6, 51).await.unwrap();
+        assert!(registry.clear_if(6, 51).await);
+        let new_rx = registry.install(6, 52).await.unwrap();
+
+        assert!(!registry.signal_channel_if(6, 51).await);
+        assert!(!*new_rx.borrow());
+        assert!(registry.signal_channel_if(6, 52).await);
         assert!(*new_rx.borrow());
     }
 }

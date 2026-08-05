@@ -142,6 +142,7 @@ function renderChannelCardsWithControlState(controlState) {
     sequenceRunQueueItems() { return [{}]; },
     isSequenceChannelActive(index) { return index === 0; },
     isSequenceChannelRunning(index) { return index === 0; },
+    isSequenceChannelAbortPending(index) { return !!(controlState.seqPendingChannelAborts || {})[index]; },
     sequenceCardRunChannelIndexes(channel) { return [channel.channel_index]; },
     runSequence() {},
     abortSequenceChannel() {},
@@ -557,6 +558,56 @@ test('sequence progress merge preserves unrelated channels and rejects stale gen
   ]);
 });
 
+test('authoritative progress snapshots remove stale channels while POST progress merges siblings', () => {
+  const context = {
+    seqChannelProgress: [
+      { channel_index: 0, generation: 7, running: true, name: 'CH0 live' },
+      { channel_index: 1, generation: 3, running: false, overall: 'pass', name: 'CH1 old' },
+    ],
+    seqRunUsesSyntheticChannel: false,
+    seqStepResults: {},
+    seqPendingChannelStarts: {},
+    seqPendingChannelAborts: {},
+    updateSeqOverall() {},
+    renderSeqChannelCards() {},
+    renderSeqChannelDetail() {},
+    renderSeqSelected() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('mergeSequenceChannels'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
+  vm.runInContext(functionSource('shouldPollSequenceProgress'), context);
+  vm.runInContext(functionSource('isSequenceChannelRunning'), context);
+  vm.runInContext(functionSource('anySequenceChannelRunning'), context);
+  vm.runInContext(functionSource('anySequenceChannelActivity'), context);
+  vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
+  vm.runInContext(functionSource('applyMultiChannelProgress'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+
+  context.applyMultiChannelProgress({
+    channels: [
+      { channel_index: 1, generation: 4, running: false, overall: 'pass', name: 'CH1 new' },
+    ],
+  });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.seqChannelProgress.map((channel) => channel.channel_index))),
+    [0, 1],
+    'a partial POST response must preserve its live sibling'
+  );
+
+  context.applySequenceProgress({ running: false, channels: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), []);
+  assert.equal(context.anySequenceChannelActivity(), false);
+  assert.equal(
+    context.shouldPollSequenceProgress(context.seqChannelProgress, context.seqPendingChannelStarts),
+    false,
+    'an authoritative empty GET must stop sequence activity'
+  );
+});
+
 test('channel activity distinguishes backend running from locally pending starts', () => {
   const context = {
     seqChannelProgress: [{ channel_index: 0, running: true }],
@@ -603,12 +654,13 @@ test('sequence aggregate and polling stay active until the final channel stops',
 });
 
 test('card abort posts only its channel while top abort uses the global endpoint', async () => {
-  const paths = [];
+  const requests = [];
   const context = {
+    seqChannelProgress: [{ channel_index: 2, generation: 12, running: true }],
     seqPendingChannelAborts: {},
     isSequenceChannelRunning(index) { return index === 2; },
-    fetch: async function (path) {
-      paths.push(path);
+    fetch: async function (path, options) {
+      requests.push({ path, options });
       return { ok: true, json: async function () { return { ok: true }; } };
     },
     showSeqMsg() {},
@@ -616,15 +668,57 @@ test('card abort posts only its channel while top abort uses the global endpoint
     reconcileSequenceProgressPoll() {},
   };
   vm.createContext(context);
+  vm.runInContext(functionSource('sequenceChannelAbortKey'), context);
+  vm.runInContext(functionSource('isSequenceChannelAbortPending'), context);
   vm.runInContext(functionSource('abortSequenceChannel'), context);
   vm.runInContext(functionSource('abortSequence'), context);
 
   await context.abortSequenceChannel(2);
   await context.abortSequence();
-  assert.deepEqual(paths, [
-    '/api/sequence/run/channels/2/abort',
-    '/api/sequence/run/abort',
+  assert.deepEqual(JSON.parse(JSON.stringify(requests)), [
+    {
+      path: '/api/sequence/run/channels/2/abort',
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"generation":12}',
+      },
+    },
+    { path: '/api/sequence/run/abort', options: { method: 'POST' } },
   ]);
+});
+
+test('stale abort completion does not keep a replacement generation pending', async () => {
+  let resolveAbort = null;
+  const messages = [];
+  const context = {
+    seqChannelProgress: [{ channel_index: 2, generation: 12, running: true }],
+    seqPendingChannelAborts: {},
+    isSequenceChannelRunning(index) {
+      return context.seqChannelProgress.some((channel) => channel.channel_index === index && channel.running);
+    },
+    fetch() {
+      return new Promise((resolve) => { resolveAbort = resolve; });
+    },
+    showSeqMsg(message) { messages.push(message); },
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceChannelAbortKey'), context);
+  vm.runInContext(functionSource('isSequenceChannelAbortPending'), context);
+  vm.runInContext(functionSource('abortSequenceChannel'), context);
+
+  const pendingAbort = context.abortSequenceChannel(2);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelAborts)), { '2:12': true });
+
+  context.seqChannelProgress = [{ channel_index: 2, generation: 13, running: true }];
+  assert.equal(context.isSequenceChannelAbortPending(2), false);
+  resolveAbort({ ok: true, async json() { return { ok: true, generation: 12 }; } });
+  await pendingAbort;
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelAborts)), {});
+  assert.deepEqual(messages, ['通道中止中…']);
 });
 
 test('sequence busy status restores progress instead of globally locking channel cards', () => {
@@ -653,6 +747,7 @@ test('synthetic sequence card run posts without channel indexes', async () => {
     seqRunning: false,
     seqSelected: [{}],
     seqActiveTemplateId: 12,
+    seqChannelProgress: [],
     selectedChannelIndexesForRun() { return null; },
     captureSequenceChannelCardFocus() { return null; },
     setSeqControlsDisabled() {},
@@ -1087,6 +1182,7 @@ test('rendered channel cards expose isolated run and abort controls with group a
     sequenceRunQueueItems() { return [{}]; },
     isSequenceChannelActive(index) { return index === 0; },
     isSequenceChannelRunning(index) { return index === 0; },
+    isSequenceChannelAbortPending() { return false; },
     sequenceCardRunChannelIndexes(channel) { return [channel.channel_index]; },
     runSequence(indexes, synthetic) { calls.push(['runSequence', indexes, synthetic]); },
     abortSequenceChannel(index) { calls.push(['abortSequenceChannel', index]); },
@@ -1440,6 +1536,7 @@ test('sequence request failures refresh progress instead of replacing aggregate 
       seqRunning: false,
       seqSelected: [{}],
       seqActiveTemplateId: null,
+      seqChannelProgress: [],
       selectedChannelIndexesForRun() { return null; },
       enabledAgentChannels() { return [{ channel_index: 0 }]; },
       captureSequenceChannelCardFocus() { return null; },
@@ -1520,6 +1617,7 @@ test('definitive delay-busy 409 releases requested starts after empty reconcilia
   vm.runInContext(functionSource('reconcileSequenceProgressPoll'), context);
   vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
   vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('refreshSequenceProgress'), context);
   vm.runInContext(functionSource('runSequence'), context);
 
@@ -1565,7 +1663,7 @@ test('all-skipped 409 keeps pending channels through immediate progress reconcil
         async json() {
           return progressPolls === 1
             ? { running: false, channels: [] }
-            : { running: false, channels: [{ channel_index: 0, running: false, overall: 'pass' }] };
+            : { running: false, channels: [{ channel_index: 0, generation: 5, running: false, overall: 'pass' }] };
         },
       };
     },
@@ -1576,6 +1674,7 @@ test('all-skipped 409 keeps pending channels through immediate progress reconcil
   vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
   vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
   vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('refreshSequenceProgress'), context);
   vm.runInContext(functionSource('startSequenceProgressPoll'), context);
   vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
@@ -1625,7 +1724,7 @@ test('partial successful starts reconcile only skipped channels before cleanup',
           async json() {
             return progressPolls === 1
               ? { running: false, channels: [] }
-              : { running: false, channels: [{ channel_index: 1, running: false, overall: 'pass' }] };
+              : { running: false, channels: [{ channel_index: 1, generation: 6, running: false, overall: 'pass' }] };
           },
         };
       }
@@ -1643,6 +1742,7 @@ test('partial successful starts reconcile only skipped channels before cleanup',
   vm.runInContext(functionSource('skippedSequenceChannelIndexes'), context);
   vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
   vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('refreshSequenceProgress'), context);
   vm.runInContext(functionSource('startSequenceProgressPoll'), context);
   vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
@@ -1662,7 +1762,7 @@ test('partial successful starts reconcile only skipped channels before cleanup',
   assert.equal(context.sequenceOverallFromChannels(context.seqChannelProgress), 'pass');
 });
 
-test('network start failure preserves a sibling running channel and its aggregate', async () => {
+test('network start failure without target history settles on the first generated snapshot and preserves siblings', async () => {
   let failureStates = 0;
   let progressPolls = 0;
   let intervalCallback = null;
@@ -1702,7 +1802,7 @@ test('network start failure preserves a sibling running channel and its aggregat
         async json() {
           return progressPolls === 1
             ? { running: true, channels: [] }
-            : { running: true, channels: [{ channel_index: 1, running: false, overall: 'pass' }] };
+            : { running: true, channels: [{ channel_index: 1, generation: 7, running: false, overall: 'pass' }] };
         },
       };
     },
@@ -1712,6 +1812,7 @@ test('network start failure preserves a sibling running channel and its aggregat
   vm.runInContext(functionSource('buildSequenceRunPayload'), context);
   vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
   vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('refreshSequenceProgress'), context);
   vm.runInContext(functionSource('startSequenceProgressPoll'), context);
   vm.runInContext(functionSource('runSequence'), context);
@@ -1730,8 +1831,94 @@ test('network start failure preserves a sibling running channel and its aggregat
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
   assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), [
     { channel_index: 0, running: true, overall: null },
-    { channel_index: 1, running: false, overall: 'pass' },
+    { channel_index: 1, generation: 7, running: false, overall: 'pass' },
   ]);
+});
+
+test('ambiguous start recovery ignores the previous terminal generation until a newer run appears', async () => {
+  let intervalCallback = null;
+  let progressPolls = 0;
+  const context = {
+    seqSelected: [{}],
+    seqActiveTemplateId: null,
+    seqChannelProgress: [{
+      channel_index: 2,
+      generation: 9,
+      running: false,
+      overall: 'pass',
+      steps: [{ position: 0, name: 'Previous run', status: 'pass' }],
+    }],
+    seqStepResults: {},
+    seqRunUsesSyntheticChannel: false,
+    seqPendingChannelStarts: {},
+    seqPendingChannelStartRecovery: {},
+    seqPendingChannelStartRecoveryConfirmation: {},
+    seqPendingChannelAborts: {},
+    seqProgressGeneration: 0,
+    seqProgressRequestRevision: 0,
+    seqProgressPollTimer: null,
+    selectedChannelIndexesForRun() { return [2]; },
+    enabledAgentChannels() { return [{ channel_index: 2 }]; },
+    captureSequenceChannelCardFocus() { return null; },
+    updateSeqOverall() {},
+    renderSeqChannelCards() {},
+    renderSeqChannelDetail() {},
+    renderSeqSelected() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+    setInterval(callback) { intervalCallback = callback; return 42; },
+    document: { getElementById() { return { innerHTML: '' }; } },
+    showSeqMsg() {},
+    renderSeqChannelPick() {},
+    renderSeqRegistered() {},
+    async fetch(path) {
+      if (path === '/api/sequence/run') throw new Error('connection reset');
+      progressPolls += 1;
+      return {
+        ok: true,
+        async json() {
+          const generation = progressPolls === 1 ? 9 : 10;
+          return {
+            running: false,
+            channels: [{
+              channel_index: 2,
+              generation,
+              running: false,
+              overall: 'pass',
+              steps: [{ position: 0, name: generation === 9 ? 'Previous run' : 'Recovered run', status: 'pass' }],
+            }],
+          };
+        },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('sequenceRunQueueItems'), context);
+  vm.runInContext(functionSource('buildSequenceRunPayload'), context);
+  vm.runInContext(functionSource('mergeSequenceChannels'), context);
+  vm.runInContext(functionSource('clearSequenceChannelResults'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
+  vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
+  vm.runInContext(functionSource('applyMultiChannelProgress'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('runSequence'), context);
+
+  await context.runSequence();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), { 2: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery)), { 2: true });
+  assert.equal(context.seqChannelProgress[0].generation, 9);
+
+  context.startSequenceProgressPoll();
+  await intervalCallback();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStarts)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqPendingChannelStartRecovery)), {});
+  assert.equal(context.seqChannelProgress[0].generation, 10);
 });
 
 test('ordinary progress polling settles only recovery targets it actually observes', async () => {
@@ -1759,6 +1946,7 @@ test('ordinary progress polling settles only recovery targets it actually observ
   vm.createContext(context);
   vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
   vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('startSequenceProgressPoll'), context);
 
   context.applySequenceProgress({ running: false, channels: [] });
@@ -1813,13 +2001,13 @@ test('sequence control sync disables template mutation but leaves channel picks 
   assert.equal(channelPick.disabled, false);
 
   context.seqChannelProgress = [];
-  context.seqPendingChannelAborts = { 0: true };
+  context.seqPendingChannelAborts = { '0:3': true };
   save.disabled = false;
   templateLoad.disabled = false;
   context.syncSeqControlsState();
 
-  assert.equal(save.disabled, true);
-  assert.equal(templateLoad.disabled, true);
+  assert.equal(save.disabled, false);
+  assert.equal(templateLoad.disabled, false);
   assert.equal(channelPick.disabled, false);
 });
 
@@ -1931,6 +2119,7 @@ test('zero-argument top sequence run posts the current channel selection', async
     seqRunning: false,
     seqSelected: [{}],
     seqActiveTemplateId: null,
+    seqChannelProgress: [],
     selectedChannelIndexesForRun() { return [1]; },
     enabledAgentChannels() { return [{ channel_index: 1 }]; },
     captureSequenceChannelCardFocus() { return null; },
@@ -1995,6 +2184,7 @@ test('stale sequence progress response is ignored after poll generation changes'
     applySequenceProgress() { applied += 1; },
   };
   vm.createContext(context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
   vm.runInContext(functionSource('startSequenceProgressPoll'), context);
 
   context.startSequenceProgressPoll();
@@ -2005,6 +2195,99 @@ test('stale sequence progress response is ignored after poll generation changes'
   await pending;
 
   assert.equal(applied, 0);
+});
+
+test('newest progress GET prevents equal-generation terminal state from moving backward', async () => {
+  let intervalCallback = null;
+  const requests = [];
+  const context = {
+    seqChannelProgress: [],
+    seqRunUsesSyntheticChannel: false,
+    seqStepResults: {},
+    seqPendingChannelStarts: {},
+    seqPendingChannelAborts: {},
+    seqProgressGeneration: 0,
+    seqProgressRequestRevision: 0,
+    seqProgressPollTimer: null,
+    setInterval(callback) {
+      intervalCallback = callback;
+      return 42;
+    },
+    fetch() {
+      return new Promise((resolve) => { requests.push(resolve); });
+    },
+    updateSeqOverall() {},
+    renderSeqChannelCards() {},
+    renderSeqChannelDetail() {},
+    renderSeqSelected() {},
+    syncSeqControlsState() {},
+    reconcileSequenceProgressPoll() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('mergeSequenceChannels'), context);
+  vm.runInContext(functionSource('sequenceOverallFromChannels'), context);
+  vm.runInContext(functionSource('channelProgressFromEnvelope'), context);
+  vm.runInContext(functionSource('applyMultiChannelProgress'), context);
+  vm.runInContext(functionSource('settleSequenceStartRecovery'), context);
+  vm.runInContext(functionSource('applySequenceProgress'), context);
+  vm.runInContext(functionSource('requestSequenceProgressSnapshot'), context);
+  vm.runInContext(functionSource('startSequenceProgressPoll'), context);
+  vm.runInContext(functionSource('refreshSequenceProgress'), context);
+
+  context.startSequenceProgressPoll();
+  const olderPoll = intervalCallback();
+  const newerRefresh = context.refreshSequenceProgress();
+  assert.equal(requests.length, 2);
+
+  requests[1]({
+    ok: true,
+    async json() {
+      return {
+        running: false,
+        channels: [{
+          channel_index: 0,
+          generation: 7,
+          running: false,
+          overall: 'pass',
+          current_position: null,
+          current_name: null,
+          steps: [{ position: 2, name: 'Final step', status: 'pass' }],
+        }],
+      };
+    },
+  });
+  await newerRefresh;
+
+  requests[0]({
+    ok: true,
+    async json() {
+      return {
+        running: true,
+        channels: [{
+          channel_index: 0,
+          generation: 7,
+          running: true,
+          overall: 'running',
+          current_position: 1,
+          current_name: 'Older step',
+          steps: [],
+        }],
+      };
+    },
+  });
+  await olderPoll;
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.seqChannelProgress)), [{
+    channel_index: 0,
+    name: 'CH0',
+    steps: [{ position: 2, name: 'Final step', status: 'pass' }],
+    overall: 'pass',
+    current_position: null,
+    current_name: null,
+    generation: 7,
+    synthetic: false,
+    running: false,
+  }]);
 });
 
 test('VI status copy distinguishes not run, run awaiting Name, and ready to register', () => {

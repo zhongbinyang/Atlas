@@ -257,6 +257,11 @@ struct RunSequenceRequest {
     channel_indexes: Option<Vec<usize>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AbortSequenceChannelRequest {
+    generation: u64,
+}
+
 fn normalize_run_sequence_opt(value: Option<String>) -> Option<String> {
     value.and_then(|s| {
         let trimmed = s.trim();
@@ -2159,23 +2164,34 @@ async fn labview_run_sequence_continue_gone() -> impl IntoResponse {
 async fn labview_run_sequence_channel_abort(
     State(s): State<AppState>,
     Path(channel_index): Path<usize>,
+    Json(request): Json<AbortSequenceChannelRequest>,
 ) -> impl IntoResponse {
     #[cfg(test)]
     if let Some(barrier) = &s.sequence_lifecycle_test_hooks.abort_before_gate {
         barrier.wait().await;
     }
     let _lifecycle = s.sequence_lifecycle.lock().await;
-    if s.sequence_cancel.signal_channel(channel_index).await {
+    if s.sequence_cancel
+        .signal_channel_if(channel_index, request.generation)
+        .await
+    {
         (
             StatusCode::OK,
-            Json(serde_json::json!({ "ok": true, "aborting": channel_index })),
+            Json(serde_json::json!({
+                "ok": true,
+                "aborting": channel_index,
+                "generation": request.generation,
+            })),
         )
             .into_response()
     } else {
         (
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error: format!("channel {channel_index} is not running"),
+                error: format!(
+                    "channel {channel_index} generation {} is not running",
+                    request.generation
+                ),
             }),
         )
             .into_response()
@@ -2331,15 +2347,40 @@ mod tests {
         let request = Request::builder()
             .method("POST")
             .uri("/api/sequence/run/channels/0/abort")
-            .body(Body::empty())
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"generation":51}"#))
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body, serde_json::json!({ "ok": true, "aborting": 0 }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "ok": true, "aborting": 0, "generation": 51 })
+        );
         assert!(*rx0.borrow());
         assert!(!*rx1.borrow());
+    }
+
+    #[tokio::test]
+    async fn channel_abort_rejects_a_stale_generation_without_signalling_the_replacement() {
+        let state = test_state();
+        let replacement_rx = state.sequence_cancel.install(6, 52).await.unwrap();
+        let app = router(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/sequence/run/channels/6/abort")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"generation":51}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let error: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error.error, "channel 6 generation 51 is not running");
+        assert!(!*replacement_rx.borrow());
     }
 
     #[tokio::test]
@@ -2368,7 +2409,8 @@ mod tests {
         let request = Request::builder()
             .method("POST")
             .uri("/api/sequence/run/channels/7/abort")
-            .body(Body::empty())
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"generation":71}"#))
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
@@ -2376,7 +2418,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let error: ErrorBody = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(error.error, "channel 7 is not running");
+        assert_eq!(error.error, "channel 7 generation 71 is not running");
     }
 
     #[tokio::test]
@@ -2570,13 +2612,17 @@ mod tests {
             .await
         });
         admission_reached.wait().await;
+        let generation = state.slot.snapshot_holds().await[0].generation;
 
         let app = router(state.clone());
         let abort_task = tokio::spawn(async move {
             let request = Request::builder()
                 .method("POST")
                 .uri("/api/sequence/run/channels/0/abort")
-                .body(Body::empty())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "generation": generation })).unwrap(),
+                ))
                 .unwrap();
             app.oneshot(request).await.unwrap()
         });
@@ -2650,7 +2696,12 @@ mod tests {
         assert!(*cancel.borrow());
         assert!(state.slot.snapshot_holds().await.is_empty());
         assert!(state.sequence_progress.snapshot().await.channels.is_empty());
-        assert!(!state.sequence_cancel.signal_channel(0).await);
+        assert!(
+            !state
+                .sequence_cancel
+                .signal_channel_if(0, admitted_run.generation)
+                .await
+        );
         admitted_run.lease.release().await;
     }
 
@@ -2697,8 +2748,8 @@ mod tests {
         rollback_complete.wait().await;
 
         assert!(state.slot.snapshot_holds().await.is_empty());
-        assert!(!state.sequence_cancel.signal_channel(0).await);
-        assert!(!state.sequence_cancel.signal_channel(1).await);
+        assert!(!state.sequence_cancel.signal_channel_if(0, 0).await);
+        assert!(!state.sequence_cancel.signal_channel_if(1, 0).await);
     }
 
     #[tokio::test]
@@ -3386,7 +3437,7 @@ mod tests {
         assert!(!*rx_b.borrow());
 
         // B can still abort and tear down itself.
-        assert!(state.sequence_cancel.signal_channel(0).await);
+        assert!(state.sequence_cancel.signal_channel_if(0, gen_b).await);
         assert!(*rx_b.borrow());
         assert!(state.sequence_cancel.clear_if(0, gen_b).await);
         assert!(state.slot.release_sequence(0, gen_b).await);

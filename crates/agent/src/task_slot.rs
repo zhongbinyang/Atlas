@@ -1,7 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
-/// Single-flight busy slot shared by sequence / delay / REST (not shell tasks).
+/// Admission slot for exclusive non-sequence work and concurrent sequence channels.
+///
+/// Delay / REST / version work owns the slot exclusively. Sequence work may hold
+/// distinct channel indexes concurrently, while duplicate holds for one channel
+/// are rejected (shell tasks do not use this slot).
 ///
 /// Each successful acquisition bumps a generation token. Releases must pass that
 /// token so a stale run cannot clear a newer hold after force-release.
