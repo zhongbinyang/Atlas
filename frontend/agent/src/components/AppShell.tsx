@@ -1,5 +1,8 @@
-import { Button, Layout, Menu, Space, Typography } from 'antd';
+import { App as AntdApp, Button, Layout, Menu, Space, Typography } from 'antd';
+import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { agentApi } from '../api/agentApi';
+import { MachineInfoPopover } from './MachineInfoPopover';
 
 const { Header, Content } = Layout;
 
@@ -12,9 +15,23 @@ const items = [
 ];
 
 export function AppShell() {
+  const { message } = AntdApp.useApp();
   const location = useLocation();
   const navigate = useNavigate();
+  const [registering, setRegistering] = useState(false);
   const selected = items.find((i) => location.pathname.startsWith(i.key))?.key ?? '/vi';
+
+  const handleRegisterNow = async () => {
+    setRegistering(true);
+    try {
+      await agentApi.registerNow();
+      message.success('注册成功');
+    } catch (error) {
+      message.error(`注册失败: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -36,8 +53,10 @@ export function AppShell() {
           style={{ flex: 1, minWidth: 0 }}
         />
         <Space>
-          <Button disabled>Popover</Button>
-          <Button disabled>閲嶆柊娉ㄥ唽</Button>
+          <MachineInfoPopover />
+          <Button loading={registering} onClick={handleRegisterNow}>
+            重新注册
+          </Button>
         </Space>
       </Header>
       <Content style={{ padding: 24 }}>
