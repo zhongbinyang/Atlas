@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { parseViInputValue } from './ViPage';
+import { parseViInputsJson } from './ViPage';
 
-describe('parseViInputValue', () => {
-  it('preserves JSON values and converts scalar values for VI runs', () => {
-    expect(parseViInputValue('[1, 2]', true)).toEqual([1, 2]);
-    expect(parseViInputValue('12.5', false)).toBe(12.5);
-    expect(parseViInputValue('false', false)).toBe(false);
-    expect(parseViInputValue('', false)).toBeNull();
-    expect(parseViInputValue('${Serial}', false)).toBe('${Serial}');
+describe('parseViInputsJson', () => {
+  it('parses a VI inputs array', () => {
+    expect(parseViInputsJson('[{"name":"a","className":"String","value":"x"}]')).toEqual([
+      { name: 'a', className: 'String', value: 'x' },
+    ]);
+    expect(parseViInputsJson('')).toEqual([]);
   });
 
-  it('rejects malformed JSON input', () => {
-    expect(() => parseViInputValue('{not json}', true)).toThrow('JSON 无效');
+  it('rejects malformed or non-array JSON', () => {
+    expect(() => parseViInputsJson('{not json}')).toThrow('入参 JSON 无效');
+    expect(() => parseViInputsJson('{"name":"a"}')).toThrow('入参 JSON 必须是数组');
   });
 });

@@ -5,12 +5,14 @@ import { AppShell } from './components/AppShell';
 import { GeneralPage } from './pages/GeneralPage';
 import { RestPage } from './pages/RestPage';
 import { SequencePage } from './pages/SequencePage';
+import { SequenceChannelDetailPage } from './pages/sequence/SequenceChannelDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ViPage } from './pages/ViPage';
+import { agentTheme } from './theme';
 
 export function App() {
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider locale={zhCN} theme={agentTheme}>
       <AntApp>
         <HashRouter>
           <Routes>
@@ -19,6 +21,10 @@ export function App() {
               <Route path="/general" element={<GeneralPage />} />
               <Route path="/api" element={<RestPage />} />
               <Route path="/sequence" element={<SequencePage />} />
+              <Route
+                path="/sequence/channels/:channelIndex"
+                element={<SequenceChannelDetailPage />}
+              />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<Navigate to="/vi" replace />} />
             </Route>

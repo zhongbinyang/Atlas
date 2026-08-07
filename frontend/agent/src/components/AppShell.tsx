@@ -1,4 +1,4 @@
-import { App as AntdApp, Button, Layout, Menu, Space, Typography } from 'antd';
+import { App as AntdApp, Button, Layout, Menu, Space } from 'antd';
 import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { agentApi } from '../api/agentApi';
@@ -8,10 +8,10 @@ const { Header, Content } = Layout;
 
 const items = [
   { key: '/vi', label: <Link to="/vi">VI</Link> },
-  { key: '/general', label: <Link to="/general">閫氱敤</Link> },
+  { key: '/general', label: <Link to="/general">通用</Link> },
   { key: '/api', label: <Link to="/api">REST</Link> },
-  { key: '/sequence', label: <Link to="/sequence">搴忓垪</Link> },
-  { key: '/settings', label: <Link to="/settings">閰嶇疆</Link> },
+  { key: '/sequence', label: <Link to="/sequence">序列</Link> },
+  { key: '/settings', label: <Link to="/settings">配置</Link> },
 ];
 
 export function AppShell() {
@@ -25,7 +25,7 @@ export function AppShell() {
     setRegistering(true);
     try {
       await agentApi.registerNow();
-      message.success('注册成功');
+      message.success('已向中心重新注册');
     } catch (error) {
       message.error(`注册失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -34,33 +34,37 @@ export function AppShell() {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-        <div
-          style={{ color: '#fff', cursor: 'pointer', lineHeight: 1.2 }}
-          onClick={() => navigate('/vi')}
+    <Layout className="atlas-shell">
+      <Header className="atlas-header">
+        <div className="atlas-brand" onClick={() => navigate('/vi')} role="link" tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/vi');
+            }
+          }}
         >
-          <Typography.Text strong style={{ color: '#fff', fontSize: 18 }}>
-            ATLAS
-          </Typography.Text>
-          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>娴嬭瘯鏈哄彴</div>
+          <span className="atlas-brand-mark">ATLAS</span>
+          <span className="atlas-brand-sub">测试机台</span>
         </div>
         <Menu
           theme="dark"
           mode="horizontal"
           selectedKeys={[selected]}
           items={items}
-          style={{ flex: 1, minWidth: 0 }}
+          className="atlas-header-menu"
         />
-        <Space>
+        <Space className="atlas-header-actions" size="small">
           <MachineInfoPopover />
-          <Button loading={registering} onClick={handleRegisterNow}>
+          <Button ghost loading={registering} onClick={handleRegisterNow}>
             重新注册
           </Button>
         </Space>
       </Header>
-      <Content style={{ padding: 24 }}>
-        <Outlet />
+      <Content>
+        <div className="atlas-content">
+          <Outlet />
+        </div>
       </Content>
     </Layout>
   );

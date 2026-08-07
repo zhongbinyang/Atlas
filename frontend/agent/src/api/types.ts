@@ -8,6 +8,7 @@ export type AgentStatus = {
   can_force_release?: boolean;
   busy_message?: string;
   busy_reason?: string;
+  log_dir?: string;
 };
 
 export type LabviewConfig = {

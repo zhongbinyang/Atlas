@@ -1,7 +1,9 @@
-import { App, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
+import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Table, Tag } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
+import { JsonBlock, JsonFieldHint } from '../components/JsonBlock';
+import { PageHeader } from '../components/PageHeader';
 
 type RestTemplate = {
   id?: string | number;
@@ -53,7 +55,7 @@ export function RestPage() {
   const [name, setName] = useState('');
   const [method, setMethod] = useState('GET');
   const [url, setUrl] = useState('');
-  const [headers, setHeaders] = useState('{}');
+  const [headers, setHeaders] = useState('{\n}');
   const [body, setBody] = useState('');
   const [timeoutMs, setTimeoutMs] = useState<number | null>(10000);
   const [expectStatus, setExpectStatus] = useState<number | null>(200);
@@ -177,7 +179,12 @@ export function RestPage() {
     setName(String(t.name ?? ''));
     setMethod(String(inputValue(t.inputs, 'method') || 'GET').toUpperCase());
     setUrl(inputValue(t.inputs, 'url'));
-    setHeaders(inputValue(t.inputs, 'headers') || '{}');
+    const hdr = inputValue(t.inputs, 'headers') || '{}';
+    try {
+      setHeaders(JSON.stringify(JSON.parse(hdr), null, 2));
+    } catch {
+      setHeaders(hdr);
+    }
     setBody(inputValue(t.inputs, 'body'));
     const timeout = Number(inputValue(t.inputs, 'timeout_ms'));
     const expect = Number(inputValue(t.inputs, 'expect_status'));
@@ -187,89 +194,136 @@ export function RestPage() {
   };
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>
-        REST
-      </Typography.Title>
-
-      <Card title="请求">
-        <Form layout="vertical">
-          <Form.Item label="注册名称">
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </Form.Item>
-          <Space wrap style={{ width: '100%' }}>
-            <Form.Item label="方法">
-              <Select
-                value={method}
-                style={{ width: 120 }}
-                options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].map((m) => ({ value: m, label: m }))}
-                onChange={setMethod}
-              />
-            </Form.Item>
-            <Form.Item label="超时毫秒">
-              <InputNumber min={1} value={timeoutMs ?? undefined} onChange={(v) => setTimeoutMs(v)} />
-            </Form.Item>
-            <Form.Item label="期望状态码">
-              <InputNumber min={100} value={expectStatus ?? undefined} onChange={(v) => setExpectStatus(v)} />
-            </Form.Item>
-          </Space>
-          <Form.Item label="URL" required>
-            <Input value={url} onChange={(e) => setUrl(e.target.value)} />
-          </Form.Item>
-          <Form.Item label="Headers (JSON object)">
-            <Input.TextArea rows={4} value={headers} onChange={(e) => setHeaders(e.target.value)} />
-          </Form.Item>
-          <Form.Item label="Body">
-            <Input.TextArea rows={6} value={body} onChange={(e) => setBody(e.target.value)} />
-          </Form.Item>
-          <Space>
-            <Button type="primary" loading={busy} onClick={() => void run()}>
-              试跑
-            </Button>
-            <Button loading={busy} onClick={() => void register()}>
-              注册到中心
-            </Button>
-          </Space>
-        </Form>
-        {responseText ? (
-          <Typography.Paragraph>
-            <pre style={{ marginTop: 16 }}>{responseText}</pre>
-          </Typography.Paragraph>
-        ) : null}
-      </Card>
-
-      <Card
-        title="中心 REST 模板"
+    <div className="atlas-page">
+      <PageHeader
+        title="REST"
+        description="试跑 HTTP 请求；成功拿到 JSON object 响应体后可注册到中心。"
         extra={
           <Button onClick={() => void loadTemplates()} loading={loadingTemplates}>
-            刷新
+            刷新列表
           </Button>
         }
-      >
+      />
+
+      <Row gutter={[16, 16]}>
+        <Col xs={24} xl={14}>
+          <Card title="请求">
+            <Form layout="vertical" requiredMark="optional">
+              <Form.Item label="注册名称">
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="注册到中心的名称" />
+              </Form.Item>
+              <Row gutter={12}>
+                <Col xs={24} sm={8}>
+                  <Form.Item label="方法" required>
+                    <Select
+                      value={method}
+                      options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].map((m) => ({
+                        value: m,
+                        label: m,
+                      }))}
+                      onChange={setMethod}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={12} sm={8}>
+                  <Form.Item label="超时毫秒" required>
+                    <InputNumber
+                      min={1}
+                      value={timeoutMs ?? undefined}
+                      onChange={(v) => setTimeoutMs(v)}
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={12} sm={8}>
+                  <Form.Item label="期望状态码" required>
+                    <InputNumber
+                      min={100}
+                      value={expectStatus ?? undefined}
+                      onChange={(v) => setExpectStatus(v)}
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item label="URL" required>
+                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..." />
+              </Form.Item>
+              <Form.Item label="Headers">
+                <JsonFieldHint>{'JSON object，例如 {"Authorization": "Bearer …"}'}</JsonFieldHint>
+                <Input.TextArea
+                  className="atlas-mono-textarea"
+                  rows={4}
+                  value={headers}
+                  onChange={(e) => setHeaders(e.target.value)}
+                />
+              </Form.Item>
+              <Form.Item label="Body">
+                <Input.TextArea
+                  className="atlas-mono-textarea"
+                  rows={6}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  placeholder="可选请求体"
+                />
+              </Form.Item>
+              <Space>
+                <Button type="primary" loading={busy} onClick={() => void run()}>
+                  试跑
+                </Button>
+                <Button loading={busy} onClick={() => void register()}>
+                  注册到中心
+                </Button>
+              </Space>
+            </Form>
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={10}>
+          <Card
+            title="响应"
+            extra={
+              lastResponse?.status != null ? (
+                <Tag color={lastResponse.ok ? 'success' : 'warning'}>HTTP {String(lastResponse.status)}</Tag>
+              ) : null
+            }
+          >
+            <JsonBlock value={responseText} emptyText="试跑响应将显示在这里" />
+          </Card>
+        </Col>
+      </Row>
+
+      <Card title="中心 REST 模板">
         <Table
+          size="middle"
           rowKey={(row) => String(row.id ?? row.name)}
           loading={loadingTemplates}
           dataSource={templates}
-          pagination={false}
+          pagination={{ pageSize: 8, showSizeChanger: false }}
+          locale={{ emptyText: '暂无 REST 模板' }}
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 80 },
-            { title: '名称', dataIndex: 'name' },
+            { title: 'ID', dataIndex: 'id', width: 72 },
+            { title: '名称', dataIndex: 'name', ellipsis: true },
             {
               title: '方法',
-              render: (_, row) => String(inputValue(row.inputs, 'method') || '—').toUpperCase(),
+              width: 90,
+              render: (_, row) => (
+                <Tag>{String(inputValue(row.inputs, 'method') || '—').toUpperCase()}</Tag>
+              ),
             },
-            { title: '来源机台', dataIndex: 'origin_agent_name' },
+            { title: '来源机台', dataIndex: 'origin_agent_name', ellipsis: true },
             {
               title: '操作',
+              width: 90,
               render: (_, row) => (
-                <Button size="small" onClick={() => loadTemplate(row)}>
-                  加载到编辑区
+                <Button size="small" type="link" onClick={() => loadTemplate(row)}>
+                  加载
                 </Button>
               ),
             },
           ]}
         />
       </Card>
-    </Space>
+    </div>
   );
 }

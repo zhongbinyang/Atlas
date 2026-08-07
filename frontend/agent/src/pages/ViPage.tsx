@@ -3,10 +3,12 @@ import {
   Button,
   Card,
   Checkbox,
+  Col,
   Descriptions,
   Form,
   Input,
   InputNumber,
+  Row,
   Space,
   Table,
   Typography,
@@ -16,13 +18,8 @@ import { useEffect, useState } from 'react';
 import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import type { LabviewConfig } from '../api/types';
-
-type ViInput = {
-  name: string;
-  className: string;
-  value: unknown;
-  isJson: boolean;
-};
+import { JsonBlock, JsonFieldHint } from '../components/JsonBlock';
+import { PageHeader } from '../components/PageHeader';
 
 type ViTemplate = {
   id?: string | number;
@@ -43,33 +40,20 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-const normalizeInputs = (value: unknown): ViInput[] =>
-  Array.isArray(value)
-    ? value.map((item) => {
-        const input = asRecord(item);
-        return {
-          name: String(input.name ?? ''),
-          className: String(input.className ?? ''),
-          value: input.value ?? null,
-          isJson: input.value !== null && typeof input.value === 'object',
-        };
-      })
-    : [];
+const prettyJson = (value: unknown) => JSON.stringify(value ?? [], null, 2);
 
-export function parseViInputValue(value: string, isJson: boolean): unknown {
-  if (isJson) {
-    try {
-      return JSON.parse(value);
-    } catch (error) {
-      throw new Error(`JSON 无效: ${getErrorMessage(error)}`);
-    }
+/** Parse VI inputs JSON text into the array payload expected by LabVIEW APIs. */
+export function parseViInputsJson(text: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text || '[]');
+  } catch (error) {
+    throw new Error(`入参 JSON 无效: ${getErrorMessage(error)}`);
   }
-
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (trimmed === 'true' || trimmed === 'false') return trimmed === 'true';
-  return value;
+  if (!Array.isArray(parsed)) {
+    throw new Error('入参 JSON 必须是数组');
+  }
+  return parsed;
 }
 
 export function ViPage() {
@@ -77,7 +61,7 @@ export function ViPage() {
   const [config, setConfig] = useState<LabviewConfig>({});
   const [viPath, setViPath] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [inputs, setInputs] = useState<ViInput[] | null>(null);
+  const [inputsJson, setInputsJson] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<unknown[]>([]);
   const [showFrontPanel, setShowFrontPanel] = useState(false);
   const [timeoutSecs, setTimeoutSecs] = useState<number | null>(null);
@@ -110,25 +94,10 @@ export function ViPage() {
     void loadTemplates();
   }, []);
 
-  const applyInputs = (nextInputs: ViInput[]) => {
-    setInputs(nextInputs);
+  const applyInputs = (nextInputs: unknown) => {
+    setInputsJson(prettyJson(Array.isArray(nextInputs) ? nextInputs : []));
     setRunResult(null);
   };
-
-  const readInputs = (): ViInput[] =>
-    (inputs ?? []).map((input) => {
-      return {
-        ...input,
-        value: parseViInputValue(
-          input.isJson
-            ? typeof input.value === 'string'
-              ? input.value
-              : JSON.stringify(input.value)
-            : String(input.value ?? ''),
-          input.isJson,
-        ),
-      };
-    });
 
   const handleInspect = async () => {
     if (!viPath.trim()) {
@@ -138,7 +107,7 @@ export function ViPage() {
     setInspecting(true);
     try {
       const result = asRecord(await agentApi.labviewInspect({ vi_path: viPath.trim() }));
-      applyInputs(normalizeInputs(result.inputs));
+      applyInputs(result.inputs);
       setOutputs(Array.isArray(result.outputs) ? result.outputs : []);
       message.success('参数已加载');
     } catch (error) {
@@ -157,13 +126,14 @@ export function ViPage() {
   };
 
   const handleRun = async () => {
-    if (!viPath.trim() || inputs === null) return;
+    if (!viPath.trim() || inputsJson === null) return;
     setRunning(true);
     setRunResult(null);
     try {
+      const inputs = parseViInputsJson(inputsJson);
       const result = await agentApi.labviewRun({
         vi_path: viPath.trim(),
-        inputs: readInputs(),
+        inputs,
         ...runOptions(),
       });
       setRunResult(result);
@@ -180,13 +150,14 @@ export function ViPage() {
       message.error('请填写显示名称');
       return;
     }
-    if (!viPath.trim() || inputs === null) return;
+    if (!viPath.trim() || inputsJson === null) return;
     setRegistering(true);
     try {
+      const inputs = parseViInputsJson(inputsJson);
       await agentApi.labviewRegisterTemplate({
         vi_path: viPath.trim(),
         name: displayName.trim(),
-        inputs: readInputs(),
+        inputs,
         outputs,
         ...runOptions(),
       });
@@ -202,59 +173,40 @@ export function ViPage() {
   const loadTemplateToEditor = (template: ViTemplate) => {
     setViPath(template.vi_path ?? '');
     setDisplayName(template.name ?? '');
-    applyInputs(normalizeInputs(template.inputs));
+    applyInputs(template.inputs);
     setOutputs(Array.isArray(template.outputs) ? template.outputs : []);
     setShowFrontPanel(Boolean(template.show_front_panel));
     setTimeoutSecs(template.timeout_secs ?? null);
-    message.success(`已加载到编辑区: ${template.name ?? template.id ?? ''}`);
+    message.success(`已加载: ${template.name ?? template.id ?? ''}`);
   };
-
-  const inputColumns: ColumnsType<ViInput> = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '类型', dataIndex: 'className', key: 'className' },
-    {
-      title: '值',
-      key: 'value',
-      render: (_, input, index) => {
-        const value =
-          input.isJson && typeof input.value !== 'string'
-            ? JSON.stringify(input.value)
-            : String(input.value ?? '');
-        const updateValue = (nextValue: string) => {
-          setInputs((current) =>
-            current?.map((item, itemIndex) =>
-              itemIndex === index ? { ...item, value: nextValue } : item,
-            ) ?? null,
-          );
-        };
-        return input.isJson ? (
-          <Input.TextArea value={value} rows={2} onChange={(event) => updateValue(event.target.value)} />
-        ) : (
-          <Input value={value} onChange={(event) => updateValue(event.target.value)} />
-        );
-      },
-    },
-  ];
 
   const filteredTemplates = templates.filter((template) => {
     const query = templateQuery.trim().toLowerCase();
     if (!query) return true;
     return [template.id, template.name, template.origin_agent_name, template.vi_path].some((value) =>
-      String(value ?? '').toLowerCase().includes(query),
+      String(value ?? '')
+        .toLowerCase()
+        .includes(query),
     );
   });
 
   const templateColumns: ColumnsType<ViTemplate> = [
-    { title: 'ID', dataIndex: 'id', key: 'id' },
-    { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '来源机台', dataIndex: 'origin_agent_name', key: 'origin_agent_name' },
-    { title: 'VI 路径', dataIndex: 'vi_path', key: 'vi_path' },
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 72 },
+    { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true },
+    { title: '来源机台', dataIndex: 'origin_agent_name', key: 'origin_agent_name', width: 140, ellipsis: true },
+    { title: 'VI 路径', dataIndex: 'vi_path', key: 'vi_path', ellipsis: true },
     {
       title: '操作',
       key: 'actions',
+      width: 120,
       render: (_, template) => (
-        <Button disabled={inspecting || running || registering} onClick={() => loadTemplateToEditor(template)}>
-          加载到编辑区
+        <Button
+          size="small"
+          type="link"
+          disabled={inspecting || running || registering}
+          onClick={() => loadTemplateToEditor(template)}
+        >
+          加载
         </Button>
       ),
     },
@@ -263,84 +215,146 @@ export function ViPage() {
   const busy = inspecting || running || registering;
 
   return (
-    <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Card title="LabVIEW 配置">
-        <Descriptions column={1} size="small">
+    <div className="atlas-page">
+      <PageHeader
+        title="VI"
+        description="查询 LabVIEW 参数、试跑并注册到中心。入参以 JSON 数组编辑。"
+        extra={
+          <Button onClick={() => void loadTemplates()} disabled={busy}>
+            刷新列表
+          </Button>
+        }
+      />
+
+      <Card size="small" title="本机 LabVIEW">
+        <Descriptions column={{ xs: 1, sm: 2 }} size="small">
           <Descriptions.Item label="CLI">{String(config.cli_path ?? '—')}</Descriptions.Item>
           <Descriptions.Item label="GetInfo">{String(config.getinfo_path ?? '—')}</Descriptions.Item>
         </Descriptions>
       </Card>
 
-      <Card title="VI 工作台">
-        <Form layout="vertical">
-          <Form.Item label="VI 路径" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Input
-                value={viPath}
-                disabled={busy}
-                onChange={(event) => {
-                  setViPath(event.target.value);
-                  setInputs(null);
-                  setOutputs([]);
-                  setRunResult(null);
-                }}
-                placeholder="C:\path\Example.vi"
-              />
-              <Button type="primary" loading={inspecting} disabled={busy && !inspecting} onClick={handleInspect}>
-                查询参数
-              </Button>
-            </Space.Compact>
-          </Form.Item>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} xl={14}>
+          <Card title="工作台">
+            <Form layout="vertical" requiredMark="optional">
+              <Form.Item label="VI 路径" required>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    value={viPath}
+                    disabled={busy}
+                    onChange={(event) => {
+                      setViPath(event.target.value);
+                      setInputsJson(null);
+                      setOutputs([]);
+                      setRunResult(null);
+                    }}
+                    placeholder="C:\path\Example.vi"
+                  />
+                  <Button type="primary" loading={inspecting} disabled={busy && !inspecting} onClick={handleInspect}>
+                    查询参数
+                  </Button>
+                </Space.Compact>
+              </Form.Item>
 
-          <Table
-            columns={inputColumns}
-            dataSource={inputs ?? []}
-            rowKey={(_, index) => String(index)}
-            pagination={false}
-            locale={{ emptyText: inputs === null ? '请先查询参数' : '无输入参数' }}
-          />
+              <Form.Item label="入参 JSON" required>
+                <JsonFieldHint>数组元素通常含 name / className / value。</JsonFieldHint>
+                <Input.TextArea
+                  className="atlas-mono-textarea"
+                  rows={14}
+                  value={inputsJson ?? ''}
+                  disabled={busy || inputsJson === null}
+                  placeholder={inputsJson === null ? '请先查询参数或从下方加载模板' : '[]'}
+                  onChange={(event) => setInputsJson(event.target.value)}
+                />
+              </Form.Item>
 
-          <Space wrap style={{ marginTop: 16 }}>
-            <Checkbox checked={showFrontPanel} disabled={busy || inputs === null} onChange={(event) => setShowFrontPanel(event.target.checked)}>
-              显示前面板
-            </Checkbox>
-            <InputNumber
-              min={1}
-              value={timeoutSecs}
-              disabled={busy || inputs === null}
-              onChange={setTimeoutSecs}
-              placeholder="超时（秒）"
-            />
-            <Button type="primary" loading={running} disabled={inputs === null || busy && !running} onClick={handleRun}>
-              试跑
-            </Button>
-          </Space>
+              <Space wrap size="middle" style={{ marginBottom: 16 }}>
+                <Checkbox
+                  checked={showFrontPanel}
+                  disabled={busy || inputsJson === null}
+                  onChange={(event) => setShowFrontPanel(event.target.checked)}
+                >
+                  显示前面板
+                </Checkbox>
+                <InputNumber
+                  min={1}
+                  value={timeoutSecs}
+                  disabled={busy || inputsJson === null}
+                  onChange={setTimeoutSecs}
+                  placeholder="超时（秒）"
+                  addonAfter="秒"
+                  style={{ width: 140 }}
+                />
+                <Button
+                  type="primary"
+                  loading={running}
+                  disabled={inputsJson === null || (busy && !running)}
+                  onClick={handleRun}
+                >
+                  试跑
+                </Button>
+              </Space>
 
-          <Form.Item label="显示名称" required style={{ marginTop: 16, marginBottom: 8 }}>
-            <Input
-              value={displayName}
-              disabled={busy}
-              onChange={(event) => setDisplayName(event.target.value)}
-              placeholder="注册到中心的名称"
-            />
-          </Form.Item>
-          <Button loading={registering} disabled={inputs === null || busy && !registering} onClick={handleRegister}>
-            注册
-          </Button>
-        </Form>
-
-        {runResult !== null && (
-          <Card size="small" title="试跑输出" style={{ marginTop: 16 }}>
-            <Typography.Paragraph>
-              <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(runResult, null, 2)}</pre>
-            </Typography.Paragraph>
+              <Form.Item label="显示名称" required style={{ marginBottom: 12 }}>
+                <Space.Compact style={{ width: '100%', maxWidth: 480 }}>
+                  <Input
+                    value={displayName}
+                    disabled={busy}
+                    onChange={(event) => setDisplayName(event.target.value)}
+                    placeholder="注册到中心的名称"
+                  />
+                  <Button
+                    loading={registering}
+                    disabled={inputsJson === null || (busy && !registering)}
+                    onClick={handleRegister}
+                  >
+                    注册到中心
+                  </Button>
+                </Space.Compact>
+              </Form.Item>
+            </Form>
           </Card>
-        )}
-      </Card>
+        </Col>
 
-      <Card title="已注册 VI 功能" extra={<Input value={templateQuery} onChange={(event) => setTemplateQuery(event.target.value)} placeholder="搜索名称、路径或机台" allowClear />}>
-        <Table columns={templateColumns} dataSource={filteredTemplates} rowKey={(template) => String(template.id ?? template.vi_path ?? template.name)} />
+        <Col xs={24} xl={10}>
+          <Card title="试跑输出" style={{ marginBottom: 16 }}>
+            <JsonBlock
+              value={runResult != null ? JSON.stringify(runResult, null, 2) : ''}
+              emptyText="试跑结果将显示在这里"
+            />
+          </Card>
+          {outputs.length > 0 ? (
+            <Card title="输出端子" size="small">
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 12 }}>
+                查询参数时从 VI 读取，注册时一并提交。
+              </Typography.Paragraph>
+              <JsonBlock value={JSON.stringify(outputs, null, 2)} maxHeight={240} />
+            </Card>
+          ) : null}
+        </Col>
+      </Row>
+
+      <Card
+        title="中心已注册 VI"
+        extra={
+          <Input
+            allowClear
+            value={templateQuery}
+            onChange={(event) => setTemplateQuery(event.target.value)}
+            placeholder="搜索名称、路径或机台"
+            style={{ width: 220 }}
+          />
+        }
+      >
+        <Table
+          size="middle"
+          columns={templateColumns}
+          dataSource={filteredTemplates}
+          pagination={{ pageSize: 8, showSizeChanger: false }}
+          locale={{ emptyText: '暂无已注册 VI' }}
+          rowKey={(template) => String(template.id ?? template.vi_path ?? template.name)}
+        />
       </Card>
-    </Space>
+    </div>
   );
 }

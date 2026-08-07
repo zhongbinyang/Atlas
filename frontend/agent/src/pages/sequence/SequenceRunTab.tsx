@@ -4,20 +4,23 @@ import {
   Card,
   Checkbox,
   Col,
-  Drawer,
   Progress,
   Row,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
 import {
+  buildActiveSequenceSummary,
+  countRunQueueSteps,
+  readActiveSequenceBinding,
+} from './sequenceActive';
+import {
   buildSequenceChannelCardModel,
-  buildSequenceChannelDetailSteps,
   buildSequenceRunPayload,
   channelProgressFromEnvelope,
   type ChannelConfig,
@@ -49,18 +52,22 @@ const statusColor = (state: string) => {
 
 export function SequenceRunTab() {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [channels, setChannels] = useState<ChannelConfig[]>([]);
   const [selectedIndexes, setSelectedIndexes] = useState<number[] | null>(null);
   const [progress, setProgress] = useState<ChannelProgress[]>([]);
   const [pendingStarts, setPendingStarts] = useState<Record<number, boolean>>({});
   const [exclusiveBusy, setExclusiveBusy] = useState(false);
-  const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [stationOverall, setStationOverall] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
 
   const runQueueCount = sequenceRunQueueItems(queue).length;
+  const activeSummary = buildActiveSequenceSummary(
+    countRunQueueSteps(queue),
+    readActiveSequenceBinding(),
+  );
   const enabledChannels = useMemo(
     () => channels.filter((ch) => ch.enabled !== false),
     [channels],
@@ -205,7 +212,7 @@ export function SequenceRunTab() {
     });
     try {
       const payload = buildSequenceRunPayload(
-        null,
+        readActiveSequenceBinding()?.id ?? null,
         selectedIndexes,
         explicitIndexes === undefined
           ? topRunIndexes()
@@ -261,11 +268,9 @@ export function SequenceRunTab() {
     }
   };
 
-  const detailChannel =
-    detailIndex == null
-      ? null
-      : displayChannels.find((ch) => Number(ch.channel_index) === Number(detailIndex)) || null;
-  const detailSteps = detailChannel ? buildSequenceChannelDetailSteps(detailChannel, queue) : [];
+  const openChannelDetail = (index: number) => {
+    navigate(`/sequence/channels/${index}`);
+  };
 
   const hasInactiveSelected = (() => {
     const selected = topRunIndexes();
@@ -275,19 +280,28 @@ export function SequenceRunTab() {
   })();
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card>
+    <div className="atlas-page" style={{ gap: 12 }}>
+      <div>
+        <Space wrap size="middle">
+          <Typography.Text strong>{activeSummary.title}</Typography.Text>
+          {activeSummary.dirty ? <Tag color="warning">已改动</Tag> : null}
+        </Space>
+        <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 13 }}>
+          运行的是编排页「执行顺序」中的当前队列；模板绑定仅用于展示与日志。点击通道卡片或「详情」进入独立详情页。
+        </Typography.Paragraph>
+      </div>
+      <Card size="small">
         <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Space wrap>
-            <Typography.Text>
-              队列步骤 <strong>{runQueueCount}</strong>
+          <Space wrap size="middle">
+            <Typography.Text type="secondary">
+              队列 <Typography.Text strong>{runQueueCount}</Typography.Text> 步
             </Typography.Text>
-            <Typography.Text>
+            <span>
               总体{' '}
               <Tag color={statusColor(stationOverall === 'running' ? 'running' : stationOverall || 'idle')}>
                 {formatSequenceOverall(stationOverall)}
               </Tag>
-            </Typography.Text>
+            </span>
             {enabledChannels.length ? (
               <Checkbox.Group
                 options={enabledChannels.map((ch) => ({
@@ -303,10 +317,10 @@ export function SequenceRunTab() {
                 disabled={anyActivity}
               />
             ) : (
-              <Typography.Text type="secondary">通道: CH0（合成）</Typography.Text>
+              <Typography.Text type="secondary">通道：CH0（合成）</Typography.Text>
             )}
           </Space>
-          <Space>
+          <Space wrap>
             <Button
               type="primary"
               loading={exclusiveBusy}
@@ -337,9 +351,10 @@ export function SequenceRunTab() {
               <Col key={channel.channel_index} xs={24} sm={12} lg={8} xl={6}>
                 <Card
                   size="small"
+                  className={`atlas-channel-card${active ? ' is-active' : ''}`}
                   title={
                     <Space>
-                      <Typography.Text code>{name}</Typography.Text>
+                      <Typography.Text strong>{name}</Typography.Text>
                       <Tag color={statusColor(model.state)}>{statusText}</Tag>
                     </Space>
                   }
@@ -356,7 +371,7 @@ export function SequenceRunTab() {
                         );
                       }}
                     >
-                      运行此通道
+                      运行
                     </Button>,
                     <Button
                       key="abort"
@@ -368,28 +383,28 @@ export function SequenceRunTab() {
                         void abortChannel(channel.channel_index);
                       }}
                     >
-                      中止此通道
+                      中止
                     </Button>,
                     <Button
                       key="detail"
                       type="link"
                       onClick={(event) => {
                         event.stopPropagation();
-                        setDetailIndex(channel.channel_index);
+                        openChannelDetail(channel.channel_index);
                       }}
                     >
-                      查看详情 →
+                      详情
                     </Button>,
                   ]}
                 >
                   <div
                     role="button"
                     tabIndex={0}
-                    onClick={() => setDetailIndex(channel.channel_index)}
+                    onClick={() => openChannelDetail(channel.channel_index)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        setDetailIndex(channel.channel_index);
+                        openChannelDetail(channel.channel_index);
                       }
                     }}
                     style={{ cursor: 'pointer' }}
@@ -430,91 +445,6 @@ export function SequenceRunTab() {
           })}
         </Row>
       )}
-
-      <Drawer
-        width={720}
-        title={detailChannel ? `${detailChannel.name || `CH${detailChannel.channel_index}`} 详情` : '通道详情'}
-        open={detailIndex != null}
-        onClose={() => setDetailIndex(null)}
-        extra={
-          <Space>
-            <Button
-              disabled={
-                displayChannels.findIndex((ch) => ch.channel_index === detailIndex) <= 0
-              }
-              onClick={() => {
-                const idx = displayChannels.findIndex((ch) => ch.channel_index === detailIndex);
-                if (idx > 0) setDetailIndex(displayChannels[idx - 1].channel_index);
-              }}
-            >
-              上一通道
-            </Button>
-            <Button
-              disabled={
-                displayChannels.findIndex((ch) => ch.channel_index === detailIndex) < 0 ||
-                displayChannels.findIndex((ch) => ch.channel_index === detailIndex) >=
-                  displayChannels.length - 1
-              }
-              onClick={() => {
-                const idx = displayChannels.findIndex((ch) => ch.channel_index === detailIndex);
-                if (idx >= 0 && idx < displayChannels.length - 1) {
-                  setDetailIndex(displayChannels[idx + 1].channel_index);
-                }
-              }}
-            >
-              下一通道
-            </Button>
-          </Space>
-        }
-      >
-        {detailChannel ? (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            <Space wrap>
-              <Tag color={statusColor(detailChannel.running ? 'running' : String(detailChannel.overall || 'idle'))}>
-                {formatSequenceOverall(detailChannel.running ? 'running' : detailChannel.overall)}
-              </Tag>
-              <Typography.Text>
-                总耗时 <Typography.Text code>{formatSequenceElapsed(detailChannel.elapsed_ms)}</Typography.Text>
-              </Typography.Text>
-            </Space>
-            <Table
-              size="small"
-              pagination={false}
-              rowKey={(row) => String(row.position)}
-              dataSource={detailSteps}
-              columns={[
-                {
-                  title: '#',
-                  width: 60,
-                  render: (_, row) => String(row.position + 1).padStart(2, '0'),
-                },
-                { title: '步骤', dataIndex: 'name' },
-                {
-                  title: '状态',
-                  width: 100,
-                  render: (_, row) =>
-                    row.status === 'pending' ? '待执行' : formatSequenceOverall(row.status),
-                },
-                {
-                  title: '耗时',
-                  width: 120,
-                  render: (_, row) =>
-                    row.status === 'running' && detailChannel.current_step_elapsed_ms != null
-                      ? formatSequenceElapsed(detailChannel.current_step_elapsed_ms)
-                      : formatSequenceElapsed(row.elapsedMs),
-                },
-              ]}
-              expandable={{
-                expandedRowRender: (row) => (
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-                    {JSON.stringify(row.result, null, 2)}
-                  </pre>
-                ),
-              }}
-            />
-          </Space>
-        ) : null}
-      </Drawer>
-    </Space>
+    </div>
   );
 }

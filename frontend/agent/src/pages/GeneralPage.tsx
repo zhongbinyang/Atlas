@@ -1,7 +1,9 @@
-import { App, Button, Card, Form, Input, InputNumber, Space, Table, Typography } from 'antd';
+import { App, Button, Card, Col, Form, Input, InputNumber, Row, Space, Table } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
+import { JsonBlock } from '../components/JsonBlock';
+import { PageHeader } from '../components/PageHeader';
 
 type GeneralTemplate = {
   id?: string | number;
@@ -54,7 +56,7 @@ export function GeneralPage() {
       return;
     }
     setDelayBusy(true);
-    setDelayOut('…');
+    setDelayOut('');
     try {
       const data = await agentApi.delayRun({ delay_ms: Math.round(delayMs) });
       setDelayOut(JSON.stringify(data, null, 2));
@@ -91,7 +93,7 @@ export function GeneralPage() {
 
   const runVersion = async () => {
     setVersionBusy(true);
-    setVersionOut('…');
+    setVersionOut('');
     try {
       const data = asRecord(await agentApi.versionRun());
       setVersionOut(JSON.stringify(data, null, 2));
@@ -124,82 +126,92 @@ export function GeneralPage() {
   };
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>
-        通用
-      </Typography.Title>
-
-      <Card title="延迟">
-        <Form layout="inline">
-          <Form.Item label="延迟毫秒">
-            <InputNumber min={0} value={delayMs ?? undefined} onChange={(v) => setDelayMs(v)} />
-          </Form.Item>
-          <Form.Item label="注册名称">
-            <Input value={delayName} onChange={(e) => setDelayName(e.target.value)} style={{ width: 200 }} />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" loading={delayBusy} onClick={() => void runDelay()}>
-                试跑
-              </Button>
-              <Button loading={delayBusy} onClick={() => void registerDelay()}>
-                注册到中心
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-        {delayOut ? (
-          <Typography.Paragraph>
-            <pre style={{ marginTop: 12 }}>{delayOut}</pre>
-          </Typography.Paragraph>
-        ) : null}
-      </Card>
-
-      <Card title="版本">
-        <Form layout="inline">
-          <Form.Item label="注册名称">
-            <Input value={versionName} onChange={(e) => setVersionName(e.target.value)} style={{ width: 200 }} />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" loading={versionBusy} onClick={() => void runVersion()}>
-                试跑
-              </Button>
-              <Button loading={versionBusy} onClick={() => void registerVersion()}>
-                注册到中心
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-        {versionCurrent ? <Typography.Text type="secondary">当前版本：{versionCurrent}</Typography.Text> : null}
-        {versionOut ? (
-          <Typography.Paragraph>
-            <pre style={{ marginTop: 12 }}>{versionOut}</pre>
-          </Typography.Paragraph>
-        ) : null}
-      </Card>
-
-      <Card
-        title="中心通用功能"
+    <div className="atlas-page">
+      <PageHeader
+        title="通用"
+        description="内置延迟与版本探测功能，试跑后可注册到中心供序列调用。"
         extra={
           <Button onClick={() => void loadTemplates()} loading={loadingTemplates}>
-            刷新
+            刷新列表
           </Button>
         }
-      >
+      />
+
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={12}>
+          <Card title="延迟">
+            <Form layout="vertical" requiredMark="optional">
+              <Form.Item label="延迟毫秒" required>
+                <InputNumber
+                  min={0}
+                  value={delayMs ?? undefined}
+                  onChange={(v) => setDelayMs(v)}
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+              <Form.Item label="注册名称">
+                <Input value={delayName} onChange={(e) => setDelayName(e.target.value)} placeholder="例如 Wait 1s" />
+              </Form.Item>
+              <Space>
+                <Button type="primary" loading={delayBusy} onClick={() => void runDelay()}>
+                  试跑
+                </Button>
+                <Button loading={delayBusy} onClick={() => void registerDelay()}>
+                  注册到中心
+                </Button>
+              </Space>
+            </Form>
+            <div style={{ marginTop: 16 }}>
+              <JsonBlock value={delayOut} emptyText="试跑结果将显示在这里" maxHeight={220} />
+            </div>
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card
+            title="版本"
+            extra={versionCurrent ? <span style={{ color: '#5b6b7a' }}>当前：{versionCurrent}</span> : null}
+          >
+            <Form layout="vertical" requiredMark="optional">
+              <Form.Item label="注册名称">
+                <Input
+                  value={versionName}
+                  onChange={(e) => setVersionName(e.target.value)}
+                  placeholder="例如 Agent Version"
+                />
+              </Form.Item>
+              <Space>
+                <Button type="primary" loading={versionBusy} onClick={() => void runVersion()}>
+                  试跑
+                </Button>
+                <Button loading={versionBusy} onClick={() => void registerVersion()}>
+                  注册到中心
+                </Button>
+              </Space>
+            </Form>
+            <div style={{ marginTop: 16 }}>
+              <JsonBlock value={versionOut} emptyText="试跑结果将显示在这里" maxHeight={220} />
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Card title="中心通用功能">
         <Table
+          size="middle"
           rowKey={(row) => String(row.id ?? row.name)}
           loading={loadingTemplates}
           dataSource={templates}
-          pagination={false}
+          pagination={{ pageSize: 10, showSizeChanger: false }}
+          locale={{ emptyText: '暂无已注册通用功能' }}
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 80 },
-            { title: '名称', dataIndex: 'name' },
+            { title: 'ID', dataIndex: 'id', width: 72 },
+            { title: '名称', dataIndex: 'name', ellipsis: true },
             { title: '类型', dataIndex: 'kind', width: 100 },
-            { title: '来源机台', dataIndex: 'origin_agent_name' },
+            { title: '来源机台', dataIndex: 'origin_agent_name', ellipsis: true },
           ]}
         />
       </Card>
-    </Space>
+    </div>
   );
 }

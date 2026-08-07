@@ -45,6 +45,39 @@ export const agentApi = {
   getChannels: () => apiRequest<unknown>('/api/channels'),
   putChannels: (body: unknown) =>
     apiRequest<unknown>('/api/channels', { method: 'PUT', body: JSON.stringify(body) }),
+  listDeviceProfiles: () => apiRequest<unknown[]>('/api/device-profiles'),
+  createDeviceProfile: (body: unknown) =>
+    apiRequest<unknown>('/api/device-profiles', { method: 'POST', body: JSON.stringify(body) }),
+  updateDeviceProfile: (id: string, body: unknown) =>
+    apiRequest<unknown>(`/api/device-profiles/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteDeviceProfile: (id: string) =>
+    apiRequest<unknown>(`/api/device-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  activateDeviceProfile: (id: string) =>
+    apiRequest<unknown>(`/api/device-profiles/${encodeURIComponent(id)}/activate`, {
+      method: 'POST',
+    }),
+  listCalibrationProfiles: () => apiRequest<unknown[]>('/api/calibration-profiles'),
+  createCalibrationProfile: (body: unknown) =>
+    apiRequest<unknown>('/api/calibration-profiles', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateCalibrationProfile: (id: string, body: unknown) =>
+    apiRequest<unknown>(`/api/calibration-profiles/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteCalibrationProfile: (id: string) =>
+    apiRequest<unknown>(`/api/calibration-profiles/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  activateCalibrationProfile: (id: string) =>
+    apiRequest<unknown>(`/api/calibration-profiles/${encodeURIComponent(id)}/activate`, {
+      method: 'POST',
+    }),
   getRunQueue: () => apiRequest<unknown>('/api/sequence/run-queue'),
   putRunQueue: (body: unknown) =>
     apiRequest<unknown>('/api/sequence/run-queue', { method: 'PUT', body: JSON.stringify(body) }),

@@ -3,14 +3,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { agentApi } from '../api/agentApi';
 import type { AgentStatus } from '../api/types';
 
-const POLL_MS = 2000;
+const OPEN_POLL_MS = 2000;
+const IDLE_POLL_MS = 5000;
 
 function formatPercent(value: number | undefined) {
-  return typeof value === 'number' ? `${value.toFixed(1)}%` : '-';
+  return typeof value === 'number' ? `${value.toFixed(1)}%` : '—';
 }
 
 function formatUptime(totalSeconds: number | undefined) {
-  if (typeof totalSeconds !== 'number') return '-';
+  if (typeof totalSeconds !== 'number') return '—';
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -28,28 +29,32 @@ export function MachineInfoPopover() {
   const [loading, setLoading] = useState(false);
   const [releasing, setReleasing] = useState(false);
 
-  const refreshStatus = useCallback(async () => {
-    setLoading(true);
-    try {
-      setStatus(await agentApi.status());
-    } catch (error) {
-      message.error(`机台信息刷新失败: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [message]);
+  const refreshStatus = useCallback(
+    async (quiet = false) => {
+      if (!quiet) setLoading(true);
+      try {
+        setStatus(await agentApi.status());
+      } catch (error) {
+        if (!quiet) {
+          message.error(`机台信息刷新失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } finally {
+        if (!quiet) setLoading(false);
+      }
+    },
+    [message],
+  );
 
   useEffect(() => {
-    if (!open) return;
-    void refreshStatus();
-    const timer = window.setInterval(() => void refreshStatus(), POLL_MS);
+    void refreshStatus(true);
+    const timer = window.setInterval(() => void refreshStatus(true), open ? OPEN_POLL_MS : IDLE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [open, refreshStatus]);
 
   const handleForceRelease = () => {
     modal.confirm({
       title: '确认强制释放机台占用？',
-      content: '若仍有 LabVIEW/请求在跑，可能留下未结束的进程。',
+      content: '若仍有 LabVIEW / 请求在跑，可能留下未结束的进程。',
       okText: '强制释放',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -68,29 +73,24 @@ export function MachineInfoPopover() {
     });
   };
 
-  const busyTag = status?.busy ? (
-    <Tag color="processing">● 执行中</Tag>
-  ) : (
-    <Tag color="success">● 空闲</Tag>
-  );
+  const busy = !!status?.busy;
+  const busyTag = busy ? <Tag color="processing">执行中</Tag> : <Tag color="success">空闲</Tag>;
 
   const content = (
     <Spin spinning={loading && !status}>
-      <Space direction="vertical" size="middle" style={{ minWidth: 280 }}>
+      <Space direction="vertical" size="middle" style={{ minWidth: 300 }}>
         <Descriptions column={1} size="small" bordered>
-          <Descriptions.Item label="主机名">{status?.hostname || '-'}</Descriptions.Item>
-          <Descriptions.Item label="IP">{status?.ip || '-'}</Descriptions.Item>
+          <Descriptions.Item label="主机名">{status?.hostname || '—'}</Descriptions.Item>
+          <Descriptions.Item label="IP">{status?.ip || '—'}</Descriptions.Item>
           <Descriptions.Item label="运行时间">{formatUptime(status?.uptime_secs)}</Descriptions.Item>
           <Descriptions.Item label="CPU">{formatPercent(status?.cpu_percent)}</Descriptions.Item>
           <Descriptions.Item label="内存">{formatPercent(status?.memory_percent)}</Descriptions.Item>
           <Descriptions.Item label="状态">{busyTag}</Descriptions.Item>
         </Descriptions>
-        {status?.busy ? (
-          <Space direction="vertical" size="small">
-            <Typography.Text type="secondary">
-              {status.busy_message || '机台忙碌'}
-            </Typography.Text>
-            {status.can_force_release ? (
+        {busy ? (
+          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+            <Typography.Text type="secondary">{status?.busy_message || '机台忙碌'}</Typography.Text>
+            {status?.can_force_release ? (
               <Button danger size="small" loading={releasing} onClick={handleForceRelease}>
                 强制空闲
               </Button>
@@ -110,7 +110,15 @@ export function MachineInfoPopover() {
       trigger="click"
       onOpenChange={setOpen}
     >
-      <Button>机台信息</Button>
+      <Button ghost>
+        机台
+        <Tag
+          color={busy ? 'processing' : 'success'}
+          style={{ marginInlineStart: 8, marginInlineEnd: 0 }}
+        >
+          {busy ? '忙' : '闲'}
+        </Tag>
+      </Button>
     </Popover>
   );
 }
