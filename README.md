@@ -2,7 +2,7 @@
 
 Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
 
-WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能** / **序列模板**；Agent 为紧凑状态条 + **VI** / **通用** / **API** / **序列** / **配置**。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
+WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心已切换为 Vite + React 静态构建，hash 路由 **机台卡片** / **机台详情** / **已注册功能** / **序列模板** / **单位配置**；Agent 仍为紧凑状态条 + **VI** / **通用** / **API** / **序列** / **配置**。
 
 ## 前端开发（React）
 
