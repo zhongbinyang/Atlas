@@ -3,6 +3,7 @@ import zhCN from 'antd/locale/zh_CN';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { PlaceholderPage } from './pages/PlaceholderPage';
+import { ViPage } from './pages/ViPage';
 
 export function App() {
   return (
@@ -11,7 +12,7 @@ export function App() {
         <HashRouter>
           <Routes>
             <Route element={<AppShell />}>
-              <Route path="/vi" element={<PlaceholderPage title="VI" />} />
+              <Route path="/vi" element={<ViPage />} />
               <Route path="/general" element={<PlaceholderPage title="閫氱敤" />} />
               <Route path="/api" element={<PlaceholderPage title="REST" />} />
               <Route path="/sequence" element={<PlaceholderPage title="搴忓垪" />} />
