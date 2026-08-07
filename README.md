@@ -4,6 +4,28 @@ Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机�
 
 WebUI 采用「光纤仪表面板」壳层（冷钢灰 + 激光青强调，Space Grotesk 品牌字）：中心 hash 路由 **机台卡片** / **机台详情** / **已注册功能** / **序列模板**；Agent 为紧凑状态条 + **VI** / **通用** / **API** / **序列** / **配置**。两端共享 CSS 设计令牌（`static_tokens` 锁定 `:root`）。
 
+## 前端开发（React）
+
+源码位于 `frontend/scheduler` 与 `frontend/agent`（互相独立，技术栈均为 Vite + React + TypeScript + Ant Design + ECharts）。
+
+```powershell
+cd frontend/scheduler
+npm install
+npm run dev    # http://127.0.0.1:5173，代理 /api -> 26630
+
+cd frontend/agent
+npm install
+npm run dev    # http://127.0.0.1:5174，代理 /api -> 26631
+```
+
+发布前构建并同步到 Rust 静态目录：
+
+```powershell
+.\scripts\build-frontend.ps1
+cargo build -p scheduler
+cargo build -p agent
+```
+
 ## 安全提示
 
 **无鉴权。** 全部 HTTP API 与 WebUI 均对外开放。请仅部署在可信内网，或自行做好网络访问控制。**不要**把这些端口暴露到公网。
