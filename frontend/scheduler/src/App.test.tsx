@@ -1,17 +1,26 @@
 // @vitest-environment jsdom
+import { Modal } from 'antd';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { schedulerApi } from './api/schedulerApi';
-import type { Agent } from './api/types';
+import type { Agent, GeneralTemplate, SequenceTemplate, UnitRow, ViTemplate } from './api/types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
 vi.mock('./api/schedulerApi', () => ({
   schedulerApi: {
+    deleteGeneralTemplate: vi.fn(),
+    deleteSequenceTemplate: vi.fn(),
+    deleteViTemplate: vi.fn(),
     listAgents: vi.fn(),
+    listGeneralTemplates: vi.fn(),
+    listSequenceTemplates: vi.fn(),
+    listUnits: vi.fn(),
+    listViTemplates: vi.fn(),
+    saveUnits: vi.fn(),
   },
 }));
 
@@ -51,6 +60,39 @@ const agents: Agent[] = [
   },
 ];
 
+const viTemplates: ViTemplate[] = [
+  {
+    id: 10,
+    name: 'VoltageSweep',
+    kind: 'labview',
+    origin_agent_name: 'Alpha',
+    vi_path: 'C:/vi/voltage.vi',
+    timeout_secs: 30,
+    inputs: [{ name: 'voltage', value: 3.3 }],
+  },
+];
+
+const generalTemplates: GeneralTemplate[] = [
+  {
+    id: 'delay-1',
+    name: 'Delay',
+    kind: 'delay',
+    origin_agent_name: 'Beta',
+    inputs: [{ name: 'delay_ms', value: 1000 }],
+  },
+];
+
+const sequenceTemplates: SequenceTemplate[] = [
+  {
+    id: 'seq-1',
+    name: 'PowerCycle',
+    step_count: 2,
+    created_by_agent_name: 'Alpha',
+  },
+];
+
+const units: UnitRow[] = [{ symbol: 'dBm', description: '光功率，相对 1 mW' }];
+
 function installBrowserStubs() {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
@@ -64,6 +106,19 @@ function installBrowserStubs() {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     })),
+  });
+  Object.defineProperty(window, 'getComputedStyle', {
+    writable: true,
+    value: vi.fn().mockImplementation(() =>
+      new Proxy(
+        { getPropertyValue: vi.fn(() => '') },
+        {
+          get(target, prop: string) {
+            return prop in target ? target[prop as keyof typeof target] : '';
+          },
+        },
+      ),
+    ),
   });
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
   window.ResizeObserver = vi.fn().mockImplementation(() => ({
@@ -108,6 +163,10 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function buttonText(button: HTMLButtonElement): string {
+  return (button.textContent || '').replace(/\s+/g, '');
+}
+
 describe('Scheduler App routes', () => {
   let rendered: { host: HTMLDivElement; root: Root } | undefined;
 
@@ -115,6 +174,14 @@ describe('Scheduler App routes', () => {
     installBrowserStubs();
     vi.useRealTimers();
     vi.mocked(schedulerApi.listAgents).mockResolvedValue(agents);
+    vi.mocked(schedulerApi.listViTemplates).mockResolvedValue(viTemplates);
+    vi.mocked(schedulerApi.listGeneralTemplates).mockResolvedValue(generalTemplates);
+    vi.mocked(schedulerApi.deleteViTemplate).mockResolvedValue(undefined);
+    vi.mocked(schedulerApi.deleteGeneralTemplate).mockResolvedValue(undefined);
+    vi.mocked(schedulerApi.listSequenceTemplates).mockResolvedValue(sequenceTemplates);
+    vi.mocked(schedulerApi.deleteSequenceTemplate).mockResolvedValue(undefined);
+    vi.mocked(schedulerApi.listUnits).mockResolvedValue(units);
+    vi.mocked(schedulerApi.saveUnits).mockResolvedValue({ units });
   });
 
   afterEach(async () => {
@@ -126,6 +193,7 @@ describe('Scheduler App routes', () => {
     document.body.innerHTML = '';
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    Modal.destroyAll();
   });
 
   it('renders the machines page with telemetry summary, cards, and filtering', async () => {
@@ -172,5 +240,106 @@ describe('Scheduler App routes', () => {
     });
 
     expect(window.location.hash).toBe('#/machines');
+  });
+
+  it('renders functions tables and confirms VI template deletion', async () => {
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
+      void config.onOk?.();
+      return { destroy: vi.fn(), update: vi.fn() } as ReturnType<typeof Modal.confirm>;
+    });
+
+    rendered = await renderAt('#/functions');
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('已注册功能');
+      expect(document.body.textContent).toContain('中心VI功能');
+      expect(document.body.textContent).toContain('VoltageSweep');
+      expect(document.body.textContent).toContain('中心通用功能');
+      expect(document.body.textContent).toContain('Delay');
+      expect(document.body.textContent).toContain('delay_ms=1000');
+    });
+
+    const deleteButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '删除',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('相关序列队列中的引用也会清除。'),
+          okText: '删除',
+          title: '确认删除',
+        }),
+      );
+      expect(schedulerApi.deleteViTemplate).toHaveBeenCalledWith(10);
+    });
+  });
+
+  it('renders sequence templates and confirms deletion', async () => {
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
+      void config.onOk?.();
+      return { destroy: vi.fn(), update: vi.fn() } as ReturnType<typeof Modal.confirm>;
+    });
+
+    rendered = await renderAt('#/sequences');
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('序列模板');
+      expect(document.body.textContent).toContain('PowerCycle');
+      expect(document.body.textContent).toContain('步骤数');
+      expect(document.body.textContent).toContain('Alpha');
+    });
+
+    const deleteButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '删除',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: '确定删除「序列模板「PowerCycle」」？',
+          okText: '删除',
+          title: '确认删除',
+        }),
+      );
+      expect(schedulerApi.deleteSequenceTemplate).toHaveBeenCalledWith('seq-1');
+    });
+  });
+
+  it('edits and saves units through the units page', async () => {
+    rendered = await renderAt('#/units');
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('单位');
+      expect(document.body.textContent).toContain('全局共享');
+      expect(Array.from(document.querySelectorAll('input')).some((input) => input.value === 'dBm')).toBe(true);
+    });
+
+    const inputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const symbolInput = inputs.find((input) => input.value === 'dBm');
+    expect(symbolInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(symbolInput as HTMLInputElement, 'dB');
+    });
+
+    const saveButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '保存',
+    );
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      expect(schedulerApi.saveUnits).toHaveBeenCalledWith([
+        { symbol: 'dB', description: '光功率，相对 1 mW' },
+      ]);
+    });
   });
 });

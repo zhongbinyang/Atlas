@@ -4,10 +4,10 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 const { Header, Content } = Layout;
 
 const items = [
-  { key: '/machines', label: <Link to="/machines">鏈哄彴</Link> },
-  { key: '/functions', label: <Link to="/functions">宸叉敞鍐屽姛鑳?</Link> },
-  { key: '/sequences', label: <Link to="/sequences">搴忓垪妯℃澘</Link> },
-  { key: '/units', label: <Link to="/units">鍗曚綅</Link> },
+  { key: '/machines', label: <Link to="/machines">机台</Link> },
+  { key: '/functions', label: <Link to="/functions">已注册功能</Link> },
+  { key: '/sequences', label: <Link to="/sequences">序列模板</Link> },
+  { key: '/units', label: <Link to="/units">单位</Link> },
 ];
 
 export function AppShell() {
@@ -25,7 +25,7 @@ export function AppShell() {
           <Typography.Text strong style={{ color: '#fff', fontSize: 18 }}>
             ATLAS
           </Typography.Text>
-          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>娴嬭瘯鏈哄彴缂栨帓</div>
+          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>测试机台编排</div>
         </div>
         <Menu
           theme="dark"

@@ -1,0 +1,226 @@
+import { App as AntApp, Button, Card, Modal, Select, Space, Table, Tag, Typography } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { schedulerApi } from '../api/schedulerApi';
+import type { Agent, GeneralTemplate, ViTemplate } from '../api/types';
+
+type SourceFilter = 'all' | 'labview' | 'general';
+type FunctionTemplate =
+  | (ViTemplate & { _source: 'labview' })
+  | (GeneralTemplate & { _source: 'general' });
+
+const sourceOptions: Array<{ label: string; value: SourceFilter }> = [
+  { label: '全部', value: 'all' },
+  { label: 'VI', value: 'labview' },
+  { label: '通用', value: 'general' },
+];
+
+function sourceLabel(source: FunctionTemplate['_source']): string {
+  return source === 'general' ? '通用' : 'VI';
+}
+
+function kindLabel(kind: unknown): string {
+  if (kind === 'delay') return '延迟';
+  if (kind === 'labview') return 'VI';
+  return typeof kind === 'string' && kind ? kind : '—';
+}
+
+function configSummary(template: FunctionTemplate): string {
+  if (template._source === 'general') {
+    if (template.kind === 'delay' && Array.isArray(template.inputs)) {
+      const delayInput = template.inputs.find(
+        (item): item is { name?: unknown; value?: unknown } =>
+          typeof item === 'object' &&
+          item !== null &&
+          'name' in item &&
+          (item as { name?: unknown }).name === 'delay_ms',
+      );
+      if (delayInput?.value != null) {
+        return 'delay_ms=' + String(delayInput.value);
+      }
+    }
+    return '—';
+  }
+  const timeout = template.timeout_secs != null ? ' | 超时 ' + template.timeout_secs + 's' : '';
+  return (template.vi_path || '—') + timeout;
+}
+
+function inputsPreview(inputs: unknown): string {
+  if (!Array.isArray(inputs) || inputs.length === 0) return '—';
+  const preview = inputs
+    .slice(0, 3)
+    .map((item) => {
+      if (typeof item === 'object' && item !== null && 'name' in item) {
+        const name = String((item as { name?: unknown }).name ?? '');
+        return name || JSON.stringify(item);
+      }
+      return String(item);
+    })
+    .join(', ');
+  return inputs.length > 3 ? preview + '…' : preview;
+}
+
+export function FunctionsPage() {
+  const { message } = AntApp.useApp();
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [templates, setTemplates] = useState<FunctionTemplate[]>([]);
+  const [agentId, setAgentId] = useState('');
+  const [source, setSource] = useState<SourceFilter>('all');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    schedulerApi
+      .listAgents()
+      .then((nextAgents) => setAgents(Array.isArray(nextAgents) ? nextAgents : []))
+      .catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        message.error('加载机台失败：' + detail);
+      });
+  }, [message]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const requests: Array<Promise<FunctionTemplate[]>> = [];
+      if (source === 'all' || source === 'labview') {
+        requests.push(
+          schedulerApi
+            .listViTemplates(agentId || undefined)
+            .then((items) => items.map((item) => ({ ...item, _source: 'labview' as const }))),
+        );
+      }
+      if (source === 'all' || source === 'general') {
+        requests.push(
+          schedulerApi
+            .listGeneralTemplates(agentId || undefined)
+            .then((items) => items.map((item) => ({ ...item, _source: 'general' as const }))),
+        );
+      }
+      const groups = await Promise.all(requests);
+      setTemplates(groups.flat());
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      message.error('加载功能模板失败：' + detail);
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId, message, source]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const deleteTemplate = useCallback(
+    (template: FunctionTemplate) => {
+      const label = template.name || String(template.id || '此模板');
+      Modal.confirm({
+        title: '确认删除',
+        content: '确定删除「' + label + '」？相关序列队列中的引用也会清除。',
+        okText: '删除',
+        okType: 'danger',
+        cancelText: '取消',
+        async onOk() {
+          if (template._source === 'general') {
+            await schedulerApi.deleteGeneralTemplate(template.id);
+          } else {
+            await schedulerApi.deleteViTemplate(template.id);
+          }
+          message.success('功能模板已删除');
+          await load();
+        },
+      });
+    },
+    [load, message],
+  );
+
+  const columns = useMemo<ColumnsType<FunctionTemplate>>(
+    () => [
+      { title: 'ID', dataIndex: 'id', render: (value) => <Typography.Text code>{String(value)}</Typography.Text> },
+      {
+        title: '来源',
+        dataIndex: '_source',
+        render: (value: FunctionTemplate['_source']) => (
+          <Tag color={value === 'general' ? 'blue' : 'green'}>{sourceLabel(value)}</Tag>
+        ),
+      },
+      { title: '名称', dataIndex: 'name', render: (value) => value || '—' },
+      { title: '类型', dataIndex: 'kind', render: kindLabel },
+      { title: '来源机台', dataIndex: 'origin_agent_name', render: (value) => value || '—' },
+      {
+        title: '路径/配置',
+        render: (_, record) => <Typography.Text code>{configSummary(record)}</Typography.Text>,
+      },
+      { title: '入参', dataIndex: 'inputs', render: inputsPreview },
+      {
+        title: '操作',
+        render: (_, record) => (
+          <Button danger size="small" onClick={() => deleteTemplate(record)}>
+            删除
+          </Button>
+        ),
+      },
+    ],
+    [deleteTemplate],
+  );
+
+  const viTemplates = templates.filter((template) => template._source === 'labview');
+  const generalTemplates = templates.filter((template) => template._source === 'general');
+
+  return (
+    <Space direction="vertical" size="large" style={{ display: 'flex' }}>
+      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          已注册功能
+        </Typography.Title>
+        <Button onClick={() => void load()} loading={loading}>
+          刷新
+        </Button>
+      </Space>
+
+      <Card>
+        <Space wrap>
+          <Typography.Text>机台筛选</Typography.Text>
+          <Select
+            value={agentId}
+            onChange={setAgentId}
+            options={[
+              { label: '全部', value: '' },
+              ...agents.map((agent) => ({ label: agent.name || agent.id, value: agent.id })),
+            ]}
+            style={{ width: 220 }}
+          />
+          <Typography.Text>来源筛选</Typography.Text>
+          <Select value={source} onChange={setSource} options={sourceOptions} style={{ width: 140 }} />
+        </Space>
+      </Card>
+
+      {source !== 'general' && (
+        <Card title="中心VI功能">
+          <Table
+            rowKey={(record) => 'vi-' + String(record.id)}
+            columns={columns}
+            dataSource={viTemplates}
+            loading={loading}
+            locale={{ emptyText: '暂无已注册 VI 功能' }}
+            pagination={false}
+            scroll={{ x: true }}
+          />
+        </Card>
+      )}
+
+      {source !== 'labview' && (
+        <Card title="中心通用功能">
+          <Table
+            rowKey={(record) => 'general-' + String(record.id)}
+            columns={columns}
+            dataSource={generalTemplates}
+            loading={loading}
+            locale={{ emptyText: '暂无已注册通用功能' }}
+            pagination={false}
+            scroll={{ x: true }}
+          />
+        </Card>
+      )}
+    </Space>
+  );
+}
