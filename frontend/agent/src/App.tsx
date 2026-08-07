@@ -2,7 +2,10 @@ import { App as AntApp, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
-import { PlaceholderPage } from './pages/PlaceholderPage';
+import { GeneralPage } from './pages/GeneralPage';
+import { RestPage } from './pages/RestPage';
+import { SequencePage } from './pages/SequencePage';
+import { SettingsPage } from './pages/SettingsPage';
 import { ViPage } from './pages/ViPage';
 
 export function App() {
@@ -13,10 +16,10 @@ export function App() {
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/vi" element={<ViPage />} />
-              <Route path="/general" element={<PlaceholderPage title="閫氱敤" />} />
-              <Route path="/api" element={<PlaceholderPage title="REST" />} />
-              <Route path="/sequence" element={<PlaceholderPage title="搴忓垪" />} />
-              <Route path="/settings" element={<PlaceholderPage title="閰嶇疆" />} />
+              <Route path="/general" element={<GeneralPage />} />
+              <Route path="/api" element={<RestPage />} />
+              <Route path="/sequence" element={<SequencePage />} />
+              <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<Navigate to="/vi" replace />} />
             </Route>
           </Routes>
