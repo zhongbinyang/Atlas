@@ -82,7 +82,7 @@ README.md                     # frontend dev/build notes
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -107,7 +107,7 @@ README.md                     # frontend dev/build notes
 - [ ] **Step 2: Write `vite.config.ts`**
 
 ```ts
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
