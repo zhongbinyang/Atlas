@@ -366,6 +366,30 @@ pub struct AgentConfigTemplateEnriched {
 }
 
 #[derive(Debug, Clone)]
+pub struct SpecTemplate {
+    pub id: i64,
+    pub name: String,
+    pub product_pn: String,
+    pub note: String,
+    pub source_filename: String,
+    pub spec_json: String,
+    pub created_by_agent_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecTemplateSummary {
+    pub id: i64,
+    pub name: String,
+    pub product_pn: String,
+    pub source_filename: String,
+    pub section_count: i64,
+    pub created_by_agent_name: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ViRunQueueReplaceItem {
     pub template_source: String, // "labview" | "general" | "group"
     pub vi_template_id: Option<i64>,
@@ -1924,6 +1948,81 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn create_spec_template(
+        &self,
+        name: &str,
+        product_pn: &str,
+        note: &str,
+        source_filename: &str,
+        spec_json: &str,
+        created_by_agent_id: Option<&str>,
+    ) -> Result<SpecTemplate, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, SpecTemplateRow>(
+            r#"
+            INSERT INTO spec_templates
+              (name, product_pn, note, source_filename, spec_json, created_by_agent_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+            RETURNING
+              id, name, product_pn, note, source_filename, spec_json::text, created_by_agent_id, created_at, updated_at
+            "#,
+        )
+        .bind(name)
+        .bind(product_pn)
+        .bind(note)
+        .bind(source_filename)
+        .bind(spec_json)
+        .bind(created_by_agent_id)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_template())
+    }
+
+    pub async fn list_spec_templates(&self) -> Result<Vec<SpecTemplateSummary>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SpecTemplateSummaryRow>(
+            r#"
+            SELECT
+              t.id, t.name, t.product_pn, t.source_filename, t.updated_at,
+              a.name AS created_by_agent_name,
+              (
+                SELECT COUNT(*)::bigint
+                FROM jsonb_object_keys(COALESCE(t.spec_json->'sections', '{}'::jsonb))
+              ) AS section_count
+            FROM spec_templates t
+            LEFT JOIN agents a ON a.id = t.created_by_agent_id
+            ORDER BY t.updated_at DESC, t.id DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_summary()).collect())
+    }
+
+    pub async fn get_spec_template(&self, id: i64) -> Result<Option<SpecTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, SpecTemplateRow>(
+            r#"
+            SELECT
+              id, name, product_pn, note, source_filename, spec_json::text, created_by_agent_id, created_at, updated_at
+            FROM spec_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_template()))
+    }
+
+    pub async fn delete_spec_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM spec_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn load_agent_config_template_to_agent(
         &self,
         template_id: i64,
@@ -2816,6 +2915,60 @@ impl AgentConfigTemplateEnrichedRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct SpecTemplateRow {
+    id: i64,
+    name: String,
+    product_pn: String,
+    note: String,
+    source_filename: String,
+    spec_json: String,
+    created_by_agent_id: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl SpecTemplateRow {
+    fn into_template(self) -> SpecTemplate {
+        SpecTemplate {
+            id: self.id,
+            name: self.name,
+            product_pn: self.product_pn,
+            note: self.note,
+            source_filename: self.source_filename,
+            spec_json: self.spec_json,
+            created_by_agent_id: self.created_by_agent_id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SpecTemplateSummaryRow {
+    id: i64,
+    name: String,
+    product_pn: String,
+    source_filename: String,
+    updated_at: String,
+    created_by_agent_name: Option<String>,
+    section_count: i64,
+}
+
+impl SpecTemplateSummaryRow {
+    fn into_summary(self) -> SpecTemplateSummary {
+        SpecTemplateSummary {
+            id: self.id,
+            name: self.name,
+            product_pn: self.product_pn,
+            source_filename: self.source_filename,
+            section_count: self.section_count,
+            created_by_agent_name: self.created_by_agent_name,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
 struct ViTemplateEnrichedRow {
     id: i64,
     name: String,
@@ -3617,6 +3770,42 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
         assert_eq!(reloaded[0].template_source, "group");
         assert_eq!(reloaded[0].template_name, "预处理");
+    }
+
+    #[tokio::test]
+    async fn spec_template_crud_roundtrip() {
+        let store = test_store().await;
+        let agent = store
+            .upsert_agent("spec-uploader", "10.0.0.1", 26631)
+            .await
+            .unwrap();
+        let spec_json = r#"{"version":1,"sections":{"FMT_HT":{"TX_AP":{"min":-2,"max":4}}}}"#;
+        let created = store
+            .create_spec_template(
+                "fmt-spec",
+                "",
+                "",
+                "Tunn_FMT_Spec.ini",
+                spec_json,
+                Some(&agent.id),
+            )
+            .await
+            .unwrap();
+        let got = store.get_spec_template(created.id).await.unwrap().unwrap();
+        assert_eq!(got.name, "fmt-spec");
+        assert_eq!(got.source_filename, "Tunn_FMT_Spec.ini");
+        let listed = store.list_spec_templates().await.unwrap();
+        assert!(listed.iter().any(|t| t.id == created.id));
+        assert_eq!(
+            listed
+                .iter()
+                .find(|t| t.id == created.id)
+                .unwrap()
+                .section_count,
+            1
+        );
+        assert!(store.delete_spec_template(created.id).await.unwrap());
+        assert!(store.get_spec_template(created.id).await.unwrap().is_none());
     }
 
     #[tokio::test]

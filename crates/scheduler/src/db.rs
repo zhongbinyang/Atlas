@@ -133,6 +133,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/025_agent_config_templates_text_timestamps.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/026_spec_templates.sql"),
+    )
+    .await?;
     Ok(())
 }
 
