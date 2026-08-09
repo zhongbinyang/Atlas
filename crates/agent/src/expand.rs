@@ -127,6 +127,15 @@ pub fn expand_limit_number(
             if t.is_empty() {
                 return Ok(None);
             }
+            if t.eq_ignore_ascii_case("inf")
+                || t.eq_ignore_ascii_case("+inf")
+                || t.eq_ignore_ascii_case("infinity")
+            {
+                return Ok(None);
+            }
+            if t.eq_ignore_ascii_case("-inf") || t.eq_ignore_ascii_case("-infinity") {
+                return Ok(None);
+            }
             t.parse::<f64>()
                 .map(Some)
                 .map_err(|_| format!("limit value is not a number after expand: {expanded}"))
@@ -221,6 +230,17 @@ mod tests {
         assert_eq!(
             ExpandError::Undefined("json".into()).to_string(),
             "undefined variable: ${json}"
+        );
+    }
+
+    #[test]
+    fn expand_limit_inf_tokens() {
+        let vars = HashMap::new();
+        assert_eq!(expand_limit_number(&json!("inf"), &vars).unwrap(), None);
+        assert_eq!(expand_limit_number(&json!("-inf"), &vars).unwrap(), None);
+        assert_eq!(
+            expand_limit_number(&json!("8E-5"), &vars).unwrap(),
+            Some(8e-5)
         );
     }
 }

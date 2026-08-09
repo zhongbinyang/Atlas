@@ -502,4 +502,20 @@ mod tests {
         let limits = vec![range_rule("sum", Some(10.0), Some(30.0))];
         assert!(matches!(judge_limits(&limits, &body), StepJudge::Pass));
     }
+
+    #[test]
+    fn range_only_max_passes() {
+        let limits = vec![LimitRule {
+            output: "TX_AP".into(),
+            op: None,
+            min: None,
+            max: Some(json!(4.0)),
+            expect: None,
+            unit: None,
+        }];
+        assert!(matches!(
+            judge_limits(&limits, &json!({"TX_AP": 3.0})),
+            StepJudge::Pass
+        ));
+    }
 }
