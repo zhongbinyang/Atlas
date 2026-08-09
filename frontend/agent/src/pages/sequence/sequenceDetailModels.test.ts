@@ -5,6 +5,7 @@ import {
   collectMeasuredKeys,
   findGroupIndexForStep,
   formatLimitsSummary,
+  formatStepSpecSummary,
   groupNameByQueueIndex,
   isFirstStepInGroup,
   listQueueStepRows,
@@ -97,5 +98,24 @@ describe('sequenceDetailModels', () => {
     expect(isFirstStepInGroup(queue, 2)).toBe(true);
     expect(isFirstStepInGroup(queue, 3)).toBe(false);
     expect(findGroupIndexForStep(queue, 3)).toBe(1);
+  });
+
+  it('formats step spec summary for template, hand limits, and empty', () => {
+    expect(
+      formatStepSpecSummary(
+        { spec_template_id: 12, spec_section: 'FMT_HT', spec_metrics: [] },
+        18,
+      ),
+    ).toBe('模板#12·FMT_HT·18项');
+    expect(
+      formatStepSpecSummary(
+        { spec_template_id: 12, spec_section: 'FMT_HT', spec_metrics: ['TX_AP', 'RX_AP'] },
+        18,
+      ),
+    ).toBe('模板#12·FMT_HT·2项');
+    expect(formatStepSpecSummary({ limits: [{ output: 'A' }, { output: 'B' }, { output: 'C' }] })).toBe(
+      '手填 3项',
+    );
+    expect(formatStepSpecSummary({})).toBe('未设置');
   });
 });

@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
+import type { SpecTemplateDetail, SpecTemplateSummary, ViRunQueueStep } from '../../api/types';
 import { CollapsibleCard } from '../../components/CollapsibleCard';
 import {
   type ActiveSequenceBinding,
@@ -27,9 +28,11 @@ import {
 } from './sequenceActive';
 import {
   findGroupIndexForStep,
+  formatStepSpecSummary,
   groupNameByQueueIndex,
   isFirstStepInGroup,
   listQueueStepRows,
+  sectionMetricKeys,
 } from './sequenceDetailModels';
 
 type CatalogItem = {
@@ -42,22 +45,10 @@ type CatalogItem = {
   source: 'labview' | 'general';
 };
 
-type QueueItem = {
-  id?: string;
-  template_source?: string;
-  vi_template_id?: number | null;
-  general_template_id?: number | null;
-  name?: string;
-  kind?: string;
-  inputs?: unknown;
-  outputs?: unknown;
-  enabled?: boolean;
-  fail_policy?: string;
-  limits?: unknown;
-  note?: string;
-  resources?: string[];
-  collapsed?: boolean;
-  position?: number;
+type QueueItem = ViRunQueueStep;
+
+type VariableRow = {
+  name: string;
 };
 
 type SequenceTemplate = {
@@ -81,6 +72,11 @@ const toId = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+};
+
 const normalizeQueueItem = (raw: unknown): QueueItem => {
   const item = asRecord(raw);
   const source = String(item.template_source || 'labview');
@@ -100,6 +96,9 @@ const normalizeQueueItem = (raw: unknown): QueueItem => {
     resources: Array.isArray(item.resources) ? item.resources.map(String) : [],
     collapsed: !!item.collapsed,
     position: item.position != null ? Number(item.position) : undefined,
+    spec_template_id: toId(item.spec_template_id),
+    spec_section: String(item.spec_section ?? ''),
+    spec_metrics: normalizeStringArray(item.spec_metrics),
   };
 };
 
@@ -131,6 +130,9 @@ const buildPutItems = (queue: QueueItem[]) =>
       limits: item.limits ?? [],
       note: item.note || '',
       resources: Array.isArray(item.resources) ? item.resources : [],
+      spec_template_id: item.spec_template_id ?? null,
+      spec_section: item.spec_section || '',
+      spec_metrics: normalizeStringArray(item.spec_metrics),
     };
   });
 
@@ -139,6 +141,9 @@ export function SequenceEditTab() {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [templates, setTemplates] = useState<SequenceTemplate[]>([]);
+  const [specTemplates, setSpecTemplates] = useState<SpecTemplateSummary[]>([]);
+  const [specTemplateDetails, setSpecTemplateDetails] = useState<Record<number, SpecTemplateDetail>>({});
+  const [variables, setVariables] = useState<VariableRow[]>([]);
   const [binding, setBinding] = useState<ActiveSequenceBinding | null>(() => readActiveSequenceBinding());
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'labview' | 'general'>('all');
@@ -149,11 +154,50 @@ export function SequenceEditTab() {
   const [limitsDraft, setLimitsDraft] = useState('[]');
   const [noteDraft, setNoteDraft] = useState('');
   const [resourceDraft, setResourceDraft] = useState('');
+  const [specTemplateDraft, setSpecTemplateDraft] = useState<number | null>(null);
+  const [specSectionDraft, setSpecSectionDraft] = useState('');
+  const [specMetricsDraft, setSpecMetricsDraft] = useState<string[]>([]);
+  const [variableInsertDraft, setVariableInsertDraft] = useState<string | null>(null);
 
   const stepCount = useMemo(() => countRunQueueSteps(queue), [queue]);
   const summary = useMemo(() => buildActiveSequenceSummary(stepCount, binding), [stepCount, binding]);
   const groupNamesByIndex = useMemo(() => groupNameByQueueIndex(queue), [queue]);
   const stepRows = useMemo(() => listQueueStepRows(queue), [queue]);
+
+  const resolveSectionMetricCount = useCallback(
+    (item: QueueItem): number | null => {
+      const templateId = item.spec_template_id;
+      const section = String(item.spec_section ?? '').trim();
+      if (templateId == null || !section || section.includes('${')) return null;
+      const detail = specTemplateDetails[templateId];
+      if (!detail?.spec?.sections) return null;
+      return sectionMetricKeys(detail.spec.sections, section).length || null;
+    },
+    [specTemplateDetails],
+  );
+
+  const ensureSpecTemplateDetails = useCallback(async (templateIds: number[]) => {
+    const unique = [...new Set(templateIds.filter((id) => Number.isFinite(id)))];
+    if (!unique.length) return;
+    const results = await Promise.all(
+      unique.map(async (id) => {
+        try {
+          const detail = await agentApi.getSpecTemplate(id);
+          return [id, detail] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    setSpecTemplateDetails((prev) => {
+      const next = { ...prev };
+      results.forEach((entry) => {
+        if (!entry || next[entry[0]] != null) return;
+        next[entry[0]] = entry[1];
+      });
+      return next;
+    });
+  }, []);
 
   const noteQueueDirty = () => {
     const next = markActiveSequenceDirty();
@@ -163,11 +207,13 @@ export function SequenceEditTab() {
   const loadAll = useCallback(async () => {
     setBusy(true);
     try {
-      const [vi, general, queueResp, tpl] = await Promise.all([
+      const [vi, general, queueResp, tpl, specTpl, settingsResp] = await Promise.all([
         agentApi.labviewAllTemplates(),
         agentApi.generalAllTemplates(),
         agentApi.getRunQueue(),
         agentApi.listSequenceTemplates(),
+        agentApi.listSpecTemplates(),
+        agentApi.getSettings(),
       ]);
       const viItems = (Array.isArray(vi) ? vi : []).map((item) => ({
         ...(asRecord(item) as CatalogItem),
@@ -179,17 +225,35 @@ export function SequenceEditTab() {
       }));
       setCatalog([...viItems, ...generalItems]);
       const queueData = asRecord(queueResp);
-      setQueue(
-        Array.isArray(queueData.items) ? queueData.items.map((item) => normalizeQueueItem(item)) : [],
-      );
+      const nextQueue = Array.isArray(queueData.items)
+        ? queueData.items.map((item) => normalizeQueueItem(item))
+        : [];
+      setQueue(nextQueue);
       setTemplates(Array.isArray(tpl) ? (tpl as SequenceTemplate[]) : []);
+      setSpecTemplates(Array.isArray(specTpl) ? specTpl : []);
+      const settingsData = asRecord(settingsResp);
+      setVariables(
+        Array.isArray(settingsData.variables)
+          ? settingsData.variables
+              .map((item) => {
+                const row = asRecord(item);
+                const name = String(row.name ?? '').trim();
+                return name ? { name } : null;
+              })
+              .filter((row): row is VariableRow => row != null)
+          : [],
+      );
+      const templateIds = nextQueue
+        .map((item) => item.spec_template_id)
+        .filter((id): id is number => id != null);
+      await ensureSpecTemplateDetails(templateIds);
       setBinding(readActiveSequenceBinding());
     } catch (error) {
       message.error(`加载序列编排数据失败: ${getErrorMessage(error)}`);
     } finally {
       setBusy(false);
     }
-  }, [message]);
+  }, [message, ensureSpecTemplateDetails]);
 
   useEffect(() => {
     void loadAll();
@@ -247,6 +311,9 @@ export function SequenceEditTab() {
         limits: [],
         note: '',
         resources: [],
+        spec_template_id: null,
+        spec_section: '',
+        spec_metrics: [],
       },
     ];
     await persistQueue(next);
@@ -332,6 +399,13 @@ export function SequenceEditTab() {
     setLimitsDraft(JSON.stringify(item.limits ?? [], null, 2));
     setNoteDraft(item.note || '');
     setResourceDraft('');
+    setSpecTemplateDraft(item.spec_template_id ?? null);
+    setSpecSectionDraft(item.spec_section || '');
+    setSpecMetricsDraft(Array.isArray(item.spec_metrics) ? item.spec_metrics.slice() : []);
+    setVariableInsertDraft(null);
+    if (item.spec_template_id != null) {
+      void ensureSpecTemplateDetails([item.spec_template_id]);
+    }
   };
 
   const saveDetail = async () => {
@@ -356,6 +430,9 @@ export function SequenceEditTab() {
         inputs,
         limits,
         note: noteDraft,
+        spec_template_id: specTemplateDraft,
+        spec_section: specSectionDraft.trim(),
+        spec_metrics: specMetricsDraft.slice(),
       },
       false,
     );
@@ -425,6 +502,33 @@ export function SequenceEditTab() {
   };
 
   const detailItem = detailIndex != null ? queue[detailIndex] : null;
+
+  const detailSectionOptions = useMemo(() => {
+    if (specTemplateDraft == null) return [];
+    const detail = specTemplateDetails[specTemplateDraft];
+    const sections = detail?.spec?.sections;
+    if (!sections) return [];
+    return Object.keys(sections)
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ value: name, label: name }));
+  }, [specTemplateDraft, specTemplateDetails]);
+
+  const detailMetricOptions = useMemo(() => {
+    if (specTemplateDraft == null) return [];
+    const detail = specTemplateDetails[specTemplateDraft];
+    const section = specSectionDraft.trim();
+    if (!detail?.spec?.sections || !section || section.includes('${')) return [];
+    return sectionMetricKeys(detail.spec.sections, section).map((key) => ({
+      value: key,
+      label: key,
+    }));
+  }, [specTemplateDraft, specSectionDraft, specTemplateDetails]);
+
+  const insertVariableIntoSection = (variableName: string) => {
+    const token = `\${${variableName}}`;
+    setSpecSectionDraft((prev) => (prev ? `${prev}${token}` : token));
+    setVariableInsertDraft(null);
+  };
 
   return (
     <div className="atlas-page" style={{ gap: 12 }}>
@@ -623,6 +727,19 @@ export function SequenceEditTab() {
               ),
             },
             {
+              title: 'Spec',
+              width: 180,
+              ellipsis: true,
+              render: (_, row) => (
+                <Typography.Text style={{ fontSize: 12 }}>
+                  {formatStepSpecSummary(
+                    row.item as Record<string, unknown>,
+                    resolveSectionMetricCount(row.item),
+                  )}
+                </Typography.Text>
+              ),
+            },
+            {
               title: '操作',
               width: 220,
               render: (_, row) => (
@@ -742,6 +859,92 @@ export function SequenceEditTab() {
               />
             </div>
             <div>
+              <Typography.Text strong>Spec 模板</Typography.Text>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择中心 Spec 模板（可选）"
+                value={specTemplateDraft ?? undefined}
+                style={{ width: '100%', marginTop: 8 }}
+                options={specTemplates.map((tpl) => ({
+                  value: tpl.id,
+                  label: `#${tpl.id} ${tpl.name}${tpl.source_filename ? ` · ${tpl.source_filename}` : ''}`,
+                }))}
+                onChange={(value) => {
+                  const nextId = value ?? null;
+                  setSpecTemplateDraft(nextId);
+                  setSpecMetricsDraft([]);
+                  if (nextId != null) void ensureSpecTemplateDetails([nextId]);
+                }}
+              />
+            </div>
+            <div>
+              <Typography.Text strong>Section</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                完整 INI 段名，如 FMT_HT；也可使用变量，如 ${'${SpecSection}'}。
+              </Typography.Paragraph>
+              <Space.Compact style={{ width: '100%', marginTop: 8 }}>
+                <Input
+                  placeholder="FMT_HT"
+                  value={specSectionDraft}
+                  onChange={(e) => {
+                    setSpecSectionDraft(e.target.value);
+                    setSpecMetricsDraft([]);
+                  }}
+                />
+                <Select
+                  allowClear
+                  placeholder="插入变量"
+                  value={variableInsertDraft ?? undefined}
+                  style={{ width: 140 }}
+                  options={variables.map((row) => ({
+                    value: row.name,
+                    label: row.name,
+                  }))}
+                  onChange={(value) => {
+                    if (value) insertVariableIntoSection(String(value));
+                  }}
+                />
+              </Space.Compact>
+              {detailSectionOptions.length ? (
+                <Select
+                  allowClear
+                  placeholder="从模板选择 Section"
+                  style={{ width: '100%', marginTop: 8 }}
+                  options={detailSectionOptions}
+                  onChange={(value) => {
+                    if (value) {
+                      setSpecSectionDraft(String(value));
+                      setSpecMetricsDraft([]);
+                    }
+                  }}
+                />
+              ) : null}
+            </div>
+            <div>
+              <Typography.Text strong>指标</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                留空表示使用该 Section 的全部指标。
+              </Typography.Paragraph>
+              <Select
+                mode="multiple"
+                allowClear
+                placeholder={
+                  specTemplateDraft == null
+                    ? '请先选择 Spec 模板'
+                    : detailMetricOptions.length
+                      ? '选择指标（可选）'
+                      : '输入 Section 后可选指标'
+                }
+                value={specMetricsDraft}
+                style={{ width: '100%', marginTop: 8 }}
+                options={detailMetricOptions}
+                disabled={!specTemplateDraft || !detailMetricOptions.length}
+                onChange={(value) => setSpecMetricsDraft(value.map(String))}
+              />
+            </div>
+            <div>
               <Typography.Text strong>入参 JSON</Typography.Text>
               <Input.TextArea
                 className="atlas-mono-textarea"
@@ -753,6 +956,9 @@ export function SequenceEditTab() {
             </div>
             <div>
               <Typography.Text strong>Spec / limits JSON</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                手填 limits 覆盖模板同名字段。
+              </Typography.Paragraph>
               <Input.TextArea
                 className="atlas-mono-textarea"
                 rows={8}

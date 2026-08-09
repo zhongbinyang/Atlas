@@ -28,6 +28,48 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
+export function countHandLimits(limits: unknown): number {
+  return Array.isArray(limits) ? limits.length : 0;
+}
+
+export function sectionMetricKeys(
+  sections: Record<string, Record<string, unknown>> | undefined,
+  section: string,
+): string[] {
+  if (!sections || !section.trim()) return [];
+  const metrics = sections[section.trim()];
+  if (!metrics || typeof metrics !== 'object') return [];
+  return Object.keys(metrics).sort((a, b) => a.localeCompare(b));
+}
+
+export function formatStepSpecSummary(
+  item: Record<string, unknown>,
+  sectionMetricCount?: number | null,
+): string {
+  const templateRaw = item.spec_template_id;
+  const templateId =
+    templateRaw == null || templateRaw === '' ? null : Number(templateRaw);
+  if (templateId != null && Number.isFinite(templateId)) {
+    const section = String(item.spec_section ?? '').trim() || '—';
+    const selectedMetrics = normalizeStringArray(item.spec_metrics);
+    if (selectedMetrics.length) {
+      return `模板#${templateId}·${section}·${selectedMetrics.length}项`;
+    }
+    if (sectionMetricCount != null && sectionMetricCount > 0) {
+      return `模板#${templateId}·${section}·${sectionMetricCount}项`;
+    }
+    return `模板#${templateId}·${section}·全部`;
+  }
+  const handCount = countHandLimits(item.limits);
+  if (handCount > 0) return `手填 ${handCount}项`;
+  return '未设置';
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+}
+
 export function formatLimitsSummary(limits: unknown): string {
   if (limits == null) return '—';
   if (!Array.isArray(limits) || !limits.length) return '—';

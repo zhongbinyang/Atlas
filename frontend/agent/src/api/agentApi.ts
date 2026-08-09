@@ -1,5 +1,5 @@
 import { apiRequest } from './client';
-import type { AgentStatus, LabviewConfig } from './types';
+import type { AgentStatus, LabviewConfig, SpecTemplateDetail, SpecTemplateSummary } from './types';
 
 export const agentApi = {
   status: () => apiRequest<AgentStatus>('/api/status'),
@@ -104,6 +104,12 @@ export const agentApi = {
     apiRequest<unknown>(`/api/agent-config-templates/${encodeURIComponent(String(id))}/load`, {
       method: 'POST',
     }),
+  listSpecTemplates: async () => {
+    const data = await apiRequest<{ items?: SpecTemplateSummary[] }>('/api/spec-templates');
+    return Array.isArray(data.items) ? data.items : [];
+  },
+  getSpecTemplate: (id: string | number) =>
+    apiRequest<SpecTemplateDetail>(`/api/spec-templates/${encodeURIComponent(String(id))}`),
   sequenceRun: (body: unknown) =>
     apiRequest<unknown>('/api/sequence/run', { method: 'POST', body: JSON.stringify(body) }),
   sequenceProgress: () => apiRequest<unknown>('/api/sequence/run/progress'),
