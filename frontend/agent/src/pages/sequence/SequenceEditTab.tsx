@@ -882,7 +882,8 @@ export function SequenceEditTab() {
             <div>
               <Typography.Text strong>Section</Typography.Text>
               <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                完整 INI 段名，如 FMT_HT；也可使用变量，如 ${'${SpecSection}'}。
+                完整 INI 段名，如 FMT_HT；也可使用变量，如 ${'${SpecSection}'}（站点变量默认
+                SpecSection=FMT_HT，通道 overlay 可覆盖为 FMT_RT 等）。
               </Typography.Paragraph>
               <Space.Compact style={{ width: '100%', marginTop: 8 }}>
                 <Input

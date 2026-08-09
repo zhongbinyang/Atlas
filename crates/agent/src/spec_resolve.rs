@@ -236,6 +236,43 @@ mod tests {
     }
 
     #[test]
+    fn spec_section_variable_selects_section_from_template() {
+        const TWO_SECTION_TEMPLATE: &str = r#"{
+            "version": 1,
+            "sections": {
+                "FMT_HT": { "TX_AP": { "min": -2.0, "max": 4.0 } },
+                "FMT_RT": { "TX_AP": { "min": -5.0, "max": 2.0 } }
+            }
+        }"#;
+
+        let mut ht_vars = HashMap::new();
+        ht_vars.insert("SpecSection".into(), "FMT_HT".into());
+        let ht = resolve_step_limits(
+            &[],
+            Some(TWO_SECTION_TEMPLATE),
+            "${SpecSection}",
+            "[\"TX_AP\"]",
+            &ht_vars,
+        )
+        .unwrap();
+        assert_eq!(ht.len(), 1);
+        assert_eq!(ht[0].max, Some(json!(4.0)));
+
+        let mut rt_vars = HashMap::new();
+        rt_vars.insert("SpecSection".into(), "FMT_RT".into());
+        let rt = resolve_step_limits(
+            &[],
+            Some(TWO_SECTION_TEMPLATE),
+            "${SpecSection}",
+            "[\"TX_AP\"]",
+            &rt_vars,
+        )
+        .unwrap();
+        assert_eq!(rt.len(), 1);
+        assert_eq!(rt[0].max, Some(json!(2.0)));
+    }
+
+    #[test]
     fn no_template_returns_hand_limits() {
         let hand = vec![LimitRule {
             output: "A".into(),

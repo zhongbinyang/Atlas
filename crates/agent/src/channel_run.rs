@@ -459,6 +459,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_overlay_spec_section_reaches_step_vars() {
+        let locks = ResourceLockManager::new();
+        let progress = SequenceProgressSlot::new();
+        let (tx, rx) = watch::channel(false);
+        let _keep = tx;
+
+        let item = QueueItemForRun {
+            position: 0,
+            queue_item_id: "q0".into(),
+            template_id: "t0".into(),
+            name: "step".into(),
+            kind: "labview".into(),
+            vi_path: "C:\\x.vi".into(),
+            inputs: json!([]),
+            show_front_panel: false,
+            timeout_secs: None,
+            enabled: true,
+            breakpoint: false,
+            fail_policy: "stop".into(),
+            limits: vec![],
+            resources: vec![],
+            spec_template_id: None,
+            spec_section: "${SpecSection}".into(),
+            spec_metrics_json: "[]".into(),
+        };
+
+        let mut base_vars = HashMap::new();
+        base_vars.insert("SpecSection".into(), "FMT_HT".into());
+
+        let req = ChannelRunRequest {
+            items: vec![item],
+            base_vars,
+            channels: vec![
+                ChannelSpec {
+                    channel_index: 0,
+                    name: "CH0".into(),
+                    overlay: json!({}),
+                },
+                ChannelSpec {
+                    channel_index: 1,
+                    name: "CH1".into(),
+                    overlay: json!({"SpecSection": "FMT_RT"}),
+                },
+            ],
+            resource_locks: locks,
+            resource_timeout: Duration::from_secs(5),
+            sn: None,
+            work_order: None,
+            progress,
+            cancel: rx,
+            run_generation: 1,
+            spec_template_fetch: None,
+        };
+
+        let seen = Arc::new(std::sync::Mutex::new(HashMap::<usize, String>::new()));
+        let seen2 = seen.clone();
+        let resp = run_multi_channel_with(req, move |_item, vars| {
+            let seen2 = seen2.clone();
+            let section = vars.get("SpecSection").cloned().unwrap_or_default();
+            let channel_index = vars
+                .get("ChannelIndex")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+            async move {
+                seen2.lock().unwrap().insert(channel_index, section);
+                Ok(json!({"ok": true}))
+            }
+        })
+        .await;
+
+        assert_eq!(resp.overall, "pass");
+        let got = seen.lock().unwrap();
+        assert_eq!(got.get(&0).map(String::as_str), Some("FMT_HT"));
+        assert_eq!(got.get(&1).map(String::as_str), Some("FMT_RT"));
+    }
+
+    #[tokio::test]
     async fn independent_requests_keep_both_channel_progress_entries() {
         let progress = SequenceProgressSlot::new();
         let locks = ResourceLockManager::new();

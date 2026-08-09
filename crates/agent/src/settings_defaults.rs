@@ -417,4 +417,20 @@ mod tests {
         assert_eq!(map.get("Channel").map(String::as_str), Some("CH2"));
         assert_eq!(map.get("ChannelIndex").map(String::as_str), Some("1"));
     }
+
+    #[test]
+    fn channel_overlay_can_override_spec_section() {
+        let mut base = std::collections::HashMap::new();
+        base.insert("SpecSection".into(), "FMT_HT".into());
+        let ch0 = apply_channel_overlay(&base, 0, "CH0", &json!({}));
+        assert_eq!(ch0.get("SpecSection").map(String::as_str), Some("FMT_HT"));
+
+        let ch1 = apply_channel_overlay(
+            &base,
+            1,
+            "CH1",
+            &json!({"SpecSection": "FMT_RT"}),
+        );
+        assert_eq!(ch1.get("SpecSection").map(String::as_str), Some("FMT_RT"));
+    }
 }
