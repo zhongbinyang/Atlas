@@ -17,7 +17,6 @@ import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import { CollapsibleCard } from '../components/CollapsibleCard';
 import { PageHeader } from '../components/PageHeader';
-import { centerConfigsPageUrl } from '../utils/centerUrl';
 import {
   type ConfigProfile,
   type FlatPreviewRow,
@@ -399,7 +398,6 @@ export function SettingsPage() {
   const [saveTemplateName, setSaveTemplateName] = useState('');
   const [saveTemplateNote, setSaveTemplateNote] = useState('');
   const [agentHostname, setAgentHostname] = useState('');
-  const [centerUrl, setCenterUrl] = useState('');
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -511,14 +509,9 @@ export function SettingsPage() {
   useEffect(() => {
     void agentApi
       .status()
-      .then((status) => {
-        setAgentHostname(status.hostname || '');
-        setCenterUrl(status.center_url || '');
-      })
+      .then((status) => setAgentHostname(status.hostname || ''))
       .catch(() => {});
   }, []);
-
-  const centerConfigsUrl = useMemo(() => centerConfigsPageUrl(centerUrl), [centerUrl]);
 
   const configSnapshotSummary = useMemo(() => {
     const enabledChannels = channels.filter((ch) => ch.enabled).length;
@@ -543,18 +536,7 @@ export function SettingsPage() {
         name,
         note: saveTemplateNote.trim() || undefined,
       });
-      message.success(
-        centerConfigsUrl ? (
-          <span>
-            已保存为中心配置模板 ·{' '}
-            <a href={centerConfigsUrl} target="_blank" rel="noreferrer">
-              在中心查看
-            </a>
-          </span>
-        ) : (
-          '已保存为中心配置模板'
-        ),
-      );
+      message.success('已保存为中心配置模板');
       setSaveModalOpen(false);
       await load();
     } catch (error) {
@@ -689,30 +671,13 @@ export function SettingsPage() {
         title="中心配置模板"
         defaultOpen
         extra={
-          <Space wrap>
-            {centerConfigsUrl ? (
-              <Button type="link" href={centerConfigsUrl} target="_blank" rel="noreferrer">
-                在中心管理
-              </Button>
-            ) : null}
-            <Button type="primary" disabled={busy} onClick={openSaveModal}>
-              保存为模板
-            </Button>
-          </Space>
+          <Button type="primary" disabled={busy} onClick={openSaveModal}>
+            保存为模板
+          </Button>
         }
       >
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
           「保存为模板」从当前机台配置拍快照；「加载」会覆盖本机变量、设备档、校准档与通道（Hostname / IP 保留本机值）。
-          {centerConfigsUrl ? (
-            <>
-              {' '}
-              也可在
-              <Typography.Link href={centerConfigsUrl} target="_blank" rel="noreferrer">
-                中心机台配置
-              </Typography.Link>
-              页面查看与管理全部模板。
-            </>
-          ) : null}
         </Typography.Paragraph>
         <Table
           size="small"
