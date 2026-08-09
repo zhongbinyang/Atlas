@@ -50,7 +50,7 @@ function countMetrics(sections: Record<string, Record<string, unknown>>): number
 }
 
 export function SpecsPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
@@ -141,16 +141,22 @@ export function SpecsPage() {
 
   const deleteTemplate = (template: SpecTemplateSummary) => {
     const label = template.name || String(template.id);
-    Modal.confirm({
+    modal.confirm({
       title: '确认删除',
       content: `确定删除 Spec 模板「${label}」？`,
       okText: '删除',
       okType: 'danger',
       cancelText: '取消',
       async onOk() {
-        await schedulerApi.deleteSpecTemplate(template.id);
-        message.success('Spec 模板已删除');
-        await load();
+        try {
+          await schedulerApi.deleteSpecTemplate(template.id);
+          message.success('Spec 模板已删除');
+          await load();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          message.error('删除失败：' + detail);
+          throw error;
+        }
       },
     });
   };

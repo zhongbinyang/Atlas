@@ -1,11 +1,11 @@
-import { App as AntApp, Button, Card, Modal, Space, Table, Typography } from 'antd';
+import { App as AntApp, Button, Card, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SequenceTemplate } from '../api/types';
 
 export function SequencesPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [templates, setTemplates] = useState<SequenceTemplate[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -29,20 +29,26 @@ export function SequencesPage() {
   const deleteTemplate = useCallback(
     (template: SequenceTemplate) => {
       const label = template.name || String(template.id || '此模板');
-      Modal.confirm({
+      modal.confirm({
         title: '确认删除',
         content: '确定删除「序列模板「' + label + '」」？',
         okText: '删除',
         okType: 'danger',
         cancelText: '取消',
         async onOk() {
-          await schedulerApi.deleteSequenceTemplate(template.id);
-          message.success('序列模板已删除');
-          await load();
+          try {
+            await schedulerApi.deleteSequenceTemplate(template.id);
+            message.success('序列模板已删除');
+            await load();
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            message.error('删除失败：' + detail);
+            throw error;
+          }
         },
       });
     },
-    [load, message],
+    [load, message, modal],
   );
 
   const columns = useMemo<ColumnsType<SequenceTemplate>>(

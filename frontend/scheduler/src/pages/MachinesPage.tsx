@@ -1,4 +1,5 @@
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -24,6 +25,7 @@ import {
 } from '../lib/agentTelemetry';
 
 const POLL_MS = 2000;
+const MAX_POLL_MS = 30000;
 
 const statusOptions: Array<{ label: string; value: TelemetryFilters['status'] }> = [
   { label: '全部', value: 'all' },
@@ -60,6 +62,8 @@ export function MachinesPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pollIntervalMs, setPollIntervalMs] = useState(POLL_MS);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const [autoRefreshPaused, setAutoRefreshPaused] = useState(() => document.hidden);
   const [filters, setFilters] = useState<TelemetryFilters>({
@@ -69,36 +73,43 @@ export function MachinesPage() {
     abnormalOnly: false,
   });
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (userInitiated = false) => {
+    if (userInitiated) setLoading(true);
     try {
       const nextAgents = await schedulerApi.listAgents();
       setAgents(Array.isArray(nextAgents) ? nextAgents : []);
       setLastRefreshAt(new Date());
+      setLoadError(null);
+      setPollIntervalMs(POLL_MS);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      message.error('加载机台失败：' + detail);
+      if (userInitiated) {
+        message.error('加载机台失败：' + detail);
+      } else {
+        setLoadError(detail);
+        setPollIntervalMs((current) => Math.min(current * 2, MAX_POLL_MS));
+      }
     } finally {
-      setLoading(false);
+      if (userInitiated) setLoading(false);
     }
   }, [message]);
 
   useEffect(() => {
-    void load();
+    void load(false);
     const intervalId = window.setInterval(() => {
-      if (!document.hidden) void load();
-    }, POLL_MS);
+      if (!document.hidden) void load(false);
+    }, pollIntervalMs);
     const handleVisibilityChange = () => {
       const hidden = document.hidden;
       setAutoRefreshPaused(hidden);
-      if (!hidden) void load();
+      if (!hidden) void load(false);
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [load]);
+  }, [load, pollIntervalMs]);
 
   const telemetry = useMemo(() => getAgentTelemetry(agents, filters), [agents, filters]);
   const lastRefreshLabel = lastRefreshAt
@@ -112,10 +123,24 @@ export function MachinesPage() {
         <Typography.Title level={3} style={{ margin: 0 }}>
           机台
         </Typography.Title>
-        <Button onClick={() => void load()} loading={loading}>
+        <Button onClick={() => void load(true)} loading={loading}>
           刷新
         </Button>
       </Space>
+
+      {loadError ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="自动刷新失败"
+          description={`${loadError}（将每 ${Math.round(pollIntervalMs / 1000)} 秒重试）`}
+          action={
+            <Button size="small" onClick={() => void load(true)}>
+              立即重试
+            </Button>
+          }
+        />
+      ) : null}
 
       <Card>
         <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
@@ -137,7 +162,9 @@ export function MachinesPage() {
           <Space wrap>
             <Typography.Text type="secondary">{lastRefreshLabel}</Typography.Text>
             <Typography.Text type={autoRefreshPaused ? 'warning' : 'secondary'}>
-              {autoRefreshPaused ? '自动刷新已暂停' : '自动刷新 · 2 秒'}
+              {autoRefreshPaused
+                ? '自动刷新已暂停'
+                : `自动刷新 · ${Math.round(pollIntervalMs / 1000)} 秒`}
             </Typography.Text>
           </Space>
 

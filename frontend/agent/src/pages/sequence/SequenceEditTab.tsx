@@ -4,7 +4,9 @@ import {
   Card,
   Checkbox,
   Drawer,
+  Form,
   Input,
+  Modal,
   Select,
   Space,
   Switch,
@@ -137,7 +139,7 @@ const buildPutItems = (queue: QueueItem[]) =>
   });
 
 export function SequenceEditTab() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [templates, setTemplates] = useState<SequenceTemplate[]>([]);
@@ -158,6 +160,11 @@ export function SequenceEditTab() {
   const [specSectionDraft, setSpecSectionDraft] = useState('');
   const [specMetricsDraft, setSpecMetricsDraft] = useState<string[]>([]);
   const [variableInsertDraft, setVariableInsertDraft] = useState<string | null>(null);
+  const [groupNameModal, setGroupNameModal] = useState<'insert' | 'group' | null>(null);
+  const [groupNameInput, setGroupNameInput] = useState('分组');
+  const [saveSeqTemplateOpen, setSaveSeqTemplateOpen] = useState(false);
+  const [saveSeqTemplateName, setSaveSeqTemplateName] = useState('');
+  const [saveSeqTemplateNote, setSaveSeqTemplateNote] = useState('');
 
   const stepCount = useMemo(() => countRunQueueSteps(queue), [queue]);
   const summary = useMemo(() => buildActiveSequenceSummary(stepCount, binding), [stepCount, binding]);
@@ -341,26 +348,25 @@ export function SequenceEditTab() {
     await persistQueue(next);
   };
 
-  const insertGroup = async () => {
-    const name = window.prompt('分组名称', '分组')?.trim() || '分组';
-    const next: QueueItem[] = [
-      ...queue,
-      {
-        template_source: 'group',
-        name,
-        enabled: true,
-        collapsed: false,
-        note: '',
-        inputs: [],
-        limits: [],
-        fail_policy: 'stop',
-        resources: [],
-      },
-    ];
-    await persistQueue(next);
+  const confirmRemoveAt = (index: number) => {
+    const item = queue[index];
+    const label = item?.name?.trim() || `步骤 ${index + 1}`;
+    modal.confirm({
+      title: '删除步骤',
+      content: `确定删除「${label}」？`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: () => removeAt(index),
+    });
   };
 
-  const groupSelected = async () => {
+  const openInsertGroupModal = () => {
+    setGroupNameInput('分组');
+    setGroupNameModal('insert');
+  };
+
+  const openGroupSelectedModal = () => {
     const indexes = selectedIndexes.slice().sort((a, b) => a - b);
     if (indexes.length < 1) {
       message.warning('请先勾选要编组的步骤');
@@ -370,25 +376,95 @@ export function SequenceEditTab() {
       message.warning('不能把分组再编进分组');
       return;
     }
-    const name = window.prompt('编成一组的名称', '分组')?.trim() || '分组';
-    const next = queue.slice();
-    const first = indexes[0];
-    for (let i = indexes.length - 1; i >= 0; i--) next.splice(indexes[i], 1);
-    next.splice(first, 0, {
-      template_source: 'group',
-      name,
-      enabled: true,
-      collapsed: false,
-      note: '',
-      inputs: [],
-      limits: [],
-      fail_policy: 'stop',
-      resources: [],
-    });
-    const selectedItems = indexes.map((i) => queue[i]);
-    next.splice(first + 1, 0, ...selectedItems);
-    setSelectedIndexes([]);
-    await persistQueue(next);
+    setGroupNameInput('分组');
+    setGroupNameModal('group');
+  };
+
+  const confirmGroupName = async () => {
+    const name = groupNameInput.trim();
+    if (!name) {
+      message.warning('请输入分组名称');
+      return;
+    }
+    if (groupNameModal === 'insert') {
+      const next: QueueItem[] = [
+        ...queue,
+        {
+          template_source: 'group',
+          name,
+          enabled: true,
+          collapsed: false,
+          note: '',
+          inputs: [],
+          limits: [],
+          fail_policy: 'stop',
+          resources: [],
+        },
+      ];
+      setGroupNameModal(null);
+      await persistQueue(next);
+      return;
+    }
+    if (groupNameModal === 'group') {
+      const indexes = selectedIndexes.slice().sort((a, b) => a - b);
+      const next = queue.slice();
+      const first = indexes[0];
+      for (let i = indexes.length - 1; i >= 0; i--) next.splice(indexes[i], 1);
+      next.splice(first, 0, {
+        template_source: 'group',
+        name,
+        enabled: true,
+        collapsed: false,
+        note: '',
+        inputs: [],
+        limits: [],
+        fail_policy: 'stop',
+        resources: [],
+      });
+      const selectedItems = indexes.map((i) => queue[i]);
+      next.splice(first + 1, 0, ...selectedItems);
+      setSelectedIndexes([]);
+      setGroupNameModal(null);
+      await persistQueue(next);
+    }
+  };
+
+  const openSaveTemplateModal = () => {
+    if (!queue.length) {
+      message.error('当前队列为空，无法保存模板');
+      return;
+    }
+    setSaveSeqTemplateName('');
+    setSaveSeqTemplateNote('');
+    setSaveSeqTemplateOpen(true);
+  };
+
+  const confirmSaveTemplate = async () => {
+    const name = saveSeqTemplateName.trim();
+    if (!name) {
+      message.warning('请输入序列模板名称');
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = asRecord(
+        await agentApi.saveSequenceTemplate({
+          name,
+          note: saveSeqTemplateNote.trim() || undefined,
+        }),
+      );
+      const id = (data.id as string | number) ?? null;
+      if (id != null) {
+        setBinding(bindActiveSequence(id, String(data.name ?? name)));
+      }
+      message.success(`已保存序列模板: ${String(data.name ?? name)}`);
+      setSaveSeqTemplateOpen(false);
+      await loadAll();
+    } catch (error) {
+      message.error(`保存模板失败: ${getErrorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const openDetail = (index: number) => {
@@ -457,42 +533,27 @@ export function SequenceEditTab() {
     await updateAt(index, { resources });
   };
 
-  const saveTemplate = async () => {
-    if (!queue.length) {
-      message.error('当前队列为空，无法保存模板');
-      return;
-    }
-    const name = window.prompt('请输入序列模板名称')?.trim() || '';
-    if (!name) return;
-    const note = window.prompt('备注（可选）')?.trim() || '';
-    setBusy(true);
-    try {
-      const data = asRecord(await agentApi.saveSequenceTemplate({ name, note }));
-      const id = (data.id as string | number) ?? null;
-      if (id != null) {
-        setBinding(bindActiveSequence(id, String(data.name ?? name)));
-      }
-      message.success(`已保存序列模板: ${String(data.name ?? name)}`);
-      await loadAll();
-    } catch (error) {
-      message.error(`保存模板失败: ${getErrorMessage(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const loadTemplate = async (id: string | number, name?: string) => {
-    setBusy(true);
-    try {
-      await agentApi.loadSequenceTemplate(id);
-      setBinding(bindActiveSequence(id, name || `模板 #${String(id)}`));
-      message.success('已加载模板到本机执行顺序（已激活）');
-      await loadAll();
-    } catch (error) {
-      message.error(`加载模板失败: ${getErrorMessage(error)}`);
-    } finally {
-      setBusy(false);
-    }
+  const loadTemplate = (id: string | number, name?: string) => {
+    const label = name?.trim() || `模板 #${String(id)}`;
+    modal.confirm({
+      title: '加载中心序列模板',
+      content: `将用模板「${label}」覆盖本机执行顺序并设为当前激活，是否继续？`,
+      okText: '加载并覆盖',
+      cancelText: '取消',
+      onOk: async () => {
+        setBusy(true);
+        try {
+          await agentApi.loadSequenceTemplate(id);
+          setBinding(bindActiveSequence(id, name || `模板 #${String(id)}`));
+          message.success('已加载模板到本机执行顺序（已激活）');
+          await loadAll();
+        } catch (error) {
+          message.error(`加载模板失败: ${getErrorMessage(error)}`);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   };
 
   const unbindTemplate = () => {
@@ -607,16 +668,16 @@ export function SequenceEditTab() {
         title="执行顺序"
         extra={
           <Space wrap>
-            <Button onClick={() => void insertGroup()} disabled={busy}>
+            <Button onClick={openInsertGroupModal} disabled={busy}>
               新建分组
             </Button>
-            <Button onClick={() => void groupSelected()} disabled={busy || !selectedIndexes.length}>
+            <Button onClick={openGroupSelectedModal} disabled={busy || !selectedIndexes.length}>
               编成一组
             </Button>
             <Button onClick={() => void loadAll()} loading={busy}>
               刷新
             </Button>
-            <Button type="primary" onClick={() => void saveTemplate()} loading={busy}>
+            <Button type="primary" onClick={openSaveTemplateModal} loading={busy}>
               保存为模板
             </Button>
           </Space>
@@ -753,7 +814,7 @@ export function SequenceEditTab() {
                   <Button size="small" onClick={() => void move(row.queueIndex, 1)}>
                     下移
                   </Button>
-                  <Button size="small" danger onClick={() => void removeAt(row.queueIndex)}>
+                  <Button size="small" danger onClick={() => confirmRemoveAt(row.queueIndex)}>
                     删除
                   </Button>
                 </Space>
@@ -798,7 +859,7 @@ export function SequenceEditTab() {
                   <Button
                     size="small"
                     type="link"
-                    onClick={() => void loadTemplate(row.id!, row.name)}
+                    onClick={() => loadTemplate(row.id!, row.name)}
                   >
                     加载
                   </Button>
@@ -988,6 +1049,61 @@ export function SequenceEditTab() {
           </Space>
         ) : null}
       </Drawer>
+
+      <Modal
+        title={groupNameModal === 'group' ? '编成一组' : '新建分组'}
+        open={groupNameModal != null}
+        onCancel={() => setGroupNameModal(null)}
+        onOk={() => void confirmGroupName()}
+        okText="确定"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item label="分组名称" required style={{ marginBottom: 0 }}>
+            <Input
+              value={groupNameInput}
+              onChange={(event) => setGroupNameInput(event.target.value)}
+              onPressEnter={() => void confirmGroupName()}
+              placeholder="分组名称"
+              maxLength={100}
+              autoFocus
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="保存为序列模板"
+        open={saveSeqTemplateOpen}
+        onCancel={() => setSaveSeqTemplateOpen(false)}
+        onOk={() => void confirmSaveTemplate()}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={busy}
+        destroyOnClose
+      >
+        <Form layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item label="名称" required>
+            <Input
+              value={saveSeqTemplateName}
+              onChange={(event) => setSaveSeqTemplateName(event.target.value)}
+              placeholder="序列模板名称"
+              maxLength={120}
+              autoFocus
+            />
+          </Form.Item>
+          <Form.Item label="备注（可选）" style={{ marginBottom: 0 }}>
+            <Input.TextArea
+              value={saveSeqTemplateNote}
+              onChange={(event) => setSaveSeqTemplateNote(event.target.value)}
+              placeholder="可选备注"
+              rows={3}
+              maxLength={500}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

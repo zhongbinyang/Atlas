@@ -385,7 +385,7 @@ function ProfileSection({
 }
 
 export function SettingsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [variables, setVariables] = useState<VariableRow[]>([]);
   const [arrayExpandMode, setArrayExpandMode] = useState<'semicolon' | 'json'>('semicolon');
   const [channels, setChannels] = useState<ChannelRow[]>([]);
@@ -547,7 +547,7 @@ export function SettingsPage() {
   };
 
   const loadConfigTemplate = (template: ConfigTemplateRow) => {
-    Modal.confirm({
+    modal.confirm({
       title: '加载中心配置模板',
       content: (
         <div>

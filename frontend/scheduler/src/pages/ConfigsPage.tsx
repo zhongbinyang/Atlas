@@ -21,7 +21,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     : {};
 
 export function ConfigsPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [summaries, setSummaries] = useState<AgentConfigSummary[]>([]);
   const [templates, setTemplates] = useState<AgentConfigTemplate[]>([]);
   const [loading, setLoading] = useState(false);
@@ -73,16 +73,22 @@ export function ConfigsPage() {
 
   const deleteTemplate = (template: AgentConfigTemplate) => {
     const label = template.name || String(template.id || '此模板');
-    Modal.confirm({
+    modal.confirm({
       title: '确认删除',
       content: `确定删除配置模板「${label}」？`,
       okText: '删除',
       okType: 'danger',
       cancelText: '取消',
       async onOk() {
-        await schedulerApi.deleteAgentConfigTemplate(template.id);
-        message.success('配置模板已删除');
-        await load();
+        try {
+          await schedulerApi.deleteAgentConfigTemplate(template.id);
+          message.success('配置模板已删除');
+          await load();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          message.error('删除失败：' + detail);
+          throw error;
+        }
       },
     });
   };

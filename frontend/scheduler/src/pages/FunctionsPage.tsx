@@ -1,4 +1,4 @@
-import { App as AntApp, Button, Card, Modal, Select, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
@@ -61,7 +61,7 @@ function inputsPreview(inputs: unknown): string {
 }
 
 export function FunctionsPage() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [templates, setTemplates] = useState<FunctionTemplate[]>([]);
   const [agentId, setAgentId] = useState('');
@@ -113,24 +113,30 @@ export function FunctionsPage() {
   const deleteTemplate = useCallback(
     (template: FunctionTemplate) => {
       const label = template.name || String(template.id || '此模板');
-      Modal.confirm({
+      modal.confirm({
         title: '确认删除',
         content: '确定删除「' + label + '」？相关序列队列中的引用也会清除。',
         okText: '删除',
         okType: 'danger',
         cancelText: '取消',
         async onOk() {
-          if (template._source === 'general') {
-            await schedulerApi.deleteGeneralTemplate(template.id);
-          } else {
-            await schedulerApi.deleteViTemplate(template.id);
+          try {
+            if (template._source === 'general') {
+              await schedulerApi.deleteGeneralTemplate(template.id);
+            } else {
+              await schedulerApi.deleteViTemplate(template.id);
+            }
+            message.success('功能模板已删除');
+            await load();
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            message.error('删除失败：' + detail);
+            throw error;
           }
-          message.success('功能模板已删除');
-          await load();
         },
       });
     },
-    [load, message],
+    [load, message, modal],
   );
 
   const columns = useMemo<ColumnsType<FunctionTemplate>>(
