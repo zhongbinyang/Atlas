@@ -132,6 +132,10 @@ body {
   line-height: 1.55 !important;
 }
 
+.atlas-row-saving {
+  opacity: 0.55;
+}
+
 .atlas-collapse-card .ant-card-head {
   cursor: pointer;
   user-select: none;

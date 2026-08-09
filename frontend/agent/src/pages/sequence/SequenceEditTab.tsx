@@ -1,4 +1,5 @@
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -150,7 +151,11 @@ export function SequenceEditTab() {
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'labview' | 'general'>('all');
   const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [pageBusy, setPageBusy] = useState(false);
+  const [queueSaving, setQueueSaving] = useState(false);
+  const [savingRowIndexes, setSavingRowIndexes] = useState<number[]>([]);
+  const [detailSaving, setDetailSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [inputsDraft, setInputsDraft] = useState('[]');
   const [limitsDraft, setLimitsDraft] = useState('[]');
@@ -165,6 +170,9 @@ export function SequenceEditTab() {
   const [saveSeqTemplateOpen, setSaveSeqTemplateOpen] = useState(false);
   const [saveSeqTemplateName, setSaveSeqTemplateName] = useState('');
   const [saveSeqTemplateNote, setSaveSeqTemplateNote] = useState('');
+  const [enabledDraft, setEnabledDraft] = useState(true);
+  const [failPolicyDraft, setFailPolicyDraft] = useState<'stop' | 'continue'>('stop');
+  const [resourcesDraft, setResourcesDraft] = useState<string[]>([]);
 
   const stepCount = useMemo(() => countRunQueueSteps(queue), [queue]);
   const summary = useMemo(() => buildActiveSequenceSummary(stepCount, binding), [stepCount, binding]);
@@ -212,7 +220,7 @@ export function SequenceEditTab() {
   };
 
   const loadAll = useCallback(async () => {
-    setBusy(true);
+    setPageBusy(true);
     try {
       const [vi, general, queueResp, tpl, specTpl, settingsResp] = await Promise.all([
         agentApi.labviewAllTemplates(),
@@ -255,12 +263,13 @@ export function SequenceEditTab() {
         .filter((id): id is number => id != null);
       await ensureSpecTemplateDetails(templateIds);
       setBinding(readActiveSequenceBinding());
+      setLoadError(null);
     } catch (error) {
-      message.error(`加载序列编排数据失败: ${getErrorMessage(error)}`);
+      setLoadError(getErrorMessage(error));
     } finally {
-      setBusy(false);
+      setPageBusy(false);
     }
-  }, [message, ensureSpecTemplateDetails]);
+  }, [ensureSpecTemplateDetails]);
 
   useEffect(() => {
     void loadAll();
@@ -277,8 +286,19 @@ export function SequenceEditTab() {
     });
   }, [catalog, query, sourceFilter]);
 
-  const persistQueue = async (next: QueueItem[], silent = false, markDirty = true) => {
-    setBusy(true);
+  const persistQueue = async (
+    next: QueueItem[],
+    options?: {
+      silent?: boolean;
+      markDirty?: boolean;
+      rowIndexes?: number[];
+      showPageBusy?: boolean;
+    },
+  ) => {
+    const { silent = true, markDirty = true, rowIndexes, showPageBusy = false } = options ?? {};
+    if (showPageBusy) setPageBusy(true);
+    else if (rowIndexes?.length) setSavingRowIndexes(rowIndexes);
+    else setQueueSaving(true);
     try {
       const data = asRecord(await agentApi.putRunQueue({ items: buildPutItems(next) }));
       const items = Array.isArray(data.items)
@@ -298,7 +318,9 @@ export function SequenceEditTab() {
       await loadAll();
       return false;
     } finally {
-      setBusy(false);
+      if (showPageBusy) setPageBusy(false);
+      if (rowIndexes?.length) setSavingRowIndexes([]);
+      else setQueueSaving(false);
     }
   };
 
@@ -323,13 +345,13 @@ export function SequenceEditTab() {
         spec_metrics: [],
       },
     ];
-    await persistQueue(next);
+    await persistQueue(next, { showPageBusy: true });
   };
 
   const updateAt = async (index: number, patch: Partial<QueueItem>, silent = true) => {
     const next = queue.map((item, i) => (i === index ? { ...item, ...patch } : item));
     setQueue(next);
-    await persistQueue(next, silent);
+    await persistQueue(next, { silent, rowIndexes: [index] });
   };
 
   const move = async (index: number, delta: number) => {
@@ -339,13 +361,13 @@ export function SequenceEditTab() {
     const [row] = next.splice(index, 1);
     next.splice(target, 0, row);
     setSelectedIndexes([]);
-    await persistQueue(next);
+    await persistQueue(next, { silent: true });
   };
 
   const removeAt = async (index: number) => {
     const next = queue.filter((_, i) => i !== index);
     setSelectedIndexes((prev) => prev.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)));
-    await persistQueue(next);
+    await persistQueue(next, { silent: true });
   };
 
   const confirmRemoveAt = (index: number) => {
@@ -402,7 +424,7 @@ export function SequenceEditTab() {
         },
       ];
       setGroupNameModal(null);
-      await persistQueue(next);
+      await persistQueue(next, { showPageBusy: true });
       return;
     }
     if (groupNameModal === 'group') {
@@ -425,7 +447,7 @@ export function SequenceEditTab() {
       next.splice(first + 1, 0, ...selectedItems);
       setSelectedIndexes([]);
       setGroupNameModal(null);
-      await persistQueue(next);
+      await persistQueue(next, { showPageBusy: true });
     }
   };
 
@@ -445,7 +467,7 @@ export function SequenceEditTab() {
       message.warning('请输入序列模板名称');
       return;
     }
-    setBusy(true);
+    setPageBusy(true);
     try {
       const data = asRecord(
         await agentApi.saveSequenceTemplate({
@@ -463,7 +485,7 @@ export function SequenceEditTab() {
     } catch (error) {
       message.error(`保存模板失败: ${getErrorMessage(error)}`);
     } finally {
-      setBusy(false);
+      setPageBusy(false);
     }
   };
 
@@ -475,6 +497,9 @@ export function SequenceEditTab() {
     setLimitsDraft(JSON.stringify(item.limits ?? [], null, 2));
     setNoteDraft(item.note || '');
     setResourceDraft('');
+    setEnabledDraft(item.enabled !== false);
+    setFailPolicyDraft(item.fail_policy === 'continue' ? 'continue' : 'stop');
+    setResourcesDraft(Array.isArray(item.resources) ? item.resources.slice() : []);
     setSpecTemplateDraft(item.spec_template_id ?? null);
     setSpecSectionDraft(item.spec_section || '');
     setSpecMetricsDraft(Array.isArray(item.spec_metrics) ? item.spec_metrics.slice() : []);
@@ -500,37 +525,45 @@ export function SequenceEditTab() {
       message.error('Spec/limits JSON 无效');
       return;
     }
-    await updateAt(
-      detailIndex,
-      {
-        inputs,
-        limits,
-        note: noteDraft,
-        spec_template_id: specTemplateDraft,
-        spec_section: specSectionDraft.trim(),
-        spec_metrics: specMetricsDraft.slice(),
-      },
-      false,
-    );
-    setDetailIndex(null);
+    setDetailSaving(true);
+    try {
+      const next = queue.map((item, i) =>
+        i === detailIndex
+          ? {
+              ...item,
+              inputs,
+              limits,
+              note: noteDraft,
+              enabled: enabledDraft,
+              fail_policy: failPolicyDraft,
+              resources: resourcesDraft.slice(),
+              spec_template_id: specTemplateDraft,
+              spec_section: specSectionDraft.trim(),
+              spec_metrics: specMetricsDraft.slice(),
+            }
+          : item,
+      );
+      setQueue(next);
+      const ok = await persistQueue(next, { silent: true, rowIndexes: [detailIndex] });
+      if (ok) setDetailIndex(null);
+    } finally {
+      setDetailSaving(false);
+    }
   };
 
-  const addResource = async (index: number) => {
+  const addResource = () => {
     const name = resourceDraft.trim();
     if (!name) return;
     if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)) {
       message.error('资源名非法（字母开头，可含数字._-）');
       return;
     }
-    const item = queue[index];
-    const resources = Array.isArray(item.resources) ? item.resources.slice() : [];
-    if (resources.includes(name)) {
+    if (resourcesDraft.includes(name)) {
       message.warning('资源已存在');
       return;
     }
-    resources.push(name);
+    setResourcesDraft((prev) => [...prev, name]);
     setResourceDraft('');
-    await updateAt(index, { resources });
   };
 
   const loadTemplate = (id: string | number, name?: string) => {
@@ -541,7 +574,7 @@ export function SequenceEditTab() {
       okText: '加载并覆盖',
       cancelText: '取消',
       onOk: async () => {
-        setBusy(true);
+        setPageBusy(true);
         try {
           await agentApi.loadSequenceTemplate(id);
           setBinding(bindActiveSequence(id, name || `模板 #${String(id)}`));
@@ -550,7 +583,7 @@ export function SequenceEditTab() {
         } catch (error) {
           message.error(`加载模板失败: ${getErrorMessage(error)}`);
         } finally {
-          setBusy(false);
+          setPageBusy(false);
         }
       },
     });
@@ -563,6 +596,65 @@ export function SequenceEditTab() {
   };
 
   const detailItem = detailIndex != null ? queue[detailIndex] : null;
+
+  const isDetailDirty = useMemo(() => {
+    if (detailIndex == null || !detailItem) return false;
+    if (enabledDraft !== (detailItem.enabled !== false)) return true;
+    if (failPolicyDraft !== (detailItem.fail_policy === 'continue' ? 'continue' : 'stop')) return true;
+    const itemResources = Array.isArray(detailItem.resources) ? detailItem.resources : [];
+    if (JSON.stringify(resourcesDraft) !== JSON.stringify(itemResources)) return true;
+    if (noteDraft !== (detailItem.note || '')) return true;
+    if (specTemplateDraft !== (detailItem.spec_template_id ?? null)) return true;
+    if (specSectionDraft !== (detailItem.spec_section || '')) return true;
+    if (
+      JSON.stringify(specMetricsDraft) !==
+      JSON.stringify(normalizeStringArray(detailItem.spec_metrics))
+    ) {
+      return true;
+    }
+    try {
+      if (JSON.stringify(JSON.parse(inputsDraft || '[]')) !== JSON.stringify(detailItem.inputs ?? [])) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    try {
+      if (JSON.stringify(JSON.parse(limitsDraft || '[]')) !== JSON.stringify(detailItem.limits ?? [])) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    return false;
+  }, [
+    detailIndex,
+    detailItem,
+    enabledDraft,
+    failPolicyDraft,
+    resourcesDraft,
+    noteDraft,
+    specTemplateDraft,
+    specSectionDraft,
+    specMetricsDraft,
+    inputsDraft,
+    limitsDraft,
+  ]);
+
+  const requestCloseDetail = () => {
+    if (!isDetailDirty) {
+      setDetailIndex(null);
+      return;
+    }
+    modal.confirm({
+      title: '放弃未保存的更改？',
+      content: '关闭详情将丢弃未点击「保存」的编辑。',
+      okText: '放弃',
+      okType: 'danger',
+      cancelText: '继续编辑',
+      onOk: () => setDetailIndex(null),
+    });
+  };
 
   const detailSectionOptions = useMemo(() => {
     if (specTemplateDraft == null) return [];
@@ -608,6 +700,20 @@ export function SequenceEditTab() {
         </Typography.Paragraph>
       </div>
 
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="加载序列编排数据失败"
+          description={loadError}
+          action={
+            <Button size="small" onClick={() => void loadAll()}>
+              重试
+            </Button>
+          }
+        />
+      ) : null}
+
       <CollapsibleCard
         title="中心全部功能"
         extra={
@@ -634,7 +740,7 @@ export function SequenceEditTab() {
       >
         <Table
           size="small"
-          loading={busy}
+          loading={pageBusy}
           rowKey={(row) => `${row.source}-${String(row.id)}`}
           dataSource={filteredCatalog}
           pagination={{ pageSize: 8, showSizeChanger: false }}
@@ -668,18 +774,23 @@ export function SequenceEditTab() {
         title="执行顺序"
         extra={
           <Space wrap>
-            <Button onClick={openInsertGroupModal} disabled={busy}>
+            <Button onClick={openInsertGroupModal} disabled={pageBusy || queueSaving}>
               新建分组
             </Button>
-            <Button onClick={openGroupSelectedModal} disabled={busy || !selectedIndexes.length}>
+            <Button onClick={openGroupSelectedModal} disabled={pageBusy || queueSaving || !selectedIndexes.length}>
               编成一组
             </Button>
-            <Button onClick={() => void loadAll()} loading={busy}>
+            <Button onClick={() => void loadAll()} loading={pageBusy}>
               刷新
             </Button>
-            <Button type="primary" onClick={openSaveTemplateModal} loading={busy}>
+            <Button type="primary" onClick={openSaveTemplateModal} loading={pageBusy}>
               保存为模板
             </Button>
+            {queueSaving ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                保存中…
+              </Typography.Text>
+            ) : null}
           </Space>
         }
       >
@@ -688,10 +799,11 @@ export function SequenceEditTab() {
         </Typography.Paragraph>
         <Table
           size="small"
-          loading={busy}
+          loading={pageBusy}
           rowKey={(row) => String(row.queueIndex)}
           dataSource={stepRows}
           pagination={false}
+          rowClassName={(row) => (savingRowIndexes.includes(row.queueIndex) ? 'atlas-row-saving' : '')}
           locale={{ emptyText: '队列为空：从上方功能库加入，或从下方模板加载' }}
           rowSelection={{
             selectedRowKeys: selectedIndexes.map(String),
@@ -731,7 +843,7 @@ export function SequenceEditTab() {
                       const next = queue.map((item, i) =>
                         i === markerIndex ? { ...item, name: e.target.value } : item,
                       );
-                      void persistQueue(next, true);
+                      void persistQueue(next, { silent: true, rowIndexes: [markerIndex] });
                     }}
                   />
                 );
@@ -756,6 +868,7 @@ export function SequenceEditTab() {
                 <Switch
                   size="small"
                   checked={row.item.enabled !== false}
+                  disabled={savingRowIndexes.includes(row.queueIndex)}
                   onChange={(checked) => void updateAt(row.queueIndex, { enabled: checked })}
                 />
               ),
@@ -768,6 +881,7 @@ export function SequenceEditTab() {
                   size="small"
                   value={row.item.fail_policy === 'continue' ? 'continue' : 'stop'}
                   style={{ width: 96 }}
+                  disabled={savingRowIndexes.includes(row.queueIndex)}
                   options={[
                     { value: 'stop', label: '停止' },
                     { value: 'continue', label: '继续' },
@@ -830,7 +944,7 @@ export function SequenceEditTab() {
         </Typography.Paragraph>
         <Table
           size="small"
-          loading={busy}
+          loading={pageBusy}
           rowKey={(row) => String(row.id)}
           dataSource={templates}
           pagination={{ pageSize: 6, showSizeChanger: false }}
@@ -873,9 +987,9 @@ export function SequenceEditTab() {
         width={640}
         title={detailItem ? `步骤详情 · ${detailItem.name || ''}` : '步骤详情'}
         open={detailIndex != null}
-        onClose={() => setDetailIndex(null)}
+        onClose={requestCloseDetail}
         extra={
-          <Button type="primary" onClick={() => void saveDetail()} loading={busy}>
+          <Button type="primary" onClick={() => void saveDetail()} loading={detailSaving}>
             保存
           </Button>
         }
@@ -886,13 +1000,12 @@ export function SequenceEditTab() {
               <Typography.Text strong>资源锁</Typography.Text>
               <div style={{ marginTop: 8 }}>
                 <Space wrap>
-                  {(detailItem.resources || []).map((name) => (
+                  {resourcesDraft.map((name) => (
                     <Tag
                       key={name}
                       closable
                       onClose={() => {
-                        const resources = (detailItem.resources || []).filter((x) => x !== name);
-                        void updateAt(detailIndex, { resources });
+                        setResourcesDraft((prev) => prev.filter((x) => x !== name));
                       }}
                     >
                       {name}
@@ -905,9 +1018,9 @@ export function SequenceEditTab() {
                   placeholder="例如 station.dca"
                   value={resourceDraft}
                   onChange={(e) => setResourceDraft(e.target.value)}
-                  onPressEnter={() => void addResource(detailIndex)}
+                  onPressEnter={() => addResource()}
                 />
-                <Button onClick={() => void addResource(detailIndex)}>添加</Button>
+                <Button onClick={() => addResource()}>添加</Button>
               </Space>
             </div>
             <div>
@@ -1031,19 +1144,19 @@ export function SequenceEditTab() {
             </div>
             <div>
               <Checkbox
-                checked={detailItem.enabled !== false}
-                onChange={(e) => void updateAt(detailIndex, { enabled: e.target.checked })}
+                checked={enabledDraft}
+                onChange={(e) => setEnabledDraft(e.target.checked)}
               >
                 启用此步骤
               </Checkbox>
               <Select
                 style={{ width: 160, marginLeft: 12 }}
-                value={detailItem.fail_policy === 'continue' ? 'continue' : 'stop'}
+                value={failPolicyDraft}
                 options={[
                   { value: 'stop', label: '失败则停止' },
                   { value: 'continue', label: '失败则继续' },
                 ]}
-                onChange={(value) => void updateAt(detailIndex, { fail_policy: value })}
+                onChange={(value) => setFailPolicyDraft(value)}
               />
             </div>
           </Space>
@@ -1080,7 +1193,7 @@ export function SequenceEditTab() {
         onOk={() => void confirmSaveTemplate()}
         okText="保存"
         cancelText="取消"
-        confirmLoading={busy}
+        confirmLoading={pageBusy}
         destroyOnClose
       >
         <Form layout="vertical" style={{ marginTop: 8 }}>

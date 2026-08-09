@@ -1,4 +1,5 @@
 import {
+  Alert,
   App,
   Button,
   Form,
@@ -103,12 +104,14 @@ function ProfileSection({
   profiles,
   busy,
   onRefresh,
+  onDirtyChange,
 }: {
   kind: ProfileKind;
   title: string;
   profiles: ConfigProfile[];
   busy: boolean;
   onRefresh: () => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { message, modal } = App.useApp();
   const [flatRows, setFlatRows] = useState<FlatPreviewRow[]>([]);
@@ -127,6 +130,16 @@ function ProfileSection({
   useEffect(() => {
     setFlatRows(active ? settingToFlatPreviewRows(active.setting) : []);
   }, [active]);
+
+  const flatRowsDirty = useMemo(() => {
+    if (!active) return false;
+    const original = settingToFlatPreviewRows(active.setting);
+    return JSON.stringify(flatRows) !== JSON.stringify(original);
+  }, [active, flatRows]);
+
+  useEffect(() => {
+    onDirtyChange?.(flatRowsDirty);
+  }, [flatRowsDirty, onDirtyChange]);
 
   const createProfile = kind === 'device' ? agentApi.createDeviceProfile : agentApi.createCalibrationProfile;
   const updateProfile = kind === 'device' ? agentApi.updateDeviceProfile : agentApi.updateCalibrationProfile;
@@ -398,6 +411,35 @@ export function SettingsPage() {
   const [saveTemplateName, setSaveTemplateName] = useState('');
   const [saveTemplateNote, setSaveTemplateNote] = useState('');
   const [agentHostname, setAgentHostname] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [dirtyBlocks, setDirtyBlocks] = useState({
+    variables: false,
+    channels: false,
+    deviceProfile: false,
+    calibrationProfile: false,
+  });
+
+  const hasUnsavedEdits = useMemo(
+    () => Object.values(dirtyBlocks).some(Boolean),
+    [dirtyBlocks],
+  );
+
+  const clearDirtyBlocks = () => {
+    setDirtyBlocks({
+      variables: false,
+      channels: false,
+      deviceProfile: false,
+      calibrationProfile: false,
+    });
+  };
+
+  const markVariablesDirty = () => {
+    setDirtyBlocks((prev) => (prev.variables ? prev : { ...prev, variables: true }));
+  };
+
+  const markChannelsDirty = () => {
+    setDirtyBlocks((prev) => (prev.channels ? prev : { ...prev, channels: true }));
+  };
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -495,12 +537,15 @@ export function SettingsPage() {
           };
         }),
       );
+      clearDirtyBlocks();
+      setLoadError(null);
     } catch (error) {
-      message.error(`加载配置失败: ${getErrorMessage(error)}`);
+      const detail = getErrorMessage(error);
+      setLoadError(detail);
     } finally {
       setBusy(false);
     }
-  }, [message]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -517,6 +562,21 @@ export function SettingsPage() {
     const enabledChannels = channels.filter((ch) => ch.enabled).length;
     return `变量 ${variables.length} · 设备档 ${deviceProfiles.length} · 校准档 ${calibrationProfiles.length} · 通道 ${channels.length}（启用 ${enabledChannels}）· 单位 ${units.length}`;
   }, [variables.length, deviceProfiles.length, calibrationProfiles.length, channels, units.length]);
+
+  const requestReload = () => {
+    if (!hasUnsavedEdits) {
+      void load();
+      return;
+    }
+    modal.confirm({
+      title: '放弃未保存的更改？',
+      content: '重新加载将丢弃变量、通道与配置档扁平值等未保存的编辑。',
+      okText: '重新加载',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: () => load(),
+    });
+  };
 
   const openSaveModal = () => {
     setSaveTemplateName(buildDefaultTemplateName(agentHostname));
@@ -588,6 +648,7 @@ export function SettingsPage() {
         array_expand_mode: arrayExpandMode,
       });
       message.success(`已保存 · ${variables.length} 个变量`);
+      setDirtyBlocks((prev) => ({ ...prev, variables: false }));
       await load();
     } catch (error) {
       message.error(`保存失败: ${getErrorMessage(error)}`);
@@ -631,6 +692,7 @@ export function SettingsPage() {
           .sort((a, b) => a.channel_index - b.channel_index),
       );
       message.success(`已保存 ${list.length} 个通道`);
+      setDirtyBlocks((prev) => ({ ...prev, channels: false }));
     } catch (error) {
       message.error(`保存通道失败: ${getErrorMessage(error)}`);
     } finally {
@@ -639,10 +701,12 @@ export function SettingsPage() {
   };
 
   const addVariable = () => {
+    markVariablesDirty();
     setVariables((prev) => [...prev, { name: '', value: '', description: '' }]);
   };
 
   const addChannel = () => {
+    markChannelsDirty();
     const nextIndex = channels.reduce((max, ch) => Math.max(max, ch.channel_index), -1) + 1;
     setChannels((prev) => [
       ...prev,
@@ -661,11 +725,29 @@ export function SettingsPage() {
         title="配置"
         description="手工变量、设备/校准配置档、通道 overlay 与中心单位。展开优先级：通道 overlay > 手工变量 > 设备档 > 校准档。"
         extra={
-          <Button onClick={() => void load()} loading={busy}>
+          <Button onClick={requestReload} loading={busy}>
             重新加载
           </Button>
         }
       />
+
+      {loadError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="加载配置失败"
+          description={loadError}
+          action={
+            <Button size="small" onClick={() => void load()}>
+              重试
+            </Button>
+          }
+        />
+      ) : null}
+
+      {hasUnsavedEdits ? (
+        <Alert type="warning" showIcon message="有未保存的更改，离开或重新加载前请先保存。" />
+      ) : null}
 
       <CollapsibleCard
         title="中心配置模板"
@@ -787,7 +869,10 @@ export function SettingsPage() {
             <Select
               style={{ width: 280 }}
               value={arrayExpandMode}
-              onChange={setArrayExpandMode}
+              onChange={(value) => {
+                markVariablesDirty();
+                setArrayExpandMode(value);
+              }}
               options={[
                 { value: 'semicolon', label: 'semicolon · 4.58;4.5;4.6' },
                 { value: 'json', label: 'json · [4.58,4.5,4.6]' },
@@ -820,6 +905,7 @@ export function SettingsPage() {
                     onChange={(e) => {
                       const next = variables.slice();
                       next[index] = { ...next[index], name: e.target.value };
+                      markVariablesDirty();
                       setVariables(next);
                     }}
                   />
@@ -834,6 +920,7 @@ export function SettingsPage() {
                   onChange={(e) => {
                     const next = variables.slice();
                     next[index] = { ...next[index], value: e.target.value };
+                    markVariablesDirty();
                     setVariables(next);
                   }}
                 />
@@ -849,6 +936,7 @@ export function SettingsPage() {
                   onChange={(e) => {
                     const next = variables.slice();
                     next[index] = { ...next[index], description: e.target.value };
+                    markVariablesDirty();
                     setVariables(next);
                   }}
                 />
@@ -863,7 +951,10 @@ export function SettingsPage() {
                     size="small"
                     type="link"
                     danger
-                    onClick={() => setVariables((prev) => prev.filter((_, i) => i !== index))}
+                    onClick={() => {
+                      markVariablesDirty();
+                      setVariables((prev) => prev.filter((_, i) => i !== index));
+                    }}
                   >
                     删除
                   </Button>
@@ -879,6 +970,11 @@ export function SettingsPage() {
         profiles={deviceProfiles}
         busy={busy}
         onRefresh={load}
+        onDirtyChange={(dirty) =>
+          setDirtyBlocks((prev) =>
+            prev.deviceProfile === dirty ? prev : { ...prev, deviceProfile: dirty },
+          )
+        }
       />
 
       <ProfileSection
@@ -887,6 +983,11 @@ export function SettingsPage() {
         profiles={calibrationProfiles}
         busy={busy}
         onRefresh={load}
+        onDirtyChange={(dirty) =>
+          setDirtyBlocks((prev) =>
+            prev.calibrationProfile === dirty ? prev : { ...prev, calibrationProfile: dirty },
+          )
+        }
       />
 
       <CollapsibleCard
@@ -924,6 +1025,7 @@ export function SettingsPage() {
                       ...next[index],
                       channel_index: Number(e.target.value) || 0,
                     };
+                    markChannelsDirty();
                     setChannels(next);
                   }}
                 />
@@ -938,6 +1040,7 @@ export function SettingsPage() {
                   onChange={(e) => {
                     const next = channels.slice();
                     next[index] = { ...next[index], name: e.target.value };
+                    markChannelsDirty();
                     setChannels(next);
                   }}
                 />
@@ -952,6 +1055,7 @@ export function SettingsPage() {
                   onChange={(checked) => {
                     const next = channels.slice();
                     next[index] = { ...next[index], enabled: checked };
+                    markChannelsDirty();
                     setChannels(next);
                   }}
                 />
@@ -973,6 +1077,7 @@ export function SettingsPage() {
                           const pairs = next[channelIndex].overlayPairs.slice();
                           pairs[pairIndex] = { ...pairs[pairIndex], key: e.target.value };
                           next[channelIndex] = { ...next[channelIndex], overlayPairs: pairs };
+                          markChannelsDirty();
                           setChannels(next);
                         }}
                       />
@@ -986,6 +1091,7 @@ export function SettingsPage() {
                           const pairs = next[channelIndex].overlayPairs.slice();
                           pairs[pairIndex] = { ...pairs[pairIndex], value: e.target.value };
                           next[channelIndex] = { ...next[channelIndex], overlayPairs: pairs };
+                          markChannelsDirty();
                           setChannels(next);
                         }}
                       />
@@ -996,6 +1102,7 @@ export function SettingsPage() {
                           let pairs = next[channelIndex].overlayPairs.filter((_, i) => i !== pairIndex);
                           if (!pairs.length) pairs = [{ key: '', value: '' }];
                           next[channelIndex] = { ...next[channelIndex], overlayPairs: pairs };
+                          markChannelsDirty();
                           setChannels(next);
                         }}
                       >
@@ -1011,6 +1118,7 @@ export function SettingsPage() {
                         ...next[channelIndex],
                         overlayPairs: [...next[channelIndex].overlayPairs, { key: '', value: '' }],
                       };
+                      markChannelsDirty();
                       setChannels(next);
                     }}
                   >
@@ -1027,7 +1135,10 @@ export function SettingsPage() {
                   size="small"
                   type="link"
                   danger
-                  onClick={() => setChannels((prev) => prev.filter((_, i) => i !== index))}
+                  onClick={() => {
+                    markChannelsDirty();
+                    setChannels((prev) => prev.filter((_, i) => i !== index));
+                  }}
                 >
                   删除
                 </Button>
