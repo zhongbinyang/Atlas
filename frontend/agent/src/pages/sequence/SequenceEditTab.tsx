@@ -25,6 +25,12 @@ import {
   markActiveSequenceDirty,
   readActiveSequenceBinding,
 } from './sequenceActive';
+import {
+  findGroupIndexForStep,
+  groupNameByQueueIndex,
+  isFirstStepInGroup,
+  listQueueStepRows,
+} from './sequenceDetailModels';
 
 type CatalogItem = {
   id?: number | string;
@@ -146,6 +152,8 @@ export function SequenceEditTab() {
 
   const stepCount = useMemo(() => countRunQueueSteps(queue), [queue]);
   const summary = useMemo(() => buildActiveSequenceSummary(stepCount, binding), [stepCount, binding]);
+  const groupNamesByIndex = useMemo(() => groupNameByQueueIndex(queue), [queue]);
+  const stepRows = useMemo(() => listQueueStepRows(queue), [queue]);
 
   const noteQueueDirty = () => {
     const next = markActiveSequenceDirty();
@@ -516,16 +524,13 @@ export function SequenceEditTab() {
         <Table
           size="small"
           loading={busy}
-          rowKey={(_, index) => String(index)}
-          dataSource={queue}
+          rowKey={(row) => String(row.queueIndex)}
+          dataSource={stepRows}
           pagination={false}
           locale={{ emptyText: '队列为空：从上方功能库加入，或从下方模板加载' }}
           rowSelection={{
             selectedRowKeys: selectedIndexes.map(String),
             onChange: (keys) => setSelectedIndexes(keys.map((k) => Number(k))),
-            getCheckboxProps: (row) => ({
-              disabled: row.template_source === 'group',
-            }),
           }}
           columns={[
             {
@@ -534,99 +539,104 @@ export function SequenceEditTab() {
               render: (_, __, index) => index + 1,
             },
             {
+              title: '组名',
+              width: 160,
+              ellipsis: true,
+              render: (_, row) => {
+                const groupName = groupNamesByIndex[row.queueIndex] ?? '---';
+                if (groupName === '---') {
+                  return <Typography.Text type="secondary">---</Typography.Text>;
+                }
+                if (!isFirstStepInGroup(queue, row.queueIndex)) {
+                  return groupName;
+                }
+                const markerIndex = findGroupIndexForStep(queue, row.queueIndex);
+                if (markerIndex == null) return groupName;
+                return (
+                  <Input
+                    size="small"
+                    value={queue[markerIndex]?.name ?? groupName}
+                    style={{ width: '100%' }}
+                    onChange={(e) => {
+                      const next = queue.slice();
+                      next[markerIndex] = { ...next[markerIndex], name: e.target.value };
+                      setQueue(next);
+                    }}
+                    onBlur={(e) => {
+                      const next = queue.map((item, i) =>
+                        i === markerIndex ? { ...item, name: e.target.value } : item,
+                      );
+                      void persistQueue(next, true);
+                    }}
+                  />
+                );
+              },
+            },
+            {
               title: '名称',
-              render: (_, row, index) =>
-                row.template_source === 'group' ? (
-                  <Space>
-                    <Tag color="blue">分组</Tag>
-                    <Input
-                      size="small"
-                      value={row.name}
-                      style={{ width: 160 }}
-                      onChange={(e) => {
-                        const next = queue.slice();
-                        next[index] = { ...next[index], name: e.target.value };
-                        setQueue(next);
-                      }}
-                      onBlur={(e) => {
-                        const next = queue.map((item, i) =>
-                          i === index ? { ...item, name: e.target.value } : item,
-                        );
-                        void persistQueue(next, true);
-                      }}
-                    />
-                  </Space>
-                ) : (
-                  <Space direction="vertical" size={0}>
-                    <span>{row.name || '—'}</span>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {row.template_source === 'general' ? '通用' : 'VI'}
-                      {row.kind ? ` · ${row.kind}` : ''}
-                    </Typography.Text>
-                  </Space>
-                ),
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <span>{row.item.name || '—'}</span>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {row.item.template_source === 'general' ? '通用' : 'VI'}
+                    {row.item.kind ? ` · ${row.item.kind}` : ''}
+                  </Typography.Text>
+                </Space>
+              ),
             },
             {
               title: '启用',
               width: 70,
-              render: (_, row, index) => (
+              render: (_, row) => (
                 <Switch
                   size="small"
-                  checked={row.enabled !== false}
-                  onChange={(checked) => void updateAt(index, { enabled: checked })}
+                  checked={row.item.enabled !== false}
+                  onChange={(checked) => void updateAt(row.queueIndex, { enabled: checked })}
                 />
               ),
             },
             {
               title: 'Fail',
               width: 110,
-              render: (_, row, index) =>
-                row.template_source === 'group' ? (
-                  '—'
-                ) : (
-                  <Select
-                    size="small"
-                    value={row.fail_policy === 'continue' ? 'continue' : 'stop'}
-                    style={{ width: 96 }}
-                    options={[
-                      { value: 'stop', label: '停止' },
-                      { value: 'continue', label: '继续' },
-                    ]}
-                    onChange={(value) => void updateAt(index, { fail_policy: value })}
-                  />
-                ),
+              render: (_, row) => (
+                <Select
+                  size="small"
+                  value={row.item.fail_policy === 'continue' ? 'continue' : 'stop'}
+                  style={{ width: 96 }}
+                  options={[
+                    { value: 'stop', label: '停止' },
+                    { value: 'continue', label: '继续' },
+                  ]}
+                  onChange={(value) => void updateAt(row.queueIndex, { fail_policy: value })}
+                />
+              ),
             },
             {
               title: '资源',
               width: 140,
-              render: (_, row) =>
-                row.template_source === 'group' ? (
-                  '—'
-                ) : (
-                  <Space size={[4, 4]} wrap>
-                    {(row.resources || []).map((name) => (
-                      <Tag key={name}>{name}</Tag>
-                    ))}
-                  </Space>
-                ),
+              render: (_, row) => (
+                <Space size={[4, 4]} wrap>
+                  {(Array.isArray(row.item.resources) ? row.item.resources : []).map((name) => (
+                    <Tag key={name}>{name}</Tag>
+                  ))}
+                </Space>
+              ),
             },
             {
               title: '操作',
               width: 220,
-              render: (_, row, index) => (
+              render: (_, row) => (
                 <Space wrap>
-                  {row.template_source !== 'group' ? (
-                    <Button size="small" onClick={() => openDetail(index)}>
-                      详情
-                    </Button>
-                  ) : null}
-                  <Button size="small" onClick={() => void move(index, -1)}>
+                  <Button size="small" onClick={() => openDetail(row.queueIndex)}>
+                    详情
+                  </Button>
+                  <Button size="small" onClick={() => void move(row.queueIndex, -1)}>
                     上移
                   </Button>
-                  <Button size="small" onClick={() => void move(index, 1)}>
+                  <Button size="small" onClick={() => void move(row.queueIndex, 1)}>
                     下移
                   </Button>
-                  <Button size="small" danger onClick={() => void removeAt(index)}>
+                  <Button size="small" danger onClick={() => void removeAt(row.queueIndex)}>
                     删除
                   </Button>
                 </Space>

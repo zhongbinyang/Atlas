@@ -61,20 +61,57 @@ export function collectMeasuredKeys(rows: DetailStepRow[]): string[] {
   return [...keys].sort((a, b) => a.localeCompare(b));
 }
 
-/** Map step queue positions to group display names; ungrouped → `---`. */
-export function groupNameByQueuePosition(queue: QueueItem[]): Record<number, string> {
+function resolveGroupNames(queue: QueueItem[], key: (item: QueueItem, index: number) => number) {
   const map: Record<number, string> = {};
   let current: string | null = null;
   (Array.isArray(queue) ? queue : []).forEach((item, index) => {
     const row = item || {};
-    const position = row.position != null ? Number(row.position) : index;
     if (row.template_source === 'group') {
       current = String(row.name || '未命名组').trim() || '未命名组';
+      map[key(row, index)] = current;
       return;
     }
-    map[position] = current ?? '---';
+    map[key(row, index)] = current ?? '---';
   });
   return map;
+}
+
+/** Map step queue positions to group display names; ungrouped → `---`. */
+export function groupNameByQueuePosition(queue: QueueItem[]): Record<number, string> {
+  return resolveGroupNames(queue, (row, index) =>
+    row.position != null ? Number(row.position) : index,
+  );
+}
+
+/** Map queue array indexes to group display names (for edit table rows). */
+export function groupNameByQueueIndex(queue: QueueItem[]): Record<number, string> {
+  return resolveGroupNames(queue, (_, index) => index);
+}
+
+export type QueueStepRow = { item: QueueItem; queueIndex: number };
+
+/** Queue rows shown in the edit table (group markers are hidden). */
+export function listQueueStepRows(queue: QueueItem[]): QueueStepRow[] {
+  return (Array.isArray(queue) ? queue : [])
+    .map((item, queueIndex) => ({ item, queueIndex }))
+    .filter(({ item }) => item?.template_source !== 'group');
+}
+
+export function findGroupIndexForStep(queue: QueueItem[], stepIndex: number): number | null {
+  for (let i = stepIndex - 1; i >= 0; i--) {
+    if (queue[i]?.template_source === 'group') return i;
+  }
+  return null;
+}
+
+export function isFirstStepInGroup(queue: QueueItem[], stepIndex: number): boolean {
+  const groupIndex = findGroupIndexForStep(queue, stepIndex);
+  if (groupIndex == null) return false;
+  for (let i = groupIndex + 1; i < queue.length; i++) {
+    if (queue[i]?.template_source === 'group') return false;
+    return i === stepIndex;
+  }
+  return false;
 }
 
 export function formatStepSourceLabel(templateSource: unknown, kind: unknown): string {

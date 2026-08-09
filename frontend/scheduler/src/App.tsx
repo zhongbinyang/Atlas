@@ -3,6 +3,7 @@ import zhCN from 'antd/locale/zh_CN';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { AgentDetailPage } from './pages/AgentDetailPage';
+import { ConfigsPage } from './pages/ConfigsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
 import { MachinesPage } from './pages/MachinesPage';
 import { SequencesPage } from './pages/SequencesPage';
@@ -19,6 +20,7 @@ export function App() {
               <Route path="/agents/:id" element={<AgentDetailPage />} />
               <Route path="/functions" element={<FunctionsPage />} />
               <Route path="/sequences" element={<SequencesPage />} />
+              <Route path="/configs" element={<ConfigsPage />} />
               <Route path="/units" element={<UnitsPage />} />
               <Route path="*" element={<Navigate to="/machines" replace />} />
             </Route>

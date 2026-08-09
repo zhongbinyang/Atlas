@@ -9,6 +9,7 @@ export type AgentStatus = {
   busy_message?: string;
   busy_reason?: string;
   log_dir?: string;
+  center_url?: string;
 };
 
 export type LabviewConfig = {

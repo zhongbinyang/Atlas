@@ -17,6 +17,7 @@ import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import { CollapsibleCard } from '../components/CollapsibleCard';
 import { PageHeader } from '../components/PageHeader';
+import { centerConfigsPageUrl } from '../utils/centerUrl';
 import {
   type ConfigProfile,
   type FlatPreviewRow,
@@ -51,7 +52,27 @@ type UnitRow = {
   description: string;
 };
 
+type ConfigTemplateRow = {
+  id: string | number;
+  name: string;
+  note?: string;
+  source_agent_name?: string;
+  created_by_agent_name?: string;
+  updated_at?: string;
+};
+
 type ProfileKind = 'device' | 'calibration';
+
+const formatTemplateTime = (value?: string) => {
+  if (!value) return '—';
+  return value.replace('T', ' ').replace(/\.\d+Z$/, '').slice(0, 19);
+};
+
+const buildDefaultTemplateName = (hostname: string) => {
+  const label = hostname.trim() || '机台';
+  const date = new Date().toISOString().slice(0, 10);
+  return `${label}-${date}`;
+};
 
 const getErrorMessage = (error: unknown) =>
   error instanceof ApiError || error instanceof Error ? error.message : String(error);
@@ -370,9 +391,15 @@ export function SettingsPage() {
   const [arrayExpandMode, setArrayExpandMode] = useState<'semicolon' | 'json'>('semicolon');
   const [channels, setChannels] = useState<ChannelRow[]>([]);
   const [units, setUnits] = useState<UnitRow[]>([]);
+  const [configTemplates, setConfigTemplates] = useState<ConfigTemplateRow[]>([]);
   const [deviceProfiles, setDeviceProfiles] = useState<ConfigProfile[]>([]);
   const [calibrationProfiles, setCalibrationProfiles] = useState<ConfigProfile[]>([]);
   const [busy, setBusy] = useState(false);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveTemplateName, setSaveTemplateName] = useState('');
+  const [saveTemplateNote, setSaveTemplateNote] = useState('');
+  const [agentHostname, setAgentHostname] = useState('');
+  const [centerUrl, setCenterUrl] = useState('');
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -453,6 +480,23 @@ export function SettingsPage() {
           };
         }),
       );
+
+      const templates = await agentApi.listAgentConfigTemplates().catch(() => []);
+      setConfigTemplates(
+        templates.map((item) => {
+          const row = asRecord(item);
+          return {
+            id: row.id as string | number,
+            name: String(row.name ?? row.id ?? ''),
+            note: row.note != null ? String(row.note) : undefined,
+            source_agent_name:
+              row.source_agent_name != null ? String(row.source_agent_name) : undefined,
+            created_by_agent_name:
+              row.created_by_agent_name != null ? String(row.created_by_agent_name) : undefined,
+            updated_at: row.updated_at != null ? String(row.updated_at) : undefined,
+          };
+        }),
+      );
     } catch (error) {
       message.error(`加载配置失败: ${getErrorMessage(error)}`);
     } finally {
@@ -463,6 +507,92 @@ export function SettingsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void agentApi
+      .status()
+      .then((status) => {
+        setAgentHostname(status.hostname || '');
+        setCenterUrl(status.center_url || '');
+      })
+      .catch(() => {});
+  }, []);
+
+  const centerConfigsUrl = useMemo(() => centerConfigsPageUrl(centerUrl), [centerUrl]);
+
+  const configSnapshotSummary = useMemo(() => {
+    const enabledChannels = channels.filter((ch) => ch.enabled).length;
+    return `变量 ${variables.length} · 设备档 ${deviceProfiles.length} · 校准档 ${calibrationProfiles.length} · 通道 ${channels.length}（启用 ${enabledChannels}）· 单位 ${units.length}`;
+  }, [variables.length, deviceProfiles.length, calibrationProfiles.length, channels, units.length]);
+
+  const openSaveModal = () => {
+    setSaveTemplateName(buildDefaultTemplateName(agentHostname));
+    setSaveTemplateNote('');
+    setSaveModalOpen(true);
+  };
+
+  const confirmSaveTemplate = async () => {
+    const name = saveTemplateName.trim();
+    if (!name) {
+      message.warning('请输入模板名称');
+      return;
+    }
+    setBusy(true);
+    try {
+      await agentApi.saveAgentConfigTemplate({
+        name,
+        note: saveTemplateNote.trim() || undefined,
+      });
+      message.success(
+        centerConfigsUrl ? (
+          <span>
+            已保存为中心配置模板 ·{' '}
+            <a href={centerConfigsUrl} target="_blank" rel="noreferrer">
+              在中心查看
+            </a>
+          </span>
+        ) : (
+          '已保存为中心配置模板'
+        ),
+      );
+      setSaveModalOpen(false);
+      await load();
+    } catch (error) {
+      message.error(`保存模板失败: ${getErrorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadConfigTemplate = (template: ConfigTemplateRow) => {
+    Modal.confirm({
+      title: '加载中心配置模板',
+      content: (
+        <div>
+          <p style={{ marginBottom: 8 }}>
+            将用模板「<strong>{template.name}</strong>」覆盖本机当前配置。
+          </p>
+          <Typography.Text type="secondary">
+            变量、设备档、校准档与通道将被替换；Hostname / IP 保留本机值。
+          </Typography.Text>
+        </div>
+      ),
+      okText: '加载并覆盖',
+      cancelText: '取消',
+      async onOk() {
+        setBusy(true);
+        try {
+          await agentApi.loadAgentConfigTemplate(template.id);
+          message.success('已加载配置模板到本机');
+          await load();
+        } catch (error) {
+          message.error(`加载失败: ${getErrorMessage(error)}`);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  };
 
   const saveSettings = async () => {
     setBusy(true);
@@ -554,6 +684,127 @@ export function SettingsPage() {
           </Button>
         }
       />
+
+      <CollapsibleCard
+        title="中心配置模板"
+        defaultOpen
+        extra={
+          <Space wrap>
+            {centerConfigsUrl ? (
+              <Button type="link" href={centerConfigsUrl} target="_blank" rel="noreferrer">
+                在中心管理
+              </Button>
+            ) : null}
+            <Button type="primary" disabled={busy} onClick={openSaveModal}>
+              保存为模板
+            </Button>
+          </Space>
+        }
+      >
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          「保存为模板」从当前机台配置拍快照；「加载」会覆盖本机变量、设备档、校准档与通道（Hostname / IP 保留本机值）。
+          {centerConfigsUrl ? (
+            <>
+              {' '}
+              也可在
+              <Typography.Link href={centerConfigsUrl} target="_blank" rel="noreferrer">
+                中心机台配置
+              </Typography.Link>
+              页面查看与管理全部模板。
+            </>
+          ) : null}
+        </Typography.Paragraph>
+        <Table
+          size="small"
+          loading={busy}
+          rowKey={(row) => String(row.id)}
+          dataSource={configTemplates}
+          pagination={{ pageSize: 6, showSizeChanger: false }}
+          locale={{ emptyText: '暂无中心配置模板' }}
+          columns={[
+            { title: 'ID', dataIndex: 'id', width: 72 },
+            {
+              title: '名称',
+              dataIndex: 'name',
+              ellipsis: true,
+              render: (name: string, row) => (
+                <Space direction="vertical" size={0}>
+                  <span>{name}</span>
+                  {row.note ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {row.note}
+                    </Typography.Text>
+                  ) : null}
+                </Space>
+              ),
+            },
+            {
+              title: '来源机台',
+              dataIndex: 'source_agent_name',
+              width: 120,
+              ellipsis: true,
+              render: (value?: string) => value || '—',
+            },
+            {
+              title: '创建者',
+              dataIndex: 'created_by_agent_name',
+              width: 100,
+              ellipsis: true,
+              render: (value?: string) => value || '—',
+            },
+            {
+              title: '更新时间',
+              dataIndex: 'updated_at',
+              width: 160,
+              render: (value?: string) => formatTemplateTime(value),
+            },
+            {
+              title: '操作',
+              width: 80,
+              render: (_, row) => (
+                <Button size="small" type="link" disabled={busy} onClick={() => loadConfigTemplate(row)}>
+                  加载
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </CollapsibleCard>
+
+      <Modal
+        title="保存为中心配置模板"
+        open={saveModalOpen}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={busy}
+        onOk={() => void confirmSaveTemplate()}
+        onCancel={() => setSaveModalOpen(false)}
+        destroyOnClose
+      >
+        <Form layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item label="模板名称" required>
+            <Input
+              value={saveTemplateName}
+              onChange={(event) => setSaveTemplateName(event.target.value)}
+              placeholder="例如：机台A-2026-08-09"
+              maxLength={120}
+              onPressEnter={() => void confirmSaveTemplate()}
+            />
+          </Form.Item>
+          <Form.Item label="备注（可选）">
+            <Input.TextArea
+              value={saveTemplateNote}
+              onChange={(event) => setSaveTemplateNote(event.target.value)}
+              placeholder="用途、适用批次等"
+              rows={2}
+              maxLength={500}
+            />
+          </Form.Item>
+          <Form.Item label="当前配置快照">
+            <Typography.Text type="secondary">{configSnapshotSummary}</Typography.Text>
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <CollapsibleCard
         title="手工变量"

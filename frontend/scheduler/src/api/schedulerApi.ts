@@ -1,5 +1,5 @@
 import { apiRequest } from './client';
-import type { Agent, GeneralTemplate, SequenceTemplate, UnitRow, ViTemplate } from './types';
+import type { Agent, AgentConfigSummary, AgentConfigTemplate, GeneralTemplate, SequenceTemplate, UnitRow, ViTemplate } from './types';
 
 const withAgentFilter = (path: string, agentId?: string): string =>
   path + (agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '');
@@ -29,5 +29,29 @@ export const schedulerApi = {
     apiRequest<{ units?: UnitRow[] }>('/api/units', {
       method: 'PUT',
       body: JSON.stringify({ units }),
+    }),
+  listAgentConfigSummaries: async () => {
+    const data = await apiRequest<{ items?: AgentConfigSummary[] }>('/api/agent-configs');
+    return Array.isArray(data.items) ? data.items : [];
+  },
+  getAgentSettings: (agentId: string) =>
+    apiRequest<unknown>(`/api/agents/${encodeURIComponent(agentId)}/settings`),
+  getAgentChannels: async (agentId: string) => {
+    const data = await apiRequest<{ channels?: unknown[] }>(
+      `/api/agents/${encodeURIComponent(agentId)}/channels`,
+    );
+    return Array.isArray(data.channels) ? data.channels : [];
+  },
+  listAgentConfigTemplates: async () => {
+    const data = await apiRequest<{ items?: AgentConfigTemplate[] }>('/api/agent-config-templates');
+    return Array.isArray(data.items) ? data.items : [];
+  },
+  getAgentConfigTemplate: (id: string | number) =>
+    apiRequest<Record<string, unknown>>(
+      `/api/agent-config-templates/${encodeURIComponent(String(id))}`,
+    ),
+  deleteAgentConfigTemplate: (id: string | number) =>
+    apiRequest<void>(`/api/agent-config-templates/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
     }),
 };

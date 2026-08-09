@@ -319,6 +319,14 @@ pub fn router(state: AppState) -> Router {
             "/api/sequence-templates/{id}/load",
             post(sequence_template_load_to_agent),
         )
+        .route(
+            "/api/agent-config-templates",
+            get(agent_config_templates_list).post(agent_config_templates_create),
+        )
+        .route(
+            "/api/agent-config-templates/{id}/load",
+            post(agent_config_template_load_to_agent),
+        )
         .route("/api/sequence/run", post(labview_run_sequence))
         .route(
             "/api/sequence/run/progress",
@@ -605,6 +613,7 @@ async fn status(State(s): State<AppState>) -> Json<AgentStatusResponse> {
         pause_before_position: snap.pause_before_position,
         pause_step_name: snap.pause_step_name,
         log_dir: Some(s.log_dir.display().to_string()),
+        center_url: Some(s.center_url.clone()),
     })
 }
 
@@ -1212,6 +1221,85 @@ async fn sequence_template_load_to_agent(
 ) -> impl IntoResponse {
     match resolve_agent_id_for_proxy(&s).await {
         Ok(agent_id) => match crate::register::load_sequence_template_to_agent(
+            &s.http_client,
+            &s.center_url,
+            &id,
+            &agent_id,
+        )
+        .await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn agent_config_templates_list(State(s): State<AppState>) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => {
+            match crate::register::list_agent_config_templates(&s.http_client, &s.center_url).await {
+                Ok((status, body)) => {
+                    let axum_status =
+                        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                    (axum_status, Json(body)).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(resp) => resp,
+    }
+}
+
+async fn agent_config_templates_create(
+    State(s): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(agent_id) => {
+            let mut center_body = body;
+            center_body["agent_id"] = Value::String(agent_id);
+            match crate::register::create_agent_config_template(
+                &s.http_client,
+                &s.center_url,
+                &center_body,
+            )
+            .await
+            {
+                Ok((status, resp_body)) => {
+                    let axum_status =
+                        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                    (axum_status, Json(resp_body)).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(resp) => resp,
+    }
+}
+
+async fn agent_config_template_load_to_agent(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(agent_id) => match crate::register::load_agent_config_template_to_agent(
             &s.http_client,
             &s.center_url,
             &id,

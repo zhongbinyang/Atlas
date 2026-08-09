@@ -3,7 +3,11 @@ import {
   buildChannelLogText,
   buildDetailStepRows,
   collectMeasuredKeys,
+  findGroupIndexForStep,
   formatLimitsSummary,
+  groupNameByQueueIndex,
+  isFirstStepInGroup,
+  listQueueStepRows,
 } from './sequenceDetailModels';
 import type { ChannelProgress, QueueItem } from './sequenceRunModels';
 
@@ -65,5 +69,33 @@ describe('sequenceDetailModels', () => {
     expect(collectMeasuredKeys(rows)).toEqual(['ER_dB', 'Power_dBm']);
     expect(rows[1].error).toBe('out of range');
     expect(buildChannelLogText(channel, rows, 'D:\\logs')).toContain('Power_dBm=4.2');
+  });
+
+  it('maps group names by queue array index', () => {
+    const queue: QueueItem[] = [
+      { name: 'Eye', template_source: 'labview' },
+      { name: '光模块', template_source: 'group' },
+      { name: 'Power', template_source: 'labview' },
+      { name: 'AgentVer', template_source: 'general' },
+    ];
+    expect(groupNameByQueueIndex(queue)).toEqual({
+      0: '---',
+      1: '光模块',
+      2: '光模块',
+      3: '光模块',
+    });
+  });
+
+  it('lists only runnable steps and resolves group markers', () => {
+    const queue: QueueItem[] = [
+      { name: 'Eye', template_source: 'labview' },
+      { name: 'HT-FMT', template_source: 'group' },
+      { name: 'Add02', template_source: 'labview' },
+      { name: 'delay', template_source: 'general', kind: 'delay' },
+    ];
+    expect(listQueueStepRows(queue).map((row) => row.item.name)).toEqual(['Eye', 'Add02', 'delay']);
+    expect(isFirstStepInGroup(queue, 2)).toBe(true);
+    expect(isFirstStepInGroup(queue, 3)).toBe(false);
+    expect(findGroupIndexForStep(queue, 3)).toBe(1);
   });
 });

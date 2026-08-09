@@ -91,6 +91,19 @@ export const agentApi = {
     apiRequest<unknown>(`/api/sequence-templates/${encodeURIComponent(String(id))}/load`, {
       method: 'POST',
     }),
+  listAgentConfigTemplates: async () => {
+    const data = await apiRequest<{ items?: unknown[] }>('/api/agent-config-templates');
+    return Array.isArray(data.items) ? data.items : [];
+  },
+  saveAgentConfigTemplate: (body: unknown) =>
+    apiRequest<unknown>('/api/agent-config-templates', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  loadAgentConfigTemplate: (id: string | number) =>
+    apiRequest<unknown>(`/api/agent-config-templates/${encodeURIComponent(String(id))}/load`, {
+      method: 'POST',
+    }),
   sequenceRun: (body: unknown) =>
     apiRequest<unknown>('/api/sequence/run', { method: 'POST', body: JSON.stringify(body) }),
   sequenceProgress: () => apiRequest<unknown>('/api/sequence/run/progress'),

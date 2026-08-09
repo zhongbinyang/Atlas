@@ -145,6 +145,16 @@ fn overlay_json_string(overlay: &serde_json::Value) -> Result<String, String> {
     serde_json::to_string(overlay).map_err(|e| e.to_string())
 }
 
+fn profile_to_snapshot(profile: AgentConfigProfile) -> AgentConfigSnapshotProfile {
+    let setting = serde_json::from_str(&profile.setting_json).unwrap_or(serde_json::json!({}));
+    AgentConfigSnapshotProfile {
+        name: profile.name,
+        setting,
+        source_filename: profile.source_filename,
+        is_active: profile.is_active,
+    }
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AgentSettingsRow {
     #[allow(dead_code)]
@@ -293,6 +303,66 @@ pub struct SequenceTemplateEnriched {
     pub template: SequenceTemplate,
     pub created_by_agent_name: Option<String>,
     pub step_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfigSnapshotProfile {
+    pub name: String,
+    pub setting: serde_json::Value,
+    pub source_filename: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfigSnapshotChannel {
+    pub channel_index: i32,
+    pub name: String,
+    pub enabled: bool,
+    pub overlay: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentConfigSnapshot {
+    pub variables: Vec<AgentVariable>,
+    pub array_expand_mode: common::ArrayExpandMode,
+    pub device_profiles: Vec<AgentConfigSnapshotProfile>,
+    pub calibration_profiles: Vec<AgentConfigSnapshotProfile>,
+    pub channels: Vec<AgentConfigSnapshotChannel>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfigSummary {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_status: String,
+    pub agent_ip: String,
+    pub variable_count: usize,
+    pub device_profile_count: usize,
+    pub calibration_profile_count: usize,
+    pub active_device_name: Option<String>,
+    pub active_calibration_name: Option<String>,
+    pub channel_count: usize,
+    pub array_expand_mode: common::ArrayExpandMode,
+    pub settings_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfigTemplate {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub source_agent_id: Option<String>,
+    pub created_by_agent_id: String,
+    pub config_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfigTemplateEnriched {
+    pub template: AgentConfigTemplate,
+    pub created_by_agent_name: Option<String>,
+    pub source_agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1618,6 +1688,262 @@ impl Store {
         self.replace_vi_run_queue(agent_id, &items).await
     }
 
+    pub async fn list_agent_config_summaries(&self) -> Result<Vec<AgentConfigSummary>, sqlx::Error> {
+        let agents = self.list_agents().await?;
+        let mut out = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let settings = self.get_agent_settings(&agent.id).await?;
+            let device_profiles = self.list_device_profiles(&agent.id).await?;
+            let calibration_profiles = self.list_calibration_profiles(&agent.id).await?;
+            let channels = self.list_agent_channels(&agent.id).await?;
+            let active_device_name = device_profiles
+                .iter()
+                .find(|p| p.is_active)
+                .map(|p| p.name.clone());
+            let active_calibration_name = calibration_profiles
+                .iter()
+                .find(|p| p.is_active)
+                .map(|p| p.name.clone());
+            out.push(AgentConfigSummary {
+                agent_id: agent.id,
+                agent_name: agent.name,
+                agent_status: agent.status,
+                agent_ip: agent.ip,
+                variable_count: settings.variables.len(),
+                device_profile_count: device_profiles.len(),
+                calibration_profile_count: calibration_profiles.len(),
+                active_device_name,
+                active_calibration_name,
+                channel_count: channels.len(),
+                array_expand_mode: settings.array_expand_mode,
+                settings_updated_at: settings.updated_at,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn capture_agent_config_snapshot(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentConfigSnapshot, sqlx::Error> {
+        let settings = self.get_agent_settings(agent_id).await?;
+        let device_profiles = self.list_device_profiles(agent_id).await?;
+        let calibration_profiles = self.list_calibration_profiles(agent_id).await?;
+        let channels = self.list_agent_channels(agent_id).await?;
+        Ok(AgentConfigSnapshot {
+            variables: settings.variables,
+            array_expand_mode: settings.array_expand_mode,
+            device_profiles: device_profiles
+                .into_iter()
+                .map(|p| profile_to_snapshot(p))
+                .collect(),
+            calibration_profiles: calibration_profiles
+                .into_iter()
+                .map(|p| profile_to_snapshot(p))
+                .collect(),
+            channels: channels
+                .into_iter()
+                .map(|c| AgentConfigSnapshotChannel {
+                    channel_index: c.channel_index,
+                    name: c.name,
+                    enabled: c.enabled,
+                    overlay: c.overlay,
+                })
+                .collect(),
+        })
+    }
+
+    pub async fn apply_agent_config_snapshot(
+        &self,
+        agent_id: &str,
+        snapshot: &AgentConfigSnapshot,
+    ) -> Result<(), sqlx::Error> {
+        let variables: Vec<AgentVariable> = snapshot
+            .variables
+            .iter()
+            .filter(|v| {
+                let name = v.name.trim();
+                name != "Hostname" && name != "IP"
+            })
+            .cloned()
+            .collect();
+        self.upsert_agent_settings(agent_id, &variables, snapshot.array_expand_mode)
+            .await?;
+
+        self.delete_all_config_profiles("agent_device_profiles", agent_id)
+            .await?;
+        self.delete_all_config_profiles("agent_calibration_profiles", agent_id)
+            .await?;
+
+        let mut active_device: Option<String> = None;
+        for profile in &snapshot.device_profiles {
+            let setting_json = serde_json::to_string(&profile.setting)
+                .map_err(|e| sqlx::Error::Protocol(format!("device setting json: {e}")))?;
+            let created = self
+                .create_config_profile(
+                    "agent_device_profiles",
+                    agent_id,
+                    &profile.name,
+                    &setting_json,
+                    &profile.source_filename,
+                    false,
+                )
+                .await?;
+            if profile.is_active {
+                active_device = Some(created.id);
+            }
+        }
+        if let Some(id) = active_device {
+            self.activate_config_profile("agent_device_profiles", agent_id, &id)
+                .await?;
+        }
+
+        let mut active_calibration: Option<String> = None;
+        for profile in &snapshot.calibration_profiles {
+            let setting_json = serde_json::to_string(&profile.setting)
+                .map_err(|e| sqlx::Error::Protocol(format!("calibration setting json: {e}")))?;
+            let created = self
+                .create_config_profile(
+                    "agent_calibration_profiles",
+                    agent_id,
+                    &profile.name,
+                    &setting_json,
+                    &profile.source_filename,
+                    false,
+                )
+                .await?;
+            if profile.is_active {
+                active_calibration = Some(created.id);
+            }
+        }
+        if let Some(id) = active_calibration {
+            self.activate_config_profile("agent_calibration_profiles", agent_id, &id)
+                .await?;
+        }
+
+        let channel_items = snapshot
+            .channels
+            .iter()
+            .map(|c| AgentChannelUpsert {
+                channel_index: c.channel_index,
+                name: c.name.clone(),
+                enabled: c.enabled,
+                overlay: c.overlay.clone(),
+            })
+            .collect();
+        self.replace_agent_channels(agent_id, channel_items).await?;
+        Ok(())
+    }
+
+    pub async fn clone_agent_config(
+        &self,
+        source_agent_id: &str,
+        target_agent_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let snapshot = self.capture_agent_config_snapshot(source_agent_id).await?;
+        self.apply_agent_config_snapshot(target_agent_id, &snapshot)
+            .await
+    }
+
+    pub async fn create_agent_config_template_from_agent(
+        &self,
+        agent_id: &str,
+        name: &str,
+        note: &str,
+    ) -> Result<AgentConfigTemplate, sqlx::Error> {
+        let snapshot = self.capture_agent_config_snapshot(agent_id).await?;
+        let config_json = serde_json::to_string(&snapshot)
+            .map_err(|e| sqlx::Error::Protocol(format!("config snapshot json: {e}")))?;
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, AgentConfigTemplateRow>(
+            r#"
+            INSERT INTO agent_config_templates
+              (name, note, source_agent_id, created_by_agent_id, config_json, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+            RETURNING
+              id, name, note, source_agent_id, created_by_agent_id, config_json::text, created_at, updated_at
+            "#,
+        )
+        .bind(name)
+        .bind(note)
+        .bind(agent_id)
+        .bind(agent_id)
+        .bind(&config_json)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_template())
+    }
+
+    pub async fn list_agent_config_templates(
+        &self,
+    ) -> Result<Vec<AgentConfigTemplateEnriched>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, AgentConfigTemplateEnrichedRow>(
+            r#"
+            SELECT
+              t.id, t.name, t.note, t.source_agent_id, t.created_by_agent_id,
+              t.config_json::text AS config_json, t.created_at, t.updated_at,
+              ca.name AS created_by_agent_name,
+              sa.name AS source_agent_name
+            FROM agent_config_templates t
+            LEFT JOIN agents ca ON ca.id = t.created_by_agent_id
+            LEFT JOIN agents sa ON sa.id = t.source_agent_id
+            ORDER BY t.updated_at DESC, t.id DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn get_agent_config_template(
+        &self,
+        id: i64,
+    ) -> Result<Option<AgentConfigTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, AgentConfigTemplateRow>(
+            r#"
+            SELECT
+              id, name, note, source_agent_id, created_by_agent_id,
+              config_json::text AS config_json, created_at, updated_at
+            FROM agent_config_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_template()))
+    }
+
+    pub async fn delete_agent_config_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM agent_config_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn load_agent_config_template_to_agent(
+        &self,
+        template_id: i64,
+        agent_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let template = self
+            .get_agent_config_template(template_id)
+            .await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+        let snapshot: AgentConfigSnapshot = serde_json::from_str(&template.config_json)
+            .map_err(|e| sqlx::Error::Protocol(format!("invalid config template json: {e}")))?;
+        self.apply_agent_config_snapshot(agent_id, &snapshot).await
+    }
+
+    async fn delete_all_config_profiles(&self, table: &str, agent_id: &str) -> Result<(), sqlx::Error> {
+        let sql = format!("DELETE FROM {table} WHERE agent_id = $1");
+        sqlx::query(&sql).bind(agent_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn insert_vi_template(
         &self,
         name: &str,
@@ -2430,6 +2756,66 @@ impl SequenceTemplateEnrichedRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct AgentConfigTemplateRow {
+    id: i64,
+    name: String,
+    note: String,
+    source_agent_id: Option<String>,
+    created_by_agent_id: String,
+    config_json: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl AgentConfigTemplateRow {
+    fn into_template(self) -> AgentConfigTemplate {
+        AgentConfigTemplate {
+            id: self.id,
+            name: self.name,
+            note: self.note,
+            source_agent_id: self.source_agent_id,
+            created_by_agent_id: self.created_by_agent_id,
+            config_json: self.config_json,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AgentConfigTemplateEnrichedRow {
+    id: i64,
+    name: String,
+    note: String,
+    source_agent_id: Option<String>,
+    created_by_agent_id: String,
+    config_json: String,
+    created_at: String,
+    updated_at: String,
+    created_by_agent_name: Option<String>,
+    source_agent_name: Option<String>,
+}
+
+impl AgentConfigTemplateEnrichedRow {
+    fn into_enriched(self) -> AgentConfigTemplateEnriched {
+        AgentConfigTemplateEnriched {
+            template: AgentConfigTemplate {
+                id: self.id,
+                name: self.name,
+                note: self.note,
+                source_agent_id: self.source_agent_id,
+                created_by_agent_id: self.created_by_agent_id,
+                config_json: self.config_json,
+                created_at: self.created_at,
+                updated_at: self.updated_at,
+            },
+            created_by_agent_name: self.created_by_agent_name,
+            source_agent_name: self.source_agent_name,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
 struct ViTemplateEnrichedRow {
     id: i64,
     name: String,
@@ -3231,6 +3617,28 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
         assert_eq!(reloaded[0].template_source, "group");
         assert_eq!(reloaded[0].template_name, "预处理");
+    }
+
+    #[tokio::test]
+    async fn create_agent_config_template_roundtrip() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("cfg-agent", "10.0.0.88", 26631).await.unwrap();
+        store
+            .upsert_agent_settings(
+                &agent.id,
+                &common::default_agent_variables(),
+                common::ArrayExpandMode::Semicolon,
+            )
+            .await
+            .unwrap();
+        let created = store
+            .create_agent_config_template_from_agent(&agent.id, "cfg-tpl", "note")
+            .await
+            .unwrap();
+        assert_eq!(created.name, "cfg-tpl");
+        assert_eq!(created.note, "note");
+        let listed = store.list_agent_config_templates().await.unwrap();
+        assert!(listed.iter().any(|t| t.template.id == created.id));
     }
 
     async fn seed_agent(store: &crate::db::GuardedStore) -> String {

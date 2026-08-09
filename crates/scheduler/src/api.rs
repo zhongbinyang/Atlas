@@ -9,10 +9,9 @@ use common::{ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    parse_resources_json, Agent, GeneralTemplateEnriched, QueueReplaceError,
-    SequenceTemplateEnriched, SequenceTemplateStep, Store,
-    ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
-    ViTemplatePatch,
+    parse_resources_json, Agent, AgentConfigSnapshot, AgentConfigTemplateEnriched,
+    GeneralTemplateEnriched, QueueReplaceError, SequenceTemplateEnriched, SequenceTemplateStep,
+    Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched, ViTemplatePatch,
 };
 
 #[derive(Clone)]
@@ -246,6 +245,68 @@ pub struct LoadSequenceTemplateToAgentRequest {
     pub agent_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfigSummaryView {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_status: String,
+    pub agent_ip: String,
+    pub variable_count: usize,
+    pub device_profile_count: usize,
+    pub calibration_profile_count: usize,
+    pub active_device_name: Option<String>,
+    pub active_calibration_name: Option<String>,
+    pub channel_count: usize,
+    pub array_expand_mode: common::ArrayExpandMode,
+    pub settings_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfigTemplateListItemView {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub source_agent_id: Option<String>,
+    pub source_agent_name: String,
+    pub created_by_agent_id: String,
+    pub created_by_agent_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfigTemplateDetailView {
+    pub id: i64,
+    pub name: String,
+    pub note: String,
+    pub source_agent_id: Option<String>,
+    pub source_agent_name: String,
+    pub created_by_agent_id: String,
+    pub created_by_agent_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub config: AgentConfigSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentConfigTemplateRequest {
+    pub agent_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoadAgentConfigTemplateToAgentRequest {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloneAgentConfigRequest {
+    pub source_agent_id: String,
+    pub target_agent_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DistributeViTemplateRequest {
     pub target_agent_id: String,
@@ -476,6 +537,20 @@ pub fn router(state: AppState) -> Router {
             "/api/sequence-templates/{id}/load-to-agent",
             post(load_sequence_template_to_agent),
         )
+        .route("/api/agent-configs", get(list_agent_config_summaries))
+        .route(
+            "/api/agent-config-templates",
+            get(list_agent_config_templates).post(create_agent_config_template),
+        )
+        .route(
+            "/api/agent-config-templates/{id}",
+            get(get_agent_config_template).delete(delete_agent_config_template),
+        )
+        .route(
+            "/api/agent-config-templates/{id}/load-to-agent",
+            post(load_agent_config_template_to_agent),
+        )
+        .route("/api/agent-configs/clone", post(clone_agent_config))
         .route(
             "/api/agents/{id}/run-queue",
             get(get_vi_run_queue).put(put_vi_run_queue),
@@ -2037,6 +2112,307 @@ async fn delete_sequence_template(
             .into_response(),
         Err(e) => {
             tracing::error!("delete sequence template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+fn agent_config_template_list_item_view(t: AgentConfigTemplateEnriched) -> AgentConfigTemplateListItemView {
+    AgentConfigTemplateListItemView {
+        id: t.template.id,
+        name: t.template.name,
+        note: t.template.note,
+        source_agent_id: t.template.source_agent_id,
+        source_agent_name: agent_display_name(t.source_agent_name),
+        created_by_agent_id: t.template.created_by_agent_id,
+        created_by_agent_name: agent_display_name(t.created_by_agent_name),
+        created_at: t.template.created_at,
+        updated_at: t.template.updated_at,
+    }
+}
+
+async fn list_agent_config_summaries(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.list_agent_config_summaries().await {
+        Ok(items) => {
+            let views = items
+                .into_iter()
+                .map(|item| AgentConfigSummaryView {
+                    agent_id: item.agent_id,
+                    agent_name: item.agent_name,
+                    agent_status: item.agent_status,
+                    agent_ip: item.agent_ip,
+                    variable_count: item.variable_count,
+                    device_profile_count: item.device_profile_count,
+                    calibration_profile_count: item.calibration_profile_count,
+                    active_device_name: item.active_device_name,
+                    active_calibration_name: item.active_calibration_name,
+                    channel_count: item.channel_count,
+                    array_expand_mode: item.array_expand_mode,
+                    settings_updated_at: item.settings_updated_at,
+                })
+                .collect::<Vec<_>>();
+            (StatusCode::OK, Json(serde_json::json!({ "items": views }))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list agent config summaries: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_agent_config_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.list_agent_config_templates().await {
+        Ok(items) => {
+            let views = items
+                .into_iter()
+                .map(agent_config_template_list_item_view)
+                .collect::<Vec<_>>();
+            (StatusCode::OK, Json(serde_json::json!({ "items": views }))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list agent config templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_agent_config_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateAgentConfigTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "name is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_agent(req.agent_id.trim()).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .create_agent_config_template_from_agent(
+            req.agent_id.trim(),
+            req.name.trim(),
+            req.note.trim(),
+        )
+        .await
+    {
+        Ok(template) => {
+            let enriched = AgentConfigTemplateEnriched {
+                template,
+                created_by_agent_name: s
+                    .store
+                    .get_agent(req.agent_id.trim())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name),
+                source_agent_name: s
+                    .store
+                    .get_agent(req.agent_id.trim())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name),
+            };
+            (
+                StatusCode::CREATED,
+                Json(agent_config_template_list_item_view(enriched)),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("create agent config template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_agent_config_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let template = match s.store.get_agent_config_template(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "agent config template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent config template: {e}");
+            return db_error().into_response();
+        }
+    };
+    let config: AgentConfigSnapshot = match serde_json::from_str(&template.config_json) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("parse agent config template json: {e}");
+            return db_error().into_response();
+        }
+    };
+    let created_by_agent_name = if template.created_by_agent_id.is_empty() {
+        None
+    } else {
+        s.store
+            .get_agent(&template.created_by_agent_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+    };
+    let source_agent_name = match template.source_agent_id.as_deref() {
+        Some(id) if !id.is_empty() => s
+            .store
+            .get_agent(id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.name),
+        _ => None,
+    };
+    let view = AgentConfigTemplateDetailView {
+        id: template.id,
+        name: template.name,
+        note: template.note,
+        source_agent_id: template.source_agent_id,
+        source_agent_name: agent_display_name(source_agent_name),
+        created_by_agent_id: template.created_by_agent_id,
+        created_by_agent_name: agent_display_name(created_by_agent_name),
+        created_at: template.created_at,
+        updated_at: template.updated_at,
+        config,
+    };
+    (StatusCode::OK, Json(view)).into_response()
+}
+
+async fn load_agent_config_template_to_agent(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoadAgentConfigTemplateToAgentRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_agent(req.agent_id.trim()).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_agent_config_template(id).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent config template not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .load_agent_config_template_to_agent(id, req.agent_id.trim())
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => {
+            tracing::error!("load agent config template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_agent_config_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.delete_agent_config_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "agent config template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete agent config template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn clone_agent_config(
+    State(s): State<AppState>,
+    Json(req): Json<CloneAgentConfigRequest>,
+) -> impl IntoResponse {
+    if req.source_agent_id.trim().is_empty() || req.target_agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "source_agent_id and target_agent_id are required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_agent(req.source_agent_id.trim()).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "source agent not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(None) = s.store.get_agent(req.target_agent_id.trim()).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "target agent not found".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .clone_agent_config(req.source_agent_id.trim(), req.target_agent_id.trim())
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => {
+            tracing::error!("clone agent config: {e}");
             db_error().into_response()
         }
     }

@@ -29,3 +29,32 @@ export type UnitRow = {
   description?: string;
   [key: string]: unknown;
 };
+
+export type AgentConfigSummary = {
+  agent_id: string;
+  agent_name: string;
+  agent_status: string;
+  agent_ip: string;
+  variable_count: number;
+  device_profile_count: number;
+  calibration_profile_count: number;
+  active_device_name?: string | null;
+  active_calibration_name?: string | null;
+  channel_count: number;
+  array_expand_mode?: string;
+  settings_updated_at?: string | null;
+  [key: string]: unknown;
+};
+
+export type AgentConfigTemplate = {
+  id: number | string;
+  name: string;
+  note?: string;
+  source_agent_id?: string | null;
+  source_agent_name?: string;
+  created_by_agent_id?: string;
+  created_by_agent_name?: string;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+};

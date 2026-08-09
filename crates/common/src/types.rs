@@ -58,6 +58,9 @@ pub struct AgentStatusResponse {
     /// Resolved Agent log directory (file logging root).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<String>,
+    /// ATLAS center base URL (for WebUI deep links from Agent UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

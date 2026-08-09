@@ -123,6 +123,16 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/023_step_resources.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/024_agent_config_templates.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/025_agent_config_templates_text_timestamps.sql"),
+    )
+    .await?;
     Ok(())
 }
 
