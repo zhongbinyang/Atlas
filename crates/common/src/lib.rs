@@ -1,5 +1,6 @@
 pub mod agent_settings;
 pub mod error;
+pub mod spec_ini;
 pub mod types;
 
 pub use agent_settings::{
@@ -8,4 +9,8 @@ pub use agent_settings::{
     VAR_HOSTNAME, VAR_IP,
 };
 pub use error::ErrorBody;
+pub use spec_ini::{
+    parse_bound_token, parse_spec_ini, spec_document_to_json, SpecBound, SpecDocument,
+    SpecParseResult,
+};
 pub use types::*;
