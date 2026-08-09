@@ -351,6 +351,10 @@ sequenceDiagram
 | GET | `/api/sequence-templates/{id}` | **未使用** | |
 | DELETE | `/api/sequence-templates/{id}` | **中心 WebUI** | |
 | POST | `/api/sequence-templates/{id}/load-to-agent` | **Agent 进程** | 覆盖 DB 中该机队列（非 HTTP 推 Agent） |
+| GET | `/api/spec-templates` | **中心 WebUI** · **Agent 进程** | 产品 Spec 模板列表 |
+| POST | `/api/spec-templates` | **中心 WebUI** · **Agent 进程** | 上传 INI 文本并解析入库 |
+| GET | `/api/spec-templates/{id}` | **中心 WebUI** · **Agent 进程** | 含 `spec` JSON |
+| DELETE | `/api/spec-templates/{id}` | **中心 WebUI** · **Agent 进程** | → `204` |
 | GET | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `GET /api/sequence/run-queue` |
 | PUT | `/api/agents/{id}/run-queue` | **Agent 进程** | ← Agent `PUT /api/sequence/run-queue` |
 | GET | `/api/agents/{id}/settings` | **Agent 进程** | ← Agent `GET /api/settings`（附带 profiles；`units` 为全局只读） |
@@ -420,6 +424,35 @@ Query：`agent_id?` · `kind?`
 **POST** `/api/sequence-templates/{id}/load-to-agent` · 使用方：**Agent 进程** — `{ "agent_id" }` → 覆盖 `vi_run_queue_items`
 
 `steps[]`：与执行队列 `items[]` 相同字段（含 `group` 组头：`name` · `collapsed`）。
+
+## 1.6a Spec 模板
+
+产品 Spec INI（`*_Spec.ini`）解析后存为 `spec_json`；序列步骤可引用模板 + section 名（见 P2 队列字段）。
+
+**GET** `/api/spec-templates` · 使用方：**中心 WebUI** · **Agent 进程**
+
+```json
+{ "items": [{ "id", "name", "product_pn", "source_filename", "section_count", "created_by_agent_name?", "updated_at" }] }
+```
+
+**POST** `/api/spec-templates` · 使用方：**中心 WebUI** · **Agent 进程** → `201`
+
+| 字段 | 说明 |
+|------|------|
+| `ini_text` | 必填；服务端 `parse_spec_ini`；解析失败或无 section → `400` |
+| `name` | 可选；缺省用 `source_filename`（去 `.ini`）或 `"Spec template"` |
+| `product_pn` | 可选，默认 `""` |
+| `note` | 可选，默认 `""` |
+| `source_filename` | 可选，原始文件名 |
+| `created_by_agent_id` | 可选；须为已注册 agent |
+
+响应与列表项相同：`id`, `name`, `product_pn`, `source_filename`, `section_count`, `created_by_agent_name?`, `updated_at`
+
+**GET** `/api/spec-templates/{id}` · 使用方：**中心 WebUI** · **Agent 进程**
+
+含 `spec`（`{ "version": 1, "sections": { "FMT_HT": { "TX_AP": { "min", "max" } } } }`）、`note`、`created_at` 等。
+
+**DELETE** `/api/spec-templates/{id}` · 使用方：**中心 WebUI** · **Agent 进程** → `204`
 
 ## 1.7 执行队列
 

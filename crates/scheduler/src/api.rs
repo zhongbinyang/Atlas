@@ -5,13 +5,14 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use common::{ErrorBody, RegisterAgentRequest};
+use common::{parse_spec_ini, spec_document_to_json, ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
     parse_resources_json, Agent, AgentConfigSnapshot, AgentConfigTemplateEnriched,
     GeneralTemplateEnriched, QueueReplaceError, SequenceTemplateEnriched, SequenceTemplateStep,
-    Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched, ViTemplatePatch,
+    SpecTemplateSummary, Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
+    ViTemplatePatch,
 };
 
 #[derive(Clone)]
@@ -301,6 +302,46 @@ pub struct LoadAgentConfigTemplateToAgentRequest {
     pub agent_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecTemplateListItemView {
+    pub id: i64,
+    pub name: String,
+    pub product_pn: String,
+    pub source_filename: String,
+    pub section_count: i64,
+    pub created_by_agent_name: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecTemplateDetailView {
+    pub id: i64,
+    pub name: String,
+    pub product_pn: String,
+    pub note: String,
+    pub source_filename: String,
+    pub spec: serde_json::Value,
+    pub section_count: i64,
+    pub created_by_agent_id: Option<String>,
+    pub created_by_agent_name: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSpecTemplateRequest {
+    pub ini_text: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub product_pn: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub source_filename: String,
+    pub created_by_agent_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CloneAgentConfigRequest {
     pub source_agent_id: String,
@@ -549,6 +590,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agent-config-templates/{id}/load-to-agent",
             post(load_agent_config_template_to_agent),
+        )
+        .route(
+            "/api/spec-templates",
+            get(list_spec_templates).post(create_spec_template),
+        )
+        .route(
+            "/api/spec-templates/{id}",
+            get(get_spec_template).delete(delete_spec_template),
         )
         .route("/api/agent-configs/clone", post(clone_agent_config))
         .route(
@@ -2117,6 +2166,40 @@ async fn delete_sequence_template(
     }
 }
 
+fn default_spec_template_name(name: &str, source_filename: &str) -> String {
+    let trimmed = name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    let filename = source_filename.trim();
+    if !filename.is_empty() {
+        return filename
+            .trim_end_matches(".ini")
+            .trim_end_matches(".INI")
+            .to_string();
+    }
+    "Spec template".into()
+}
+
+fn spec_section_count(spec: &serde_json::Value) -> i64 {
+    spec.get("sections")
+        .and_then(|v| v.as_object())
+        .map(|m| m.len() as i64)
+        .unwrap_or(0)
+}
+
+fn spec_template_list_item_view(s: SpecTemplateSummary) -> SpecTemplateListItemView {
+    SpecTemplateListItemView {
+        id: s.id,
+        name: s.name,
+        product_pn: s.product_pn,
+        source_filename: s.source_filename,
+        section_count: s.section_count,
+        created_by_agent_name: s.created_by_agent_name.filter(|n| !n.is_empty()),
+        updated_at: s.updated_at,
+    }
+}
+
 fn agent_config_template_list_item_view(t: AgentConfigTemplateEnriched) -> AgentConfigTemplateListItemView {
     AgentConfigTemplateListItemView {
         id: t.template.id,
@@ -2369,6 +2452,195 @@ async fn delete_agent_config_template(
             .into_response(),
         Err(e) => {
             tracing::error!("delete agent config template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_spec_templates(State(s): State<AppState>) -> impl IntoResponse {
+    match s.store.list_spec_templates().await {
+        Ok(items) => {
+            let views = items
+                .into_iter()
+                .map(spec_template_list_item_view)
+                .collect::<Vec<_>>();
+            (StatusCode::OK, Json(serde_json::json!({ "items": views }))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list spec templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_spec_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateSpecTemplateRequest>,
+) -> impl IntoResponse {
+    if req.ini_text.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "ini_text is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    let parsed = match parse_spec_ini(&req.ini_text) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+    if parsed.document.sections.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "no sections".into(),
+            }),
+        )
+            .into_response();
+    }
+    if let Some(agent_id) = req.created_by_agent_id.as_deref() {
+        if !agent_id.trim().is_empty() {
+            match s.store.get_agent(agent_id.trim()).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorBody {
+                            error: "agent not found".into(),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!("get agent for spec template: {e}");
+                    return db_error().into_response();
+                }
+            }
+        }
+    }
+    let spec_json = spec_document_to_json(&parsed.document).to_string();
+    let name = default_spec_template_name(&req.name, &req.source_filename);
+    let created_by_agent_id = req
+        .created_by_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match s
+        .store
+        .create_spec_template(
+            &name,
+            req.product_pn.trim(),
+            req.note.trim(),
+            req.source_filename.trim(),
+            &spec_json,
+            created_by_agent_id,
+        )
+        .await
+    {
+        Ok(template) => {
+            let created_by_agent_name = if let Some(agent_id) = created_by_agent_id {
+                s.store
+                    .get_agent(agent_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+            } else {
+                None
+            };
+            let view = spec_template_list_item_view(SpecTemplateSummary {
+                id: template.id,
+                name: template.name,
+                product_pn: template.product_pn,
+                source_filename: template.source_filename,
+                section_count: parsed.document.sections.len() as i64,
+                created_by_agent_name,
+                updated_at: template.updated_at,
+            });
+            (StatusCode::CREATED, Json(view)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("create spec template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_spec_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let template = match s.store.get_spec_template(id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "spec template not found".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get spec template: {e}");
+            return db_error().into_response();
+        }
+    };
+    let spec: serde_json::Value = match serde_json::from_str(&template.spec_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("parse spec template json: {e}");
+            return db_error().into_response();
+        }
+    };
+    let created_by_agent_name = match template.created_by_agent_id.as_deref() {
+        Some(agent_id) if !agent_id.is_empty() => s
+            .store
+            .get_agent(agent_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.name),
+        _ => None,
+    };
+    let view = SpecTemplateDetailView {
+        id: template.id,
+        name: template.name,
+        product_pn: template.product_pn,
+        note: template.note,
+        source_filename: template.source_filename,
+        section_count: spec_section_count(&spec),
+        spec,
+        created_by_agent_id: template.created_by_agent_id,
+        created_by_agent_name: created_by_agent_name.filter(|n| !n.is_empty()),
+        created_at: template.created_at,
+        updated_at: template.updated_at,
+    };
+    (StatusCode::OK, Json(view)).into_response()
+}
+
+async fn delete_spec_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.delete_spec_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "spec template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete spec template: {e}");
             db_error().into_response()
         }
     }
@@ -3408,6 +3680,109 @@ mod tests {
         let list: ViRunQueueListResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(list.items.len(), 1);
         assert_eq!(list.items[0].vi_template_id, Some(tpl_b.id));
+    }
+
+    #[tokio::test]
+    async fn spec_template_crud_via_http() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let create_body = serde_json::json!({
+            "name": "AS0805 Spec",
+            "ini_text": "[FMT_HT]\nTX_AP_UL=4\nTX_AP_LL=-2\n",
+            "source_filename": "Tunn_FMT_Spec.ini",
+            "created_by_agent_id": agent_id
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/spec-templates", &create_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let created: SpecTemplateListItemView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(created.name, "AS0805 Spec");
+        assert_eq!(created.source_filename, "Tunn_FMT_Spec.ini");
+        assert_eq!(created.section_count, 1);
+        assert_eq!(created.created_by_agent_name.as_deref(), Some("LINE-01"));
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spec-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/spec-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let detail: SpecTemplateDetailView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(detail.id, created.id);
+        assert_eq!(detail.section_count, 1);
+        assert!(detail.spec.get("sections").unwrap().get("FMT_HT").is_some());
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/spec-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/spec-templates/{}", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn spec_template_create_rejects_invalid_ini() {
+        let test = test_app().await;
+        let app = &test.router;
+
+        let create_body = serde_json::json!({
+            "ini_text": "not a valid spec file\n",
+            "source_filename": "bad.ini"
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/spec-templates", &create_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert!(!err.error.is_empty());
     }
 
     #[tokio::test]
