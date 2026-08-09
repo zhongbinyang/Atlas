@@ -3,6 +3,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SequenceTemplate } from '../api/types';
+import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
 
 export function SequencesPage() {
   const { message, modal } = AntApp.useApp();
@@ -54,13 +55,22 @@ export function SequencesPage() {
   const columns = useMemo<ColumnsType<SequenceTemplate>>(
     () => [
       { title: 'ID', dataIndex: 'id', render: (value) => <Typography.Text code>{String(value)}</Typography.Text> },
-      { title: '名称', dataIndex: 'name', render: (value) => value || '—' },
+      { title: '名称', dataIndex: 'name', sorter: textSorter('name'), render: (value) => value || '—' },
       {
         title: '步骤数',
         dataIndex: 'step_count',
+        sorter: (a, b) => Number(a.step_count || 0) - Number(b.step_count || 0),
         render: (value) => (typeof value === 'number' ? value : Number(value || 0)),
       },
       { title: '来源机台', dataIndex: 'created_by_agent_name', render: (value) => value || '—' },
+      {
+        title: '更新时间',
+        dataIndex: 'updated_at',
+        width: 180,
+        defaultSortOrder: 'descend',
+        sorter: (a, b) => timestampSorter(a.updated_at, b.updated_at),
+        render: (value) => formatTimestamp(value),
+      },
       {
         title: '操作',
         render: (_, record) => (
@@ -91,7 +101,7 @@ export function SequencesPage() {
           dataSource={templates}
           loading={loading}
           locale={{ emptyText: '暂无序列模板' }}
-          pagination={false}
+          pagination={DEFAULT_TABLE_PAGINATION}
           scroll={{ x: true }}
         />
       </Card>

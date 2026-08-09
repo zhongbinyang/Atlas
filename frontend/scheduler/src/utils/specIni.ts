@@ -136,6 +136,14 @@ export function parseSpecIni(text: string): SpecParseResult {
   };
 }
 
+export function formatSpecParseError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'no sections found in spec INI') {
+    return '未找到有效的 Section（需包含 [段名] 与 *_UL/*_LL 键）';
+  }
+  return message;
+}
+
 export function specDocumentToJson(doc: SpecDocument): {
   version: number;
   sections: Record<string, Record<string, { min: number | null; max: number | null }>>;

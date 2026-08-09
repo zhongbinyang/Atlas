@@ -3,6 +3,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { Agent, GeneralTemplate, ViTemplate } from '../api/types';
+import { DEFAULT_TABLE_PAGINATION } from '../utils/tableHelpers';
 
 type SourceFilter = 'all' | 'labview' | 'general';
 type FunctionTemplate =
@@ -149,7 +150,7 @@ export function FunctionsPage() {
           <Tag color={value === 'general' ? 'blue' : 'green'}>{sourceLabel(value)}</Tag>
         ),
       },
-      { title: '名称', dataIndex: 'name', render: (value) => value || '—' },
+      { title: '名称', dataIndex: 'name', sorter: (a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN'), render: (value) => value || '—' },
       { title: '类型', dataIndex: 'kind', render: kindLabel },
       { title: '来源机台', dataIndex: 'origin_agent_name', render: (value) => value || '—' },
       {
@@ -208,7 +209,7 @@ export function FunctionsPage() {
             dataSource={viTemplates}
             loading={loading}
             locale={{ emptyText: '暂无已注册 VI 功能' }}
-            pagination={false}
+            pagination={DEFAULT_TABLE_PAGINATION}
             scroll={{ x: true }}
           />
         </Card>
@@ -222,7 +223,7 @@ export function FunctionsPage() {
             dataSource={generalTemplates}
             loading={loading}
             locale={{ emptyText: '暂无已注册通用功能' }}
-            pagination={false}
+            pagination={DEFAULT_TABLE_PAGINATION}
             scroll={{ x: true }}
           />
         </Card>

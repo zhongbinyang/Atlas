@@ -1,4 +1,5 @@
 import {
+  Alert,
   App as AntApp,
   Button,
   Card,
@@ -7,6 +8,7 @@ import {
   Input,
   Modal,
   Space,
+  Spin,
   Table,
   Typography,
   Upload,
@@ -15,13 +17,16 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SpecTemplateDetail, SpecTemplateSummary } from '../api/types';
-import { parseSpecIni } from '../utils/specIni';
+import { describeSchedulerError } from '../utils/formatError';
+import { formatSpecParseError, parseSpecIni } from '../utils/specIni';
+import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
 
 type UploadPreview = {
   iniText: string;
   sourceFilename: string;
   sectionCount: number;
   metricCount: number;
+  sectionNames: string[];
   warnings: string[];
 };
 
@@ -38,6 +43,8 @@ type MetricRow = {
   max: string;
 };
 
+const PREVIEW_SECTION_LIMIT = 8;
+
 function formatBound(value: number | null | undefined): string {
   if (value === null || value === undefined) {
     return '∞';
@@ -49,6 +56,17 @@ function countMetrics(sections: Record<string, Record<string, unknown>>): number
   return Object.values(sections).reduce((sum, metrics) => sum + Object.keys(metrics).length, 0);
 }
 
+function readIniFile(file: File, onSuccess: (text: string) => void, onError: (message: string) => void) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    onSuccess(String(reader.result || ''));
+  };
+  reader.onerror = () => {
+    onError('读取文件失败，请重试或换用 UTF-8 编码的 .ini 文件');
+  };
+  reader.readAsText(file);
+}
+
 export function SpecsPage() {
   const { message, modal } = AntApp.useApp();
   const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
@@ -56,9 +74,11 @@ export function SpecsPage() {
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<SpecTemplateDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [form] = Form.useForm<{ name: string; product_pn: string; note: string }>();
+  const uploadName = Form.useWatch('name', form);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,8 +86,7 @@ export function SpecsPage() {
       const items = await schedulerApi.listSpecTemplates();
       setTemplates(items);
     } catch (error) {
-      const detailText = error instanceof Error ? error.message : String(error);
-      message.error('加载 Spec 模板失败：' + detailText);
+      message.error('加载 Spec 模板失败：' + describeSchedulerError(error));
     } finally {
       setLoading(false);
     }
@@ -77,10 +96,21 @@ export function SpecsPage() {
     void load();
   }, [load]);
 
+  const duplicateUploadName = useMemo(() => {
+    const name = uploadName?.trim().toLowerCase();
+    if (!name) return false;
+    return templates.some((item) => item.name.trim().toLowerCase() === name);
+  }, [templates, uploadName]);
+
   const openUploadPreview = (iniText: string, sourceFilename: string) => {
+    if (!iniText.trim()) {
+      message.error('文件内容为空，请选择有效的 Spec INI 文件');
+      return;
+    }
     try {
       const parsed = parseSpecIni(iniText);
-      const sectionCount = Object.keys(parsed.document.sections).length;
+      const sectionNames = Object.keys(parsed.document.sections).sort((a, b) => a.localeCompare(b));
+      const sectionCount = sectionNames.length;
       const metricCount = countMetrics(parsed.document.sections);
       const defaultName = sourceFilename.replace(/\.ini$/i, '') || 'Spec 模板';
       form.setFieldsValue({ name: defaultName, product_pn: '', note: '' });
@@ -89,13 +119,19 @@ export function SpecsPage() {
         sourceFilename,
         sectionCount,
         metricCount,
+        sectionNames,
         warnings: parsed.warnings,
       });
       setUploadOpen(true);
     } catch (error) {
-      const detailText = error instanceof Error ? error.message : String(error);
-      message.error('解析 Spec INI 失败：' + detailText);
+      message.error('解析 Spec INI 失败：' + formatSpecParseError(error));
     }
+  };
+
+  const closeUploadModal = () => {
+    setUploadOpen(false);
+    setUploadPreview(null);
+    form.resetFields();
   };
 
   const submitUpload = async () => {
@@ -113,27 +149,31 @@ export function SpecsPage() {
         source_filename: uploadPreview.sourceFilename,
       });
       message.success('Spec 模板已上传');
-      setUploadOpen(false);
-      setUploadPreview(null);
-      form.resetFields();
+      closeUploadModal();
       await load();
     } catch (error) {
-      const detailText = error instanceof Error ? error.message : String(error);
-      message.error('上传失败：' + detailText);
+      message.error('上传失败：' + describeSchedulerError(error));
     } finally {
       setUploading(false);
     }
   };
 
-  const openDetail = async (row: SpecTemplateSummary) => {
-    setDetailLoading(true);
+  const closeDetail = () => {
+    setDetailOpen(false);
     setDetail(null);
+    setDetailLoading(false);
+  };
+
+  const openDetail = async (row: SpecTemplateSummary) => {
+    setDetailOpen(true);
+    setDetail(null);
+    setDetailLoading(true);
     try {
       const data = await schedulerApi.getSpecTemplate(row.id);
       setDetail(data);
     } catch (error) {
-      const detailText = error instanceof Error ? error.message : String(error);
-      message.error('加载详情失败：' + detailText);
+      message.error('加载详情失败：' + describeSchedulerError(error));
+      closeDetail();
     } finally {
       setDetailLoading(false);
     }
@@ -153,8 +193,7 @@ export function SpecsPage() {
           message.success('Spec 模板已删除');
           await load();
         } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          message.error('删除失败：' + detail);
+          message.error('删除失败：' + describeSchedulerError(error));
           throw error;
         }
       },
@@ -163,15 +202,23 @@ export function SpecsPage() {
 
   const columns = useMemo<ColumnsType<SpecTemplateSummary>>(
     () => [
-      { title: 'ID', dataIndex: 'id', width: 72 },
-      { title: '名称', dataIndex: 'name' },
+      { title: 'ID', dataIndex: 'id', width: 72, sorter: (a, b) => a.id - b.id },
+      { title: '名称', dataIndex: 'name', sorter: textSorter('name') },
       { title: '产品 PN', dataIndex: 'product_pn', render: (value) => value || '—' },
       { title: '来源文件', dataIndex: 'source_filename', render: (value) => value || '—' },
-      { title: 'Sections', dataIndex: 'section_count', width: 96 },
-      { title: '更新时间', dataIndex: 'updated_at', width: 200 },
+      { title: 'Sections', dataIndex: 'section_count', width: 96, sorter: (a, b) => a.section_count - b.section_count },
+      {
+        title: '更新时间',
+        dataIndex: 'updated_at',
+        width: 180,
+        defaultSortOrder: 'descend',
+        sorter: (a, b) => timestampSorter(a.updated_at, b.updated_at),
+        render: (value) => formatTimestamp(value),
+      },
       {
         title: '操作',
         width: 160,
+        fixed: 'right',
         render: (_, row) => (
           <Space>
             <Button size="small" type="link" onClick={() => void openDetail(row)}>
@@ -212,6 +259,12 @@ export function SpecsPage() {
     return rows;
   }, [detail]);
 
+  const previewSectionNames = uploadPreview?.sectionNames ?? [];
+  const previewSectionOverflow =
+    previewSectionNames.length > PREVIEW_SECTION_LIMIT
+      ? previewSectionNames.length - PREVIEW_SECTION_LIMIT
+      : 0;
+
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
       <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
@@ -223,11 +276,11 @@ export function SpecsPage() {
             accept=".ini,text/plain"
             showUploadList={false}
             beforeUpload={(file) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                openUploadPreview(String(reader.result || ''), file.name);
-              };
-              reader.readAsText(file);
+              readIniFile(
+                file,
+                (text) => openUploadPreview(text, file.name),
+                (errorText) => message.error(errorText),
+              );
               return false;
             }}
           >
@@ -246,7 +299,7 @@ export function SpecsPage() {
           dataSource={templates}
           loading={loading}
           locale={{ emptyText: '暂无 Spec 模板（请上传 *_Spec.ini）' }}
-          pagination={false}
+          pagination={DEFAULT_TABLE_PAGINATION}
           scroll={{ x: true }}
         />
       </Card>
@@ -254,11 +307,7 @@ export function SpecsPage() {
       <Modal
         title="上传 Spec 模板"
         open={uploadOpen}
-        onCancel={() => {
-          setUploadOpen(false);
-          setUploadPreview(null);
-          form.resetFields();
-        }}
+        onCancel={closeUploadModal}
         onOk={() => void submitUpload()}
         okText="确认上传"
         confirmLoading={uploading}
@@ -273,6 +322,24 @@ export function SpecsPage() {
               </Descriptions.Item>
               <Descriptions.Item label="Sections">{uploadPreview.sectionCount}</Descriptions.Item>
               <Descriptions.Item label="指标数">{uploadPreview.metricCount}</Descriptions.Item>
+              <Descriptions.Item label="Section 预览">
+                {previewSectionNames.length ? (
+                  <Space size={[4, 4]} wrap>
+                    {previewSectionNames.slice(0, PREVIEW_SECTION_LIMIT).map((name) => (
+                      <Typography.Text key={name} code>
+                        {name}
+                      </Typography.Text>
+                    ))}
+                    {previewSectionOverflow > 0 ? (
+                      <Typography.Text type="secondary">
+                        还有 {previewSectionOverflow} 个
+                      </Typography.Text>
+                    ) : null}
+                  </Space>
+                ) : (
+                  '—'
+                )}
+              </Descriptions.Item>
             </Descriptions>
             {uploadPreview.warnings.length > 0 ? (
               <Typography.Text type="warning">
@@ -287,6 +354,13 @@ export function SpecsPage() {
               >
                 <Input placeholder="Spec 模板名称" />
               </Form.Item>
+              {duplicateUploadName ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="已有同名 Spec 模板，上传后中心将并存多个模板，建议使用更易区分的名称。"
+                />
+              ) : null}
               <Form.Item label="产品 PN" name="product_pn">
                 <Input placeholder="可选" />
               </Form.Item>
@@ -300,55 +374,64 @@ export function SpecsPage() {
 
       <Modal
         title={detail ? `Spec 模板 · ${detail.name}` : 'Spec 模板详情'}
-        open={!!detail || detailLoading}
-        onCancel={() => setDetail(null)}
+        open={detailOpen}
+        onCancel={closeDetail}
         footer={null}
         width={900}
         destroyOnClose
       >
-        {detailLoading && !detail ? (
-          <Typography.Text type="secondary">加载中…</Typography.Text>
-        ) : detail ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Descriptions size="small" column={2} bordered>
-              <Descriptions.Item label="ID">{detail.id}</Descriptions.Item>
-              <Descriptions.Item label="产品 PN">{detail.product_pn || '—'}</Descriptions.Item>
-              <Descriptions.Item label="来源文件">{detail.source_filename || '—'}</Descriptions.Item>
-              <Descriptions.Item label="Sections">{detail.section_count}</Descriptions.Item>
-              <Descriptions.Item label="创建机台">
-                {detail.created_by_agent_name || '—'}
-              </Descriptions.Item>
-              <Descriptions.Item label="更新时间">{detail.updated_at}</Descriptions.Item>
-              <Descriptions.Item label="备注" span={2}>
-                {detail.note || '—'}
-              </Descriptions.Item>
-            </Descriptions>
-            <Typography.Title level={5}>Sections</Typography.Title>
-            <Table
-              size="small"
-              pagination={false}
-              rowKey="key"
-              dataSource={detailSections}
-              columns={[
-                { title: 'Section', dataIndex: 'section' },
-                { title: '指标数', dataIndex: 'metricCount', width: 96 },
-              ]}
-            />
-            <Typography.Title level={5}>指标上下限</Typography.Title>
-            <Table
-              size="small"
-              pagination={{ pageSize: 20, hideOnSinglePage: true }}
-              rowKey="key"
-              dataSource={detailMetrics}
-              scroll={{ y: 360 }}
-              columns={[
-                { title: 'Section · 指标', dataIndex: 'metric' },
-                { title: 'LL', dataIndex: 'min', width: 120 },
-                { title: 'UL', dataIndex: 'max', width: 120 },
-              ]}
-            />
-          </Space>
-        ) : null}
+        <Spin spinning={detailLoading}>
+          {detail ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Descriptions size="small" column={2} bordered>
+                <Descriptions.Item label="ID">{detail.id}</Descriptions.Item>
+                <Descriptions.Item label="产品 PN">{detail.product_pn || '—'}</Descriptions.Item>
+                <Descriptions.Item label="来源文件">{detail.source_filename || '—'}</Descriptions.Item>
+                <Descriptions.Item label="Sections">{detail.section_count}</Descriptions.Item>
+                <Descriptions.Item label="创建机台">
+                  {detail.created_by_agent_name || '—'}
+                </Descriptions.Item>
+                <Descriptions.Item label="更新时间">
+                  {formatTimestamp(detail.updated_at)}
+                </Descriptions.Item>
+                <Descriptions.Item label="备注" span={2}>
+                  {detail.note || '—'}
+                </Descriptions.Item>
+              </Descriptions>
+              <Typography.Title level={5}>Sections</Typography.Title>
+              <Table
+                size="small"
+                pagination={DEFAULT_TABLE_PAGINATION}
+                rowKey="key"
+                dataSource={detailSections}
+                columns={[
+                  { title: 'Section', dataIndex: 'section', sorter: textSorter('section') },
+                  {
+                    title: '指标数',
+                    dataIndex: 'metricCount',
+                    width: 96,
+                    sorter: (a, b) => a.metricCount - b.metricCount,
+                  },
+                ]}
+              />
+              <Typography.Title level={5}>指标上下限</Typography.Title>
+              <Table
+                size="small"
+                pagination={DEFAULT_TABLE_PAGINATION}
+                rowKey="key"
+                dataSource={detailMetrics}
+                scroll={{ y: 360 }}
+                columns={[
+                  { title: 'Section · 指标', dataIndex: 'metric' },
+                  { title: 'LL', dataIndex: 'min', width: 120 },
+                  { title: 'UL', dataIndex: 'max', width: 120 },
+                ]}
+              />
+            </Space>
+          ) : !detailLoading ? (
+            <Typography.Text type="secondary">暂无详情</Typography.Text>
+          ) : null}
+        </Spin>
       </Modal>
     </Space>
   );
