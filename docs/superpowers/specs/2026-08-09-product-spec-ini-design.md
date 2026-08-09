@@ -1,7 +1,7 @@
 # Design: Product Spec INI library (`*_Spec.ini`)
 
 Date: 2026-08-09  
-Status: draft (pending review)
+Status: approved
 
 ## Goal
 
