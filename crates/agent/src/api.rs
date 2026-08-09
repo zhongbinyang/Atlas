@@ -327,6 +327,14 @@ pub fn router(state: AppState) -> Router {
             "/api/agent-config-templates/{id}/load",
             post(agent_config_template_load_to_agent),
         )
+        .route(
+            "/api/spec-templates",
+            get(spec_templates_list).post(spec_templates_create),
+        )
+        .route(
+            "/api/spec-templates/{id}",
+            get(spec_templates_get).delete(spec_templates_delete),
+        )
         .route("/api/sequence/run", post(labview_run_sequence))
         .route(
             "/api/sequence/run/progress",
@@ -1311,6 +1319,99 @@ async fn agent_config_template_load_to_agent(
                 let axum_status =
                     StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
                 (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn spec_templates_list(State(s): State<AppState>) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::list_spec_templates(&s.http_client, &s.center_url).await {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn spec_templates_get(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::get_spec_template(&s.http_client, &s.center_url, &id).await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (axum_status, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response(),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn spec_templates_create(
+    State(s): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(agent_id) => {
+            let mut center_body = body;
+            center_body["created_by_agent_id"] = Value::String(agent_id);
+            match crate::register::create_spec_template(&s.http_client, &s.center_url, &center_body)
+                .await
+            {
+                Ok((status, resp_body)) => {
+                    let axum_status =
+                        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                    (axum_status, Json(resp_body)).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(resp) => resp,
+    }
+}
+
+async fn spec_templates_delete(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_agent_id_for_proxy(&s).await {
+        Ok(_) => match crate::register::delete_spec_template(&s.http_client, &s.center_url, &id).await
+        {
+            Ok((status, body)) => {
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                if axum_status == StatusCode::NO_CONTENT {
+                    axum_status.into_response()
+                } else {
+                    (axum_status, Json(body)).into_response()
+                }
             }
             Err(e) => (
                 StatusCode::BAD_GATEWAY,

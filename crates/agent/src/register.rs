@@ -692,3 +692,72 @@ pub async fn load_agent_config_template_to_agent(
     let value: Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok((status, value))
 }
+
+pub async fn list_spec_templates(
+    client: &reqwest::Client,
+    center_url: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/spec-templates", center_url.trim_end_matches('/'));
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn get_spec_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/spec-templates/{}",
+        center_url.trim_end_matches('/'),
+        id
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn create_spec_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!("{}/api/spec-templates", center_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let value: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, value))
+}
+
+pub async fn delete_spec_template(
+    client: &reqwest::Client,
+    center_url: &str,
+    id: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let url = format!(
+        "{}/api/spec-templates/{}",
+        center_url.trim_end_matches('/'),
+        id
+    );
+    let resp = client
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
+    };
+    Ok((status, value))
+}
