@@ -403,6 +403,9 @@ pub struct ViRunQueueReplaceItem {
     pub title: String,
     pub collapsed: bool,
     pub resources_json: String, // JSON string array text
+    pub spec_template_id: Option<i64>,
+    pub spec_section: String,
+    pub spec_metrics_json: String, // JSON string array text
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +432,9 @@ pub struct ViRunQueueItem {
     pub title: String,
     pub collapsed: bool,
     pub resources_json: String,
+    pub spec_template_id: Option<i64>,
+    pub spec_section: String,
+    pub spec_metrics_json: String,
 }
 
 fn normalize_fail_policy(fail_policy: &str) -> &'static str {
@@ -464,6 +470,27 @@ pub fn parse_resources_json(s: &str) -> Result<Vec<String>, String> {
         }
         if !seen.insert(name.to_string()) {
             return Err(format!("resources[{i}] duplicate '{name}'"));
+        }
+        out.push(name.to_string());
+    }
+    Ok(out)
+}
+
+/// Parse step `spec_metrics_json`: JSON array of non-empty strings (metric names).
+pub fn parse_spec_metrics_json(s: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(s).map_err(|e| format!("invalid spec_metrics_json: {e}"))?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| "spec_metrics must be a JSON array of strings".to_string())?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let Some(raw) = item.as_str() else {
+            return Err(format!("spec_metrics[{i}] must be a string"));
+        };
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err(format!("spec_metrics[{i}] must be a non-empty string"));
         }
         out.push(name.to_string());
     }
@@ -1707,6 +1734,9 @@ impl Store {
                 title: step.title,
                 collapsed: step.collapsed,
                 resources_json: step.resources_json,
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             })
             .collect();
         self.replace_vi_run_queue(agent_id, &items).await
@@ -2396,7 +2426,8 @@ impl Store {
                    COALESCE(v.show_front_panel, 0) AS show_front_panel,
                    v.timeout_secs AS timeout_secs,
                    q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note,
-                   q.title, q.collapsed, q.resources_json
+                   q.title, q.collapsed, q.resources_json,
+                   q.spec_template_id, q.spec_section, q.spec_metrics_json
             FROM vi_run_queue_items q
             LEFT JOIN vi_templates v ON v.id = q.vi_template_id
             LEFT JOIN general_templates g ON g.id = q.general_template_id
@@ -2443,6 +2474,9 @@ impl Store {
                         title,
                         collapsed: item.collapsed,
                         resources_json: "[]".into(),
+                        spec_template_id: None,
+                        spec_section: String::new(),
+                        spec_metrics_json: "[]".into(),
                     });
                 }
                 "general" => {
@@ -2523,8 +2557,8 @@ impl Store {
                 INSERT INTO vi_run_queue_items
                   (id, agent_id, vi_template_id, general_template_id, inputs_json, position, created_at,
                    enabled, breakpoint, fail_policy, limits_json, note, title, collapsed, template_source,
-                   resources_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                   resources_json, spec_template_id, spec_section, spec_metrics_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                 "#,
             )
             .bind(&id)
@@ -2543,6 +2577,9 @@ impl Store {
             .bind(item.collapsed)
             .bind(&item.template_source)
             .bind(&item.resources_json)
+            .bind(item.spec_template_id)
+            .bind(&item.spec_section)
+            .bind(&item.spec_metrics_json)
             .execute(&mut *tx)
             .await
             .map_err(QueueReplaceError::Db)?;
@@ -2730,6 +2767,9 @@ struct ViRunQueueItemRow {
     title: String,
     collapsed: bool,
     resources_json: String,
+    spec_template_id: Option<i64>,
+    spec_section: String,
+    spec_metrics_json: String,
 }
 
 impl ViRunQueueItemRow {
@@ -2757,6 +2797,9 @@ impl ViRunQueueItemRow {
             title: self.title,
             collapsed: self.collapsed,
             resources_json: self.resources_json,
+            spec_template_id: self.spec_template_id,
+            spec_section: self.spec_section,
+            spec_metrics_json: self.spec_metrics_json,
         }
     }
 }
@@ -3584,6 +3627,9 @@ mod tests {
                 title: "".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             })
             .collect()
     }
@@ -3690,6 +3736,9 @@ mod tests {
             title: "".into(),
             collapsed: false,
             resources_json: "[]".into(),
+            spec_template_id: None,
+            spec_section: String::new(),
+            spec_metrics_json: "[]".into(),
         }];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -3721,6 +3770,9 @@ mod tests {
                 title: "预处理".into(),
                 collapsed: true,
                 resources_json: "[]".into(),
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             },
             ViRunQueueReplaceItem {
                 template_source: "labview".into(),
@@ -3735,6 +3787,9 @@ mod tests {
                 title: "".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             },
         ];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
@@ -3770,6 +3825,57 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
         assert_eq!(reloaded[0].template_source, "group");
         assert_eq!(reloaded[0].template_name, "预处理");
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_spec_fields_roundtrip() {
+        let store = test_store().await;
+        let agent = store
+            .upsert_agent("spec-queue", "10.0.0.2", 26631)
+            .await
+            .unwrap();
+        let spec_json = r#"{"version":1,"sections":{"FMT_HT":{"TX_AP":{"min":-2,"max":4}}}}"#;
+        let spec_tpl = store
+            .create_spec_template(
+                "fmt-spec",
+                "",
+                "",
+                "Tunn_FMT_Spec.ini",
+                spec_json,
+                Some(&agent.id),
+            )
+            .await
+            .unwrap();
+        let vi_tpl = vi_template_for_agent(&store, &agent.id, "VI", r"C:\vi.vi").await;
+
+        let items = vec![ViRunQueueReplaceItem {
+            template_source: "labview".into(),
+            vi_template_id: Some(vi_tpl.id),
+            general_template_id: None,
+            inputs_json: None,
+            enabled: true,
+            breakpoint: false,
+            fail_policy: "stop".into(),
+            limits_json: "[]".into(),
+            note: "".into(),
+            title: "".into(),
+            collapsed: false,
+            resources_json: "[]".into(),
+            spec_template_id: Some(spec_tpl.id),
+            spec_section: "FMT_HT".into(),
+            spec_metrics_json: r#"["TX_AP"]"#.into(),
+        }];
+        let replaced = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(replaced[0].spec_template_id, Some(spec_tpl.id));
+        assert_eq!(replaced[0].spec_section, "FMT_HT");
+        assert_eq!(replaced[0].spec_metrics_json, r#"["TX_AP"]"#);
+
+        let listed = store.list_vi_run_queue(&agent.id).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].spec_template_id, Some(spec_tpl.id));
+        assert_eq!(listed[0].spec_section, "FMT_HT");
+        assert_eq!(listed[0].spec_metrics_json, r#"["TX_AP"]"#);
     }
 
     #[tokio::test]

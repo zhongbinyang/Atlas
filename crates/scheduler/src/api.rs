@@ -9,7 +9,8 @@ use common::{parse_spec_ini, spec_document_to_json, ErrorBody, RegisterAgentRequ
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    parse_resources_json, Agent, AgentConfigSnapshot, AgentConfigTemplateEnriched,
+    parse_resources_json, parse_spec_metrics_json, Agent, AgentConfigSnapshot,
+    AgentConfigTemplateEnriched,
     GeneralTemplateEnriched, QueueReplaceError, SequenceTemplateEnriched, SequenceTemplateStep,
     SpecTemplateSummary, Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
     ViTemplatePatch,
@@ -414,6 +415,10 @@ fn default_empty_array() -> serde_json::Value {
     serde_json::json!([])
 }
 
+fn default_empty_string_array() -> Vec<String> {
+    Vec::new()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViRunQueueItemView {
     pub id: String,
@@ -437,6 +442,11 @@ pub struct ViRunQueueItemView {
     pub collapsed: bool,
     #[serde(default)]
     pub resources: Vec<String>,
+    pub spec_template_id: Option<i64>,
+    #[serde(default)]
+    pub spec_section: String,
+    #[serde(default = "default_empty_string_array")]
+    pub spec_metrics: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -473,6 +483,11 @@ pub struct ReplaceViRunQueueItem {
     pub collapsed: bool,
     #[serde(default)]
     pub resources: Vec<String>,
+    pub spec_template_id: Option<i64>,
+    #[serde(default)]
+    pub spec_section: String,
+    #[serde(default = "default_empty_string_array")]
+    pub spec_metrics: Vec<String>,
 }
 
 fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, String> {
@@ -482,6 +497,7 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         .map_err(|err| format!("invalid outputs_json: {err}"))?;
     let limits: serde_json::Value = serde_json::from_str(&item.limits_json)
         .map_err(|err| format!("invalid limits_json: {err}"))?;
+    let spec_metrics = parse_spec_metrics_json(&item.spec_metrics_json)?;
     Ok(ViRunQueueItemView {
         id: item.id,
         template_source: item.template_source,
@@ -502,6 +518,9 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         note: item.note,
         collapsed: item.collapsed,
         resources: parse_resources_json(&item.resources_json)?,
+        spec_template_id: item.spec_template_id,
+        spec_section: item.spec_section,
+        spec_metrics,
     })
 }
 
@@ -2923,6 +2942,31 @@ async fn put_vi_run_queue(
             }
         };
         let resources_json = serde_json::to_string(&resources).unwrap_or_else(|_| "[]".into());
+        let spec_metrics_raw = match serde_json::to_string(&item.spec_metrics) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: format!("items[{i}].spec_metrics: {err}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let spec_metrics = match parse_spec_metrics_json(&spec_metrics_raw) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: format!("items[{i}].spec_metrics: {err}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let spec_metrics_json = serde_json::to_string(&spec_metrics).unwrap_or_else(|_| "[]".into());
         items.push(ViRunQueueReplaceItem {
             template_source: source,
             vi_template_id,
@@ -2937,6 +2981,9 @@ async fn put_vi_run_queue(
             title,
             collapsed: item.collapsed,
             resources_json,
+            spec_template_id: item.spec_template_id,
+            spec_section: item.spec_section,
+            spec_metrics_json,
         });
     }
 
