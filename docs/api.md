@@ -80,6 +80,7 @@ flowchart LR
 | `agent_device_profiles` | 每台机多套设备配置档（`setting_json`，至多一条 `is_active`） |
 | `agent_calibration_profiles` | 每台机多套校准配置档（同上） |
 | `agent_channels` | 每台机通道定义（`channel_index` / `name` / `enabled` / `overlay_json`） |
+| `spec_templates` | 产品 Spec INI 解析后的模板库（`spec_json` + 元数据） |
 
 ---
 
@@ -321,6 +322,8 @@ sequenceDiagram
 | 序列存模板 | Agent WebUI → Agent `POST /api/sequence-templates` → 中心同名 → DB（自队列快照） |
 | 序列加载模板 | Agent WebUI → Agent `.../load` → 中心 `.../load-to-agent` → DB 覆盖队列 |
 | 序列执行 | Agent WebUI → Agent `/api/sequence/run*` → 读中心队列+设置 → 本机逐步执行 |
+| 中心 Spec 模板库 | 中心 WebUI `#/specs` → `GET/POST/DELETE /api/spec-templates` → DB |
+| 步骤绑定 Spec 模板 | Agent WebUI 步骤详情 → `PUT run-queue` 写入 `spec_template_id` / `spec_section` / `spec_metrics`；执行时 Agent 解析模板 section 并与手填 `limits` 合并（同名 `output` 手填优先） |
 
 ---
 
@@ -427,7 +430,9 @@ Query：`agent_id?` · `kind?`
 
 ## 1.6a Spec 模板
 
-产品 Spec INI（`*_Spec.ini`）解析后存为 `spec_json`；序列步骤可引用模板 + section 名（见 P2 队列字段）。
+产品 Spec INI（`*_Spec.ini`，如 `Tunn_FMT_Spec.ini`）在中心解析后存为 `spec_json`；序列步骤可选引用 **模板 ID + section 名**（如 `FMT_HT`），运行时 Agent 将 section 内 `_UL`/`_LL` 指标转为 `limits` 并与步骤手填 `limits` 合并（**手填覆盖同名字段**）。Section 名支持 `${Var}` 展开；`spec_metrics` 为空表示 section 内全部指标。
+
+典型流程：中心 `#/specs` 上传 INI → Agent 序列步骤选择模板与 section → 保存队列 → 执行时按 VI `output` 键判 Pass/Fail。
 
 **GET** `/api/spec-templates` · 使用方：**中心 WebUI** · **Agent 进程**
 
@@ -473,11 +478,15 @@ Query：`agent_id?` · `kind?`
 | `enabled` | 默认 `true`；组头禁用则组内步骤执行时视为禁用 |
 | `breakpoint` | 已废弃：PUT 可传但忽略并落库为 `false` |
 | `fail_policy` | 仅步骤：`stop`（默认）/ `continue` |
-| `limits` | 仅步骤：Spec 数组，默认 `[]` |
+| `limits` | 仅步骤：手填 Spec 数组，默认 `[]`；与模板生成的 limits 合并时 **同 `output` 手填优先** |
+| `spec_template_id` | 仅步骤：可选，FK → `spec_templates.id`；`null` 表示不引用模板 |
+| `spec_section` | 仅步骤：INI section 全名（如 `FMT_HT`），可含 `${Var}`；引用模板时必填 |
+| `spec_metrics` | 仅步骤：字符串数组，限定 section 内指标名；`[]` = section 内全部指标 |
 | `resources` | 仅步骤：逻辑资源名字符串数组（如 `["station.dca"]`），默认 `[]`；空 = 无锁、跨通道可并行。名称须匹配 `^[A-Za-z][A-Za-z0-9_.-]{0,63}$` |
 | `note` | 备注 |
 
 执行时 Agent 跳过组头；步骤有效启用 = `step.enabled && group.enabled`。  
+若设置了 `spec_template_id`，执行前 Agent 加载模板、展开 `spec_section`、生成 limits 再与 `limits` 合并后判 Spec；模板缺失、section 为空或不存在 → 步骤 **Error**。  
 步骤执行前按 `resources[]` 在 Agent 进程内 acquire 命名锁（FIFO，默认超时 300s）；共用仪表填相同资源名即可串行，通道私有步骤留空即可并行。
 
 ### Spec（`limits` 元素）
@@ -623,6 +632,10 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 | POST | `/api/general/rest/register-template` | **Agent WebUI** | → 中心 general-templates |
 | GET | `/api/general/rest/templates` | **Agent WebUI** | → 中心 `?kind=rest` |
 | GET | `/api/general/all-templates` | **Agent WebUI** | → 中心 general-templates |
+| GET | `/api/spec-templates` | **Agent WebUI** | → 中心 Spec 模板列表 |
+| POST | `/api/spec-templates` | **Agent WebUI** | → 中心 POST（上传 `ini_text`） |
+| GET | `/api/spec-templates/{id}` | **Agent WebUI** | → 中心 GET（含 `spec` JSON） |
+| DELETE | `/api/spec-templates/{id}` | **Agent WebUI** | → 中心 DELETE |
 
 ## 2.2 健康检查
 
@@ -680,7 +693,7 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 
 **GET** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
 **PUT** `/api/sequence/run-queue` · 使用方：**Agent WebUI**  
-Body 形状见第一部分 1.7（含 `group` 组头与步骤 `resources[]`）。WebUI 支持插入分组、折叠、改名、整组启停、步骤资源标签编辑。
+Body 形状见第一部分 1.7（含 `group` 组头、步骤 `resources[]` 与可选 `spec_template_id` / `spec_section` / `spec_metrics`）。WebUI 支持插入分组、折叠、改名、整组启停、步骤资源标签编辑，以及步骤 Spec 模板绑定（模板下拉 + section + 指标多选）。
 
 ## 2.6 序列执行
 
@@ -737,6 +750,15 @@ Body 形状见第一部分 1.7（含 `group` 组头与步骤 `resources[]`）。
 **GET** `/api/sequence-templates` · 使用方：**Agent WebUI**  
 **POST** `/api/sequence-templates` · 使用方：**Agent WebUI** — `{ "name", "note?" }`（Agent 注入 `agent_id`）  
 **POST** `/api/sequence-templates/{id}/load` · 使用方：**Agent WebUI**
+
+## 2.7a Spec 模板（代理）
+
+**GET** `/api/spec-templates` · 使用方：**Agent WebUI** — → 中心列表  
+**POST** `/api/spec-templates` · 使用方：**Agent WebUI** — Body 同中心 1.6a（`ini_text` 必填）  
+**GET** `/api/spec-templates/{id}` · 使用方：**Agent WebUI** — 含完整 `spec` JSON  
+**DELETE** `/api/spec-templates/{id}` · 使用方：**Agent WebUI** → `204`
+
+中心 `#/specs` 与 Agent 序列步骤编辑器均通过上述代理或中心直连 API 读写模板库。
 
 ## 2.8 本机设置
 

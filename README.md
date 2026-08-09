@@ -2,7 +2,7 @@
 
 Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
 
-WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **单位**；Agent hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。
+WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **Spec 模板** / **单位**；Agent hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。
 
 ## 前端开发（React）
 
@@ -137,6 +137,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 | ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览（无截图 / 历史 / 文件） |
 | ATLAS 中心 WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**删除** |
 | ATLAS 中心 WebUI | `#/sequences` | **序列模板**：浏览步骤数/来源机台；**删除** |
+| ATLAS 中心 WebUI | `#/specs` | **Spec 模板**：上传 `*_Spec.ini`、预览 section/指标、**删除** |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。
 
