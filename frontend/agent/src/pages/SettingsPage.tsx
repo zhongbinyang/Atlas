@@ -14,6 +14,7 @@ import {
   Upload,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { REFRESH_LABEL } from '@shared/uiCopy';
 import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import { CollapsibleCard } from '../components/CollapsibleCard';
@@ -570,8 +571,8 @@ export function SettingsPage() {
     }
     modal.confirm({
       title: '放弃未保存的更改？',
-      content: '重新加载将丢弃变量、通道与配置档扁平值等未保存的编辑。',
-      okText: '重新加载',
+      content: '刷新将丢弃变量、通道与配置档扁平值等未保存的编辑。',
+      okText: REFRESH_LABEL,
       okType: 'danger',
       cancelText: '取消',
       onOk: () => load(),
@@ -726,7 +727,7 @@ export function SettingsPage() {
         description="手工变量、设备/校准配置档、通道 overlay 与中心单位。展开优先级：通道 overlay > 手工变量 > 设备档 > 校准档。"
         extra={
           <Button onClick={requestReload} loading={busy}>
-            重新加载
+            {REFRESH_LABEL}
           </Button>
         }
       />
@@ -746,7 +747,7 @@ export function SettingsPage() {
       ) : null}
 
       {hasUnsavedEdits ? (
-        <Alert type="warning" showIcon message="有未保存的更改，离开或重新加载前请先保存。" />
+        <Alert type="warning" showIcon message="有未保存的更改，离开或刷新前请先保存。" />
       ) : null}
 
       <CollapsibleCard

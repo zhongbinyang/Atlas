@@ -332,7 +332,7 @@ export function SequenceRunTab() {
             <Button danger loading={exclusiveBusy} disabled={!anyRunning} onClick={() => void abortAll()}>
               全部中止
             </Button>
-            <Button onClick={() => void refreshProgress()}>刷新进度</Button>
+            <Button onClick={() => void refreshProgress()}>刷新</Button>
           </Space>
         </Space>
       </Card>

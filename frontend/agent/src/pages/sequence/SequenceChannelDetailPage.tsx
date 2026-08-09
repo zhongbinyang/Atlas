@@ -2,6 +2,7 @@ import { App, Button, Card, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
 import { JsonBlock } from '../../components/JsonBlock';
@@ -169,7 +170,7 @@ export function SequenceChannelDetailPage() {
         width: 120,
         fixed: 'left',
         ellipsis: true,
-        render: (value: string) => value || '---',
+        render: (value: string) => value || EMPTY_PLACEHOLDER,
       },
       {
         title: '测试项',
@@ -182,14 +183,14 @@ export function SequenceChannelDetailPage() {
         title: '来源',
         dataIndex: 'sourceLabel',
         width: 72,
-        render: (value: string) => value || '---',
+        render: (value: string) => value || EMPTY_PLACEHOLDER,
       },
       {
         title: '类型',
         dataIndex: 'kind',
         width: 100,
         ellipsis: true,
-        render: (value: string) => value || '---',
+        render: (value: string) => value || EMPTY_PLACEHOLDER,
       },
       {
         title: '状态',
@@ -256,7 +257,7 @@ export function SequenceChannelDetailPage() {
         description={`${activeSummary.title} · 独立详情页（测试项 / 日志），后续可按反馈调优列与布局。`}
         extra={
           <Space wrap>
-            <Button onClick={() => navigate('/sequence', { state: { tab: 'run' } })}>返回运行</Button>
+            <Button onClick={() => navigate('/sequence/run')}>返回运行</Button>
             <Button
               disabled={channelPos <= 0}
               onClick={() => {
@@ -290,7 +291,7 @@ export function SequenceChannelDetailPage() {
         <Card loading={loading}>
           <Typography.Text type="secondary">
             未找到通道 CH{channelIndex}。请从{' '}
-            <Link to="/sequence">序列运行</Link> 重新进入。
+            <Link to="/sequence/run">序列运行</Link> 重新进入。
           </Typography.Text>
         </Card>
       ) : (

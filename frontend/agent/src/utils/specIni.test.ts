@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBoundToken, parseSpecIni, specDocumentToJson } from './specIni';
+import { parseBoundToken, parseSpecIni, specDocumentToJson } from '@shared/specIni';
 
 describe('parseSpecIni', () => {
   it('parses_ul_ll_pairs', () => {

@@ -1,3 +1,4 @@
+import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
 import type { ChannelProgress, QueueItem } from './sequenceRunModels';
 import {
   buildSequenceChannelDetailSteps,
@@ -113,12 +114,12 @@ function resolveGroupNames(queue: QueueItem[], key: (item: QueueItem, index: num
       map[key(row, index)] = current;
       return;
     }
-    map[key(row, index)] = current ?? '---';
+    map[key(row, index)] = current ?? EMPTY_PLACEHOLDER;
   });
   return map;
 }
 
-/** Map step queue positions to group display names; ungrouped → `---`. */
+/** Map step queue positions to group display names; ungrouped → em dash. */
 export function groupNameByQueuePosition(queue: QueueItem[]): Record<number, string> {
   return resolveGroupNames(queue, (row, index) =>
     row.position != null ? Number(row.position) : index,
@@ -161,7 +162,7 @@ export function formatStepSourceLabel(templateSource: unknown, kind: unknown): s
   const kindText = String(kind || '').toLowerCase();
   if (source === 'general' || ['delay', 'version', 'rest'].includes(kindText)) return '通用';
   if (source === 'labview' || kindText === 'labview') return 'VI';
-  if (!source && !kindText) return '---';
+  if (!source && !kindText) return EMPTY_PLACEHOLDER;
   return 'VI';
 }
 
@@ -192,7 +193,7 @@ export function resolveStepSourceAndKind(
   const sourceLabel = formatStepSourceLabel(source, kind);
   return {
     sourceLabel,
-    kind: kind.trim() || '---',
+    kind: kind.trim() || EMPTY_PLACEHOLDER,
   };
 }
 
@@ -216,7 +217,7 @@ export function buildDetailStepRows(
     const { sourceLabel, kind } = resolveStepSourceAndKind(step.position, queueMeta, result);
     return {
       position: step.position,
-      groupName: groupNames[step.position] ?? '---',
+      groupName: groupNames[step.position] ?? EMPTY_PLACEHOLDER,
       name: step.name,
       sourceLabel,
       kind,

@@ -20,11 +20,9 @@ export function App() {
               <Route path="/vi" element={<ViPage />} />
               <Route path="/general" element={<GeneralPage />} />
               <Route path="/api" element={<RestPage />} />
-              <Route path="/sequence" element={<SequencePage />} />
-              <Route
-                path="/sequence/channels/:channelIndex"
-                element={<SequenceChannelDetailPage />}
-              />
+              <Route path="/sequence" element={<Navigate to="/sequence/edit" replace />} />
+              <Route path="/sequence/channels/:channelIndex" element={<SequenceChannelDetailPage />} />
+              <Route path="/sequence/:tab" element={<SequencePage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<Navigate to="/vi" replace />} />
             </Route>

@@ -61,7 +61,7 @@ describe('sequenceDetailModels', () => {
     };
 
     const rows = buildDetailStepRows(channel, queue);
-    expect(rows[0].groupName).toBe('---');
+    expect(rows[0].groupName).toBe('—');
     expect(rows[0].sourceLabel).toBe('VI');
     expect(rows[0].kind).toBe('labview');
     expect(rows[1].groupName).toBe('光模块');
@@ -80,7 +80,7 @@ describe('sequenceDetailModels', () => {
       { name: 'AgentVer', template_source: 'general' },
     ];
     expect(groupNameByQueueIndex(queue)).toEqual({
-      0: '---',
+      0: '—',
       1: '光模块',
       2: '光模块',
       3: '光模块',

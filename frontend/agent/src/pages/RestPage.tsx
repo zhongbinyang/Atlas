@@ -200,7 +200,7 @@ export function RestPage() {
         description="试跑 HTTP 请求；成功拿到 JSON object 响应体后可注册到中心。"
         extra={
           <Button onClick={() => void loadTemplates()} loading={loadingTemplates}>
-            刷新列表
+            刷新
           </Button>
         }
       />

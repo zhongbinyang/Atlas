@@ -17,8 +17,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SpecTemplateDetail, SpecTemplateSummary } from '../api/types';
-import { describeSchedulerError } from '../utils/formatError';
-import { formatSpecParseError, parseSpecIni } from '../utils/specIni';
+import { describeApiError } from '@shared/formatError';
+import { formatSpecParseError, parseSpecIni } from '@shared/specIni';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
 
 type UploadPreview = {
@@ -86,7 +86,7 @@ export function SpecsPage() {
       const items = await schedulerApi.listSpecTemplates();
       setTemplates(items);
     } catch (error) {
-      message.error('加载 Spec 模板失败：' + describeSchedulerError(error));
+      message.error('加载 Spec 模板失败：' + describeApiError(error));
     } finally {
       setLoading(false);
     }
@@ -152,7 +152,7 @@ export function SpecsPage() {
       closeUploadModal();
       await load();
     } catch (error) {
-      message.error('上传失败：' + describeSchedulerError(error));
+      message.error('上传失败：' + describeApiError(error));
     } finally {
       setUploading(false);
     }
@@ -172,7 +172,7 @@ export function SpecsPage() {
       const data = await schedulerApi.getSpecTemplate(row.id);
       setDetail(data);
     } catch (error) {
-      message.error('加载详情失败：' + describeSchedulerError(error));
+      message.error('加载详情失败：' + describeApiError(error));
       closeDetail();
     } finally {
       setDetailLoading(false);
@@ -193,7 +193,7 @@ export function SpecsPage() {
           message.success('Spec 模板已删除');
           await load();
         } catch (error) {
-          message.error('删除失败：' + describeSchedulerError(error));
+          message.error('删除失败：' + describeApiError(error));
           throw error;
         }
       },

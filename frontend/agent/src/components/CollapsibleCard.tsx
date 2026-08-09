@@ -1,5 +1,5 @@
 import { Card, Typography } from 'antd';
-import type { ReactNode } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { useState } from 'react';
 
 type CollapsibleCardProps = {
@@ -23,10 +23,23 @@ export function CollapsibleCard({
 }: CollapsibleCardProps) {
   const [open, setOpen] = useState(defaultOpen);
 
-  const toggle = () => setOpen((v) => !v);
+  const toggle = () => setOpen((value) => !value);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggle();
+    }
+  };
 
   const titleNode = (
-    <span className="atlas-collapse-trigger">
+    <button
+      type="button"
+      className="atlas-collapse-trigger"
+      aria-expanded={open}
+      onClick={toggle}
+      onKeyDown={handleKeyDown}
+    >
       <span className={`atlas-collapse-chevron${open ? ' is-open' : ''}`} aria-hidden>
         ▸
       </span>
@@ -36,7 +49,7 @@ export function CollapsibleCard({
           点击展开
         </Typography.Text>
       ) : null}
-    </span>
+    </button>
   );
 
   return (
@@ -45,21 +58,12 @@ export function CollapsibleCard({
       className={`atlas-collapse-card${open ? ' is-open' : ' is-collapsed'}${className ? ` ${className}` : ''}`}
       title={titleNode}
       extra={
-        <div className="atlas-collapse-extra" onClick={(e) => e.stopPropagation()}>
+        <div className="atlas-collapse-extra" onClick={(event) => event.stopPropagation()}>
           {open ? extra : null}
         </div>
       }
-      onClick={(e) => {
-        const head = (e.currentTarget as HTMLElement).querySelector('.ant-card-head');
-        if (head && head.contains(e.target as Node)) {
-          // Ignore clicks on action buttons in extra
-          if ((e.target as HTMLElement).closest('.atlas-collapse-extra')) return;
-          toggle();
-        }
-      }}
-      role="presentation"
     >
-      {open ? <div aria-hidden={!open}>{children}</div> : null}
+      {open ? children : null}
     </Card>
   );
 }

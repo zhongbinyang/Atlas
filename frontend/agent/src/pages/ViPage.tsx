@@ -221,7 +221,7 @@ export function ViPage() {
         description="查询 LabVIEW 参数、试跑并注册到中心。入参以 JSON 数组编辑。"
         extra={
           <Button onClick={() => void loadTemplates()} disabled={busy}>
-            刷新列表
+            刷新
           </Button>
         }
       />

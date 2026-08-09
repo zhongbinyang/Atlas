@@ -1,19 +1,23 @@
 import { Tabs } from 'antd';
-import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { SequenceEditTab } from './sequence/SequenceEditTab';
 import { SequenceRunTab } from './sequence/SequenceRunTab';
 
-export function SequencePage() {
-  const location = useLocation();
-  const tabFromState =
-    (location.state as { tab?: string } | null)?.tab === 'run' ? 'run' : null;
-  const [activeKey, setActiveKey] = useState(tabFromState ?? 'edit');
+const SEQUENCE_TABS = ['edit', 'run'] as const;
+type SequenceTab = (typeof SEQUENCE_TABS)[number];
 
-  useEffect(() => {
-    if (tabFromState) setActiveKey(tabFromState);
-  }, [tabFromState, location.key]);
+function isSequenceTab(value: string | undefined): value is SequenceTab {
+  return value === 'edit' || value === 'run';
+}
+
+export function SequencePage() {
+  const { tab } = useParams();
+  const navigate = useNavigate();
+
+  if (!isSequenceTab(tab)) {
+    return <Navigate to="/sequence/edit" replace />;
+  }
 
   return (
     <div className="atlas-page">
@@ -22,8 +26,8 @@ export function SequencePage() {
         description="先在「编排」组装步骤与资源锁，再到「运行」按通道执行并查看进度。"
       />
       <Tabs
-        activeKey={activeKey}
-        onChange={setActiveKey}
+        activeKey={tab}
+        onChange={(key) => navigate(`/sequence/${key}`)}
         type="card"
         items={[
           { key: 'edit', label: '编排', children: <SequenceEditTab /> },

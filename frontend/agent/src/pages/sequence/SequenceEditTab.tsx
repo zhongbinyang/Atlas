@@ -16,6 +16,7 @@ import {
   Typography,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
 import type { SpecTemplateDetail, SpecTemplateSummary, ViRunQueueStep } from '../../api/types';
@@ -820,9 +821,9 @@ export function SequenceEditTab() {
               width: 160,
               ellipsis: true,
               render: (_, row) => {
-                const groupName = groupNamesByIndex[row.queueIndex] ?? '---';
-                if (groupName === '---') {
-                  return <Typography.Text type="secondary">---</Typography.Text>;
+                const groupName = groupNamesByIndex[row.queueIndex] ?? EMPTY_PLACEHOLDER;
+                if (groupName === EMPTY_PLACEHOLDER) {
+                  return <Typography.Text type="secondary">{EMPTY_PLACEHOLDER}</Typography.Text>;
                 }
                 if (!isFirstStepInGroup(queue, row.queueIndex)) {
                   return groupName;

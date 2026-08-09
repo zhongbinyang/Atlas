@@ -132,7 +132,7 @@ export function GeneralPage() {
         description="内置延迟与版本探测功能，试跑后可注册到中心供序列调用。"
         extra={
           <Button onClick={() => void loadTemplates()} loading={loadingTemplates}>
-            刷新列表
+            刷新
           </Button>
         }
       />
