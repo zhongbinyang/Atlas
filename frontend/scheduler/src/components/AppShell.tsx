@@ -8,6 +8,7 @@ const items = [
   { key: '/functions', label: <Link to="/functions">已注册功能</Link> },
   { key: '/sequences', label: <Link to="/sequences">序列模板</Link> },
   { key: '/configs', label: <Link to="/configs">机台配置</Link> },
+  { key: '/specs', label: <Link to="/specs">Spec 模板</Link> },
   { key: '/units', label: <Link to="/units">单位</Link> },
 ];
 

@@ -58,3 +58,42 @@ export type AgentConfigTemplate = {
   updated_at?: string;
   [key: string]: unknown;
 };
+
+export type SpecTemplateSummary = {
+  id: number;
+  name: string;
+  product_pn: string;
+  source_filename: string;
+  section_count: number;
+  created_by_agent_name?: string | null;
+  updated_at: string;
+};
+
+export type SpecTemplateDetail = {
+  id: number;
+  name: string;
+  product_pn: string;
+  note: string;
+  source_filename: string;
+  section_count: number;
+  spec: {
+    version?: number;
+    sections?: Record<
+      string,
+      Record<string, { min: number | null; max: number | null }>
+    >;
+  };
+  created_by_agent_id?: string | null;
+  created_by_agent_name?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateSpecTemplateRequest = {
+  ini_text: string;
+  name?: string;
+  product_pn?: string;
+  note?: string;
+  source_filename?: string;
+  created_by_agent_id?: string;
+};

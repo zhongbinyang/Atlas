@@ -1,5 +1,16 @@
 import { apiRequest } from './client';
-import type { Agent, AgentConfigSummary, AgentConfigTemplate, GeneralTemplate, SequenceTemplate, UnitRow, ViTemplate } from './types';
+import type {
+  Agent,
+  AgentConfigSummary,
+  AgentConfigTemplate,
+  CreateSpecTemplateRequest,
+  GeneralTemplate,
+  SequenceTemplate,
+  SpecTemplateDetail,
+  SpecTemplateSummary,
+  UnitRow,
+  ViTemplate,
+} from './types';
 
 const withAgentFilter = (path: string, agentId?: string): string =>
   path + (agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '');
@@ -52,6 +63,21 @@ export const schedulerApi = {
     ),
   deleteAgentConfigTemplate: (id: string | number) =>
     apiRequest<void>(`/api/agent-config-templates/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    }),
+  listSpecTemplates: async () => {
+    const data = await apiRequest<{ items?: SpecTemplateSummary[] }>('/api/spec-templates');
+    return Array.isArray(data.items) ? data.items : [];
+  },
+  getSpecTemplate: (id: string | number) =>
+    apiRequest<SpecTemplateDetail>(`/api/spec-templates/${encodeURIComponent(String(id))}`),
+  createSpecTemplate: (body: CreateSpecTemplateRequest) =>
+    apiRequest<SpecTemplateSummary>('/api/spec-templates', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteSpecTemplate: (id: string | number) =>
+    apiRequest<void>(`/api/spec-templates/${encodeURIComponent(String(id))}`, {
       method: 'DELETE',
     }),
 };
