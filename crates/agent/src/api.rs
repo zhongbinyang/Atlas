@@ -2216,6 +2216,10 @@ async fn labview_run_sequence(
                         progress: run_state.sequence_progress.clone(),
                         cancel,
                         run_generation: generation,
+                        spec_template_fetch: Some(crate::labview_sequence::SpecTemplateFetch {
+                            client: run_state.http_client.clone(),
+                            center_url: run_state.center_url.clone(),
+                        }),
                     },
                 )
                 .await

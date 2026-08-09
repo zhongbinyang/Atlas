@@ -13,6 +13,7 @@ mod register;
 mod resource_lock;
 mod rest;
 mod sequence_session;
+mod spec_resolve;
 mod settings_defaults;
 mod task_slot;
 mod web;

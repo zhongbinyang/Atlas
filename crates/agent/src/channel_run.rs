@@ -12,6 +12,7 @@ use tokio::sync::watch;
 
 use crate::labview_sequence::{
     run_one_step, run_sequence_from_with_opts, QueueItemForRun, SequenceResponse, SequenceRunOpts,
+    SpecTemplateFetch,
 };
 use crate::resource_lock::ResourceLockManager;
 use crate::sequence_session::SequenceProgressSlot;
@@ -37,6 +38,8 @@ pub struct ChannelRunRequest {
     pub cancel: watch::Receiver<bool>,
     /// TaskSlot generation for this run (scopes progress clear / writes).
     pub run_generation: u64,
+    /// When set, spec templates referenced by steps are fetched from center once per run.
+    pub spec_template_fetch: Option<SpecTemplateFetch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +139,7 @@ where
     let timeout = req.resource_timeout;
     let sn_opt = req.sn.clone();
     let wo_opt = req.work_order.clone();
+    let spec_template_fetch = req.spec_template_fetch.clone();
 
     let mut handles = Vec::with_capacity(channels.len());
     for ch in channels {
@@ -149,6 +153,7 @@ where
         let sn = sn_opt.clone();
         let work_order = wo_opt.clone();
         let run_one = run_one.clone();
+        let spec_fetch = spec_template_fetch.clone();
         handles.push((
             channel_index,
             channel_name,
@@ -167,6 +172,7 @@ where
                     resource_owner: format!("ch-{}", ch.channel_index),
                     resource_timeout: timeout,
                     cancel: Some(cancel),
+                    spec_template_fetch: spec_fetch,
                 };
                 let response =
                     run_sequence_from_with_opts(&items, 0, opts, Vec::new(), move |item| {
@@ -392,6 +398,9 @@ mod tests {
             fail_policy: "stop".into(),
             limits: vec![],
             resources: vec![],
+            spec_template_id: None,
+            spec_section: String::new(),
+            spec_metrics_json: "[]".into(),
         };
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -419,6 +428,7 @@ mod tests {
             progress,
             cancel: rx,
             run_generation: 1,
+            spec_template_fetch: None,
         };
 
         let resp = run_multi_channel_with(req, move |_item, vars| {
@@ -512,6 +522,9 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits: vec![],
                 resources: vec![],
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             }],
             base_vars: HashMap::new(),
             channels: vec![ChannelSpec {
@@ -526,6 +539,7 @@ mod tests {
             progress,
             cancel,
             run_generation: generation,
+            spec_template_fetch: None,
         }
     }
 
@@ -551,6 +565,9 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits: vec![],
                 resources: vec![],
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             },
             QueueItemForRun {
                 position: 1,
@@ -567,6 +584,9 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits: vec![],
                 resources: vec![],
+                spec_template_id: None,
+                spec_section: String::new(),
+                spec_metrics_json: "[]".into(),
             },
         ];
 
@@ -585,6 +605,7 @@ mod tests {
             progress,
             cancel: rx,
             run_generation: 1,
+            spec_template_fetch: None,
         };
 
         let resp = run_multi_channel_with(req, move |item, _vars| {

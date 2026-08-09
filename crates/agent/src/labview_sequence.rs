@@ -14,6 +14,13 @@ use crate::limits::{
 };
 use crate::resource_lock::{ResourceLockError, ResourceLockManager};
 use crate::sequence_session::SequenceProgressSlot;
+use crate::spec_resolve::resolve_step_limits;
+
+#[derive(Debug, Clone)]
+pub struct SpecTemplateFetch {
+    pub client: reqwest::Client,
+    pub center_url: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QueueItemForRun {
@@ -34,6 +41,16 @@ pub struct QueueItemForRun {
     /// Logical instrument names to lock before this step (empty = no lock).
     #[serde(default)]
     pub resources: Vec<String>,
+    #[serde(default)]
+    pub spec_template_id: Option<i64>,
+    #[serde(default)]
+    pub spec_section: String,
+    #[serde(default = "default_spec_metrics_json")]
+    pub spec_metrics_json: String,
+}
+
+fn default_spec_metrics_json() -> String {
+    "[]".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +107,8 @@ pub struct SequenceRunOpts {
     pub resource_timeout: Duration,
     /// Optional cancel signal checked between steps and while waiting for locks.
     pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    /// When set, spec templates referenced by steps are fetched from center once per run.
+    pub spec_template_fetch: Option<SpecTemplateFetch>,
 }
 
 impl Default for SequenceRunOpts {
@@ -105,6 +124,7 @@ impl Default for SequenceRunOpts {
             resource_owner: "ch-0".into(),
             resource_timeout: Duration::from_secs(300),
             cancel: None,
+            spec_template_fetch: None,
         }
     }
 }
@@ -306,6 +326,61 @@ fn should_stop_on_status(status: &str, fail_policy: &str) -> bool {
     matches!(status, "fail" | "error") && fail_policy != "continue"
 }
 
+fn parse_spec_metrics_from_item(item: &Value) -> String {
+    if let Some(arr) = item.get("spec_metrics").and_then(|v| v.as_array()) {
+        return Value::Array(arr.clone()).to_string();
+    }
+    item.get("spec_metrics_json")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "[]".into())
+}
+
+fn parse_spec_template_id(item: &Value) -> Option<i64> {
+    item.get("spec_template_id").and_then(|v| {
+        if v.is_null() {
+            None
+        } else {
+            v.as_i64()
+        }
+    })
+}
+
+async fn resolve_item_limits(
+    item: &QueueItemForRun,
+    vars: &std::collections::HashMap<String, String>,
+    cache: &mut std::collections::HashMap<i64, String>,
+    fetch: &Option<SpecTemplateFetch>,
+) -> Result<Vec<LimitRule>, String> {
+    match item.spec_template_id {
+        None => Ok(item.limits.clone()),
+        Some(id) => {
+            let fetch = fetch.as_ref().ok_or_else(|| {
+                format!("spec template {id} configured but center fetch is unavailable")
+            })?;
+            let template_json = if let Some(cached) = cache.get(&id) {
+                cached.clone()
+            } else {
+                let json = crate::register::fetch_spec_template_spec_json(
+                    &fetch.client,
+                    &fetch.center_url,
+                    id,
+                )
+                .await?;
+                cache.insert(id, json.clone());
+                json
+            };
+            resolve_step_limits(
+                &item.limits,
+                Some(&template_json),
+                &item.spec_section,
+                &item.spec_metrics_json,
+                vars,
+            )
+        }
+    }
+}
+
 pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String> {
     let items = body
         .get("items")
@@ -397,6 +472,13 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
         );
         let limits = parse_limits_from_item(item)?;
         let resources = parse_resources_from_item(item)?;
+        let spec_template_id = parse_spec_template_id(item);
+        let spec_section = item
+            .get("spec_section")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let spec_metrics_json = parse_spec_metrics_from_item(item);
         out.push(QueueItemForRun {
             position,
             queue_item_id,
@@ -412,6 +494,9 @@ pub fn queue_items_for_run(body: &Value) -> Result<Vec<QueueItemForRun>, String>
             fail_policy,
             limits,
             resources,
+            spec_template_id,
+            spec_section,
+            spec_metrics_json,
         });
     }
     out.sort_by_key(|i| i.position);
@@ -451,6 +536,8 @@ where
     let progress_generation = opts.progress_generation;
     let mut sn = opts.sn;
     let work_order = opts.work_order;
+    let mut spec_template_cache: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let spec_template_fetch = opts.spec_template_fetch.clone();
 
     async fn publish_steps(
         progress: &Option<Arc<SequenceProgressSlot>>,
@@ -529,6 +616,40 @@ where
         )
         .await;
 
+        let step_limits = match resolve_item_limits(
+            item,
+            &vars,
+            &mut spec_template_cache,
+            &spec_template_fetch,
+        )
+        .await
+        {
+            Ok(limits) => limits,
+            Err(msg) => {
+                steps.push(SequenceStepResult {
+                    position: item.position,
+                    queue_item_id: item.queue_item_id.clone(),
+                    template_id: item.template_id.clone(),
+                    name: item.name.clone(),
+                    ok: false,
+                    status: "error".into(),
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
+                    measured: None,
+                    limits: limits_value(&item.limits),
+                    result: None,
+                    error: Some(msg),
+                });
+                publish_steps(&progress, &progress_channel, progress_generation, &steps).await;
+
+                if should_stop_on_status("error", &item.fail_policy) {
+                    stopped = true;
+                    failed_at = Some(i);
+                    break;
+                }
+                continue;
+            }
+        };
+
         // Progress stays at current step name while waiting for locks (no waiting_resource hint yet).
         let step_outcome = with_step_resources(
             opts.resource_locks.as_ref(),
@@ -580,7 +701,7 @@ where
                     sn = Some(extracted);
                 }
 
-                let judge = judge_limits_with_vars(&item.limits, &result, &vars);
+                let judge = judge_limits_with_vars(&step_limits, &result, &vars);
                 let mut status = judge_to_status(&judge);
                 // Builtin steps (e.g. REST expect_status) may return ok:false without limits.
                 if status_ok(&status) && result.get("ok") == Some(&Value::Bool(false)) {
@@ -596,8 +717,8 @@ where
                     ok,
                     status: status.clone(),
                     elapsed_ms: step_started.elapsed().as_millis() as u64,
-                    measured: measured_from_limits(&item.limits, &result),
-                    limits: limits_value(&item.limits),
+                    measured: measured_from_limits(&step_limits, &result),
+                    limits: limits_value(&step_limits),
                     result: Some(result.clone()),
                     error: judge_message(&judge).or_else(|| {
                         if status == "fail" {
@@ -790,6 +911,9 @@ mod tests {
             fail_policy: "stop".into(),
             limits: vec![],
             resources: vec![],
+            spec_template_id: None,
+            spec_section: String::new(),
+            spec_metrics_json: "[]".into(),
         }
     }
 

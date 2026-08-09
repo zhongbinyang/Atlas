@@ -720,6 +720,24 @@ pub async fn get_spec_template(
     Ok((status, value))
 }
 
+/// Fetch a spec template's parsed `spec` JSON document from the center scheduler.
+pub async fn fetch_spec_template_spec_json(
+    client: &reqwest::Client,
+    center_url: &str,
+    template_id: i64,
+) -> Result<String, String> {
+    let (status, body) = get_spec_template(client, center_url, &template_id.to_string()).await?;
+    if !status.is_success() {
+        return Err(format!(
+            "spec template {template_id} not found (HTTP {status})"
+        ));
+    }
+    let spec = body.get("spec").ok_or_else(|| {
+        format!("spec template {template_id} response missing spec field")
+    })?;
+    Ok(spec.to_string())
+}
+
 pub async fn create_spec_template(
     client: &reqwest::Client,
     center_url: &str,
