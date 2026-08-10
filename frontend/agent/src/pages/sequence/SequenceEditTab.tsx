@@ -8,6 +8,7 @@ import {
   Form,
   Input,
   Modal,
+  Popover,
   Select,
   Space,
   Switch,
@@ -31,11 +32,16 @@ import {
   readActiveSequenceBinding,
 } from './sequenceActive';
 import {
+  applyGroupSpecToDescendants,
+  effectiveSpecSectionForStep,
   findGroupIndexForStep,
   formatStepSpecSummary,
   groupNameByQueueIndex,
   isFirstStepInGroup,
+  LIMIT_VALUE_COLUMN_DEFS,
+  LIMIT_VALUE_COLUMNS_WIDTH,
   listQueueStepRows,
+  resolveStepLimitPreview,
   sectionMetricKeys,
 } from './sequenceDetailModels';
 
@@ -50,10 +56,6 @@ type CatalogItem = {
 };
 
 type QueueItem = ViRunQueueStep;
-
-type VariableRow = {
-  name: string;
-};
 
 type SequenceTemplate = {
   id?: string | number;
@@ -79,6 +81,32 @@ const toId = (value: unknown): number | null => {
 const normalizeStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+};
+
+const validateGroupSpecBinding = (
+  templateId: number | null,
+  section: string,
+  details: Record<number, SpecTemplateDetail>,
+): string | null => {
+  const trimmed = section.trim();
+  if (templateId == null && !trimmed) return null;
+  if (templateId != null && !trimmed) return '已选择 Spec 模板时须选择 Spec 段';
+  if (templateId == null && trimmed) return '须先选择 Spec 模板';
+  const detail = details[templateId!];
+  if (!detail?.spec?.sections?.[trimmed]) return `Spec 段「${trimmed}」不在所选模板中`;
+  return null;
+};
+
+const sectionOptionsForTemplate = (
+  templateId: number | null,
+  details: Record<number, SpecTemplateDetail>,
+) => {
+  if (templateId == null) return [];
+  const sections = details[templateId]?.spec?.sections;
+  if (!sections) return [];
+  return Object.keys(sections)
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ value: name, label: name }));
 };
 
 const normalizeQueueItem = (raw: unknown): QueueItem => {
@@ -120,6 +148,9 @@ const buildPutItems = (queue: QueueItem[]) =>
         breakpoint: false,
         fail_policy: 'stop',
         resources: [],
+        spec_template_id: item.spec_template_id ?? null,
+        spec_section: String(item.spec_section ?? '').trim(),
+        spec_metrics: [],
       };
     }
     const source = item.template_source === 'general' ? 'general' : 'labview';
@@ -147,7 +178,6 @@ export function SequenceEditTab() {
   const [templates, setTemplates] = useState<SequenceTemplate[]>([]);
   const [specTemplates, setSpecTemplates] = useState<SpecTemplateSummary[]>([]);
   const [specTemplateDetails, setSpecTemplateDetails] = useState<Record<number, SpecTemplateDetail>>({});
-  const [variables, setVariables] = useState<VariableRow[]>([]);
   const [binding, setBinding] = useState<ActiveSequenceBinding | null>(() => readActiveSequenceBinding());
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'labview' | 'general'>('all');
@@ -165,9 +195,10 @@ export function SequenceEditTab() {
   const [specTemplateDraft, setSpecTemplateDraft] = useState<number | null>(null);
   const [specSectionDraft, setSpecSectionDraft] = useState('');
   const [specMetricsDraft, setSpecMetricsDraft] = useState<string[]>([]);
-  const [variableInsertDraft, setVariableInsertDraft] = useState<string | null>(null);
   const [groupNameModal, setGroupNameModal] = useState<'insert' | 'group' | null>(null);
   const [groupNameInput, setGroupNameInput] = useState('分组');
+  const [groupSpecTemplateDraft, setGroupSpecTemplateDraft] = useState<number | null>(null);
+  const [groupSpecSectionDraft, setGroupSpecSectionDraft] = useState('');
   const [saveSeqTemplateOpen, setSaveSeqTemplateOpen] = useState(false);
   const [saveSeqTemplateName, setSaveSeqTemplateName] = useState('');
   const [saveSeqTemplateNote, setSaveSeqTemplateNote] = useState('');
@@ -223,13 +254,12 @@ export function SequenceEditTab() {
   const loadAll = useCallback(async () => {
     setPageBusy(true);
     try {
-      const [vi, general, queueResp, tpl, specTpl, settingsResp] = await Promise.all([
+      const [vi, general, queueResp, tpl, specTpl] = await Promise.all([
         agentApi.labviewAllTemplates(),
         agentApi.generalAllTemplates(),
         agentApi.getRunQueue(),
         agentApi.listSequenceTemplates(),
         agentApi.listSpecTemplates(),
-        agentApi.getSettings(),
       ]);
       const viItems = (Array.isArray(vi) ? vi : []).map((item) => ({
         ...(asRecord(item) as CatalogItem),
@@ -247,18 +277,6 @@ export function SequenceEditTab() {
       setQueue(nextQueue);
       setTemplates(Array.isArray(tpl) ? (tpl as SequenceTemplate[]) : []);
       setSpecTemplates(Array.isArray(specTpl) ? specTpl : []);
-      const settingsData = asRecord(settingsResp);
-      setVariables(
-        Array.isArray(settingsData.variables)
-          ? settingsData.variables
-              .map((item) => {
-                const row = asRecord(item);
-                const name = String(row.name ?? '').trim();
-                return name ? { name } : null;
-              })
-              .filter((row): row is VariableRow => row != null)
-          : [],
-      );
       const templateIds = nextQueue
         .map((item) => item.spec_template_id)
         .filter((id): id is number => id != null);
@@ -386,6 +404,8 @@ export function SequenceEditTab() {
 
   const openInsertGroupModal = () => {
     setGroupNameInput('分组');
+    setGroupSpecTemplateDraft(null);
+    setGroupSpecSectionDraft('');
     setGroupNameModal('insert');
   };
 
@@ -400,7 +420,15 @@ export function SequenceEditTab() {
       return;
     }
     setGroupNameInput('分组');
+    setGroupSpecTemplateDraft(null);
+    setGroupSpecSectionDraft('');
     setGroupNameModal('group');
+  };
+
+  const resetGroupModal = () => {
+    setGroupNameModal(null);
+    setGroupSpecTemplateDraft(null);
+    setGroupSpecSectionDraft('');
   };
 
   const confirmGroupName = async () => {
@@ -409,22 +437,32 @@ export function SequenceEditTab() {
       message.warning('请输入分组名称');
       return;
     }
+    const specErr = validateGroupSpecBinding(
+      groupSpecTemplateDraft,
+      groupSpecSectionDraft,
+      specTemplateDetails,
+    );
+    if (specErr) {
+      message.warning(specErr);
+      return;
+    }
+    const groupItem: QueueItem = {
+      template_source: 'group',
+      name,
+      enabled: true,
+      collapsed: false,
+      note: '',
+      inputs: [],
+      limits: [],
+      fail_policy: 'stop',
+      resources: [],
+      spec_template_id: groupSpecTemplateDraft,
+      spec_section: groupSpecSectionDraft.trim(),
+      spec_metrics: [],
+    };
     if (groupNameModal === 'insert') {
-      const next: QueueItem[] = [
-        ...queue,
-        {
-          template_source: 'group',
-          name,
-          enabled: true,
-          collapsed: false,
-          note: '',
-          inputs: [],
-          limits: [],
-          fail_policy: 'stop',
-          resources: [],
-        },
-      ];
-      setGroupNameModal(null);
+      const next: QueueItem[] = [...queue, groupItem];
+      resetGroupModal();
       await persistQueue(next, { showPageBusy: true });
       return;
     }
@@ -433,23 +471,141 @@ export function SequenceEditTab() {
       const next = queue.slice();
       const first = indexes[0];
       for (let i = indexes.length - 1; i >= 0; i--) next.splice(indexes[i], 1);
-      next.splice(first, 0, {
-        template_source: 'group',
-        name,
-        enabled: true,
-        collapsed: false,
-        note: '',
-        inputs: [],
-        limits: [],
-        fail_policy: 'stop',
-        resources: [],
-      });
+      next.splice(first, 0, groupItem);
       const selectedItems = indexes.map((i) => queue[i]);
       next.splice(first + 1, 0, ...selectedItems);
+      const synced = applyGroupSpecToDescendants(next, first);
       setSelectedIndexes([]);
-      setGroupNameModal(null);
-      await persistQueue(next, { showPageBusy: true });
+      resetGroupModal();
+      await persistQueue(synced, { showPageBusy: true });
     }
+  };
+
+  const updateGroupSpecAt = async (
+    markerIndex: number,
+    patch: Partial<Pick<QueueItem, 'spec_template_id' | 'spec_section'>>,
+  ) => {
+    const current = queue[markerIndex];
+    if (!current || current.template_source !== 'group') return;
+    const merged: QueueItem = {
+      ...current,
+      spec_template_id:
+        patch.spec_template_id !== undefined
+          ? patch.spec_template_id
+          : (current.spec_template_id ?? null),
+      spec_section:
+        patch.spec_section !== undefined
+          ? patch.spec_section
+          : String(current.spec_section ?? '').trim(),
+    };
+    if (patch.spec_template_id === null) {
+      merged.spec_section = '';
+    }
+    const specErr = validateGroupSpecBinding(
+      merged.spec_template_id ?? null,
+      merged.spec_section || '',
+      specTemplateDetails,
+    );
+    if (specErr) {
+      message.warning(specErr);
+      return;
+    }
+    let next = queue.slice();
+    next[markerIndex] = merged;
+    next = applyGroupSpecToDescendants(next, markerIndex);
+    const affectedIndexes: number[] = [];
+    for (let i = markerIndex; i < next.length; i++) {
+      if (i > markerIndex && next[i]?.template_source === 'group') break;
+      affectedIndexes.push(i);
+    }
+    setQueue(next);
+    await persistQueue(next, { silent: true, rowIndexes: affectedIndexes });
+  };
+
+  const limitValueColumns = useMemo(
+    () =>
+      LIMIT_VALUE_COLUMN_DEFS.map(({ key, title, width }) => ({
+        title,
+        width,
+        align: 'right' as const,
+        ellipsis: true,
+        render: (_: unknown, row: { item: QueueItem }) => {
+          const cells = resolveStepLimitPreview(
+            row.item as Record<string, unknown>,
+            specTemplateDetails,
+          );
+          const text = cells[key] || EMPTY_PLACEHOLDER;
+          return (
+            <Typography.Text
+              style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+              ellipsis={{ tooltip: text === EMPTY_PLACEHOLDER ? undefined : text }}
+            >
+              {text}
+            </Typography.Text>
+          );
+        },
+      })),
+    [specTemplateDetails],
+  );
+
+  const renderGroupSpecCell = (markerIndex: number, section: string) => {
+    const templateId = queue[markerIndex]?.spec_template_id ?? null;
+    const options = sectionOptionsForTemplate(templateId, specTemplateDetails);
+    return (
+      <Popover
+        trigger="click"
+        placement="bottomLeft"
+        title="分组 Spec"
+        content={
+          <Space direction="vertical" size={8} style={{ width: 260 }}>
+            <Select
+              allowClear
+              size="small"
+              showSearch
+              optionFilterProp="label"
+              placeholder="Spec 模板"
+              style={{ width: '100%' }}
+              value={templateId ?? undefined}
+              options={specTemplates.map((tpl) => ({
+                value: tpl.id,
+                label: `#${tpl.id} ${tpl.name}`,
+              }))}
+              onChange={(value) => {
+                void updateGroupSpecAt(markerIndex, {
+                  spec_template_id: value ?? null,
+                  spec_section: '',
+                });
+              }}
+            />
+            <Select
+              allowClear
+              size="small"
+              showSearch
+              optionFilterProp="label"
+              placeholder="Spec 段"
+              style={{ width: '100%' }}
+              value={section || undefined}
+              options={options}
+              disabled={templateId == null || !options.length}
+              onFocus={() => {
+                if (templateId != null) void ensureSpecTemplateDetails([templateId]);
+              }}
+              onChange={(value) => {
+                void updateGroupSpecAt(markerIndex, {
+                  spec_section: value ? String(value) : '',
+                });
+              }}
+            />
+          </Space>
+        }
+      >
+        <Button type="link" size="small" style={{ padding: 0, height: 'auto' }}>
+          <Typography.Text ellipsis style={{ maxWidth: 80 }}>
+            {section || '设置 Spec'}
+          </Typography.Text>
+        </Button>
+      </Popover>
+    );
   };
 
   const openSaveTemplateModal = () => {
@@ -504,7 +660,6 @@ export function SequenceEditTab() {
     setSpecTemplateDraft(item.spec_template_id ?? null);
     setSpecSectionDraft(item.spec_section || '');
     setSpecMetricsDraft(Array.isArray(item.spec_metrics) ? item.spec_metrics.slice() : []);
-    setVariableInsertDraft(null);
     if (item.spec_template_id != null) {
       void ensureSpecTemplateDetails([item.spec_template_id]);
     }
@@ -528,6 +683,8 @@ export function SequenceEditTab() {
     }
     setDetailSaving(true);
     try {
+      const inheritedGroup =
+        detailInheritedGroupIndex != null ? queue[detailInheritedGroupIndex] : null;
       const next = queue.map((item, i) =>
         i === detailIndex
           ? {
@@ -538,9 +695,13 @@ export function SequenceEditTab() {
               enabled: enabledDraft,
               fail_policy: failPolicyDraft,
               resources: resourcesDraft.slice(),
-              spec_template_id: specTemplateDraft,
-              spec_section: specSectionDraft.trim(),
-              spec_metrics: specMetricsDraft.slice(),
+              spec_template_id: inheritedGroup
+                ? (inheritedGroup.spec_template_id ?? null)
+                : specTemplateDraft,
+              spec_section: inheritedGroup
+                ? String(inheritedGroup.spec_section ?? '').trim()
+                : specSectionDraft.trim(),
+              spec_metrics: inheritedGroup ? [] : specMetricsDraft.slice(),
             }
           : item,
       );
@@ -658,14 +819,15 @@ export function SequenceEditTab() {
   };
 
   const detailSectionOptions = useMemo(() => {
-    if (specTemplateDraft == null) return [];
-    const detail = specTemplateDetails[specTemplateDraft];
-    const sections = detail?.spec?.sections;
-    if (!sections) return [];
-    return Object.keys(sections)
-      .sort((a, b) => a.localeCompare(b))
-      .map((name) => ({ value: name, label: name }));
+    return sectionOptionsForTemplate(specTemplateDraft, specTemplateDetails);
   }, [specTemplateDraft, specTemplateDetails]);
+
+  const groupModalSectionOptions = useMemo(() => {
+    return sectionOptionsForTemplate(groupSpecTemplateDraft, specTemplateDetails);
+  }, [groupSpecTemplateDraft, specTemplateDetails]);
+
+  const detailInheritedGroupIndex =
+    detailIndex != null ? findGroupIndexForStep(queue, detailIndex) : null;
 
   const detailMetricOptions = useMemo(() => {
     if (specTemplateDraft == null) return [];
@@ -677,12 +839,6 @@ export function SequenceEditTab() {
       label: key,
     }));
   }, [specTemplateDraft, specSectionDraft, specTemplateDetails]);
-
-  const insertVariableIntoSection = (variableName: string) => {
-    const token = `\${${variableName}}`;
-    setSpecSectionDraft((prev) => (prev ? `${prev}${token}` : token));
-    setVariableInsertDraft(null);
-  };
 
   return (
     <div className="atlas-page" style={{ gap: 12 }}>
@@ -804,6 +960,8 @@ export function SequenceEditTab() {
           rowKey={(row) => String(row.queueIndex)}
           dataSource={stepRows}
           pagination={false}
+          scroll={{ x: 1124 + LIMIT_VALUE_COLUMNS_WIDTH }}
+          tableLayout="fixed"
           rowClassName={(row) => (savingRowIndexes.includes(row.queueIndex) ? 'atlas-row-saving' : '')}
           locale={{ emptyText: '队列为空：从上方功能库加入，或从下方模板加载' }}
           rowSelection={{
@@ -814,11 +972,13 @@ export function SequenceEditTab() {
             {
               title: '#',
               width: 48,
+              fixed: 'left',
               render: (_, __, index) => index + 1,
             },
             {
-              title: '组名',
-              width: 160,
+              title: '分组',
+              width: 112,
+              fixed: 'left',
               ellipsis: true,
               render: (_, row) => {
                 const groupName = groupNamesByIndex[row.queueIndex] ?? EMPTY_PLACEHOLDER;
@@ -826,7 +986,11 @@ export function SequenceEditTab() {
                   return <Typography.Text type="secondary">{EMPTY_PLACEHOLDER}</Typography.Text>;
                 }
                 if (!isFirstStepInGroup(queue, row.queueIndex)) {
-                  return groupName;
+                  return (
+                    <Typography.Text ellipsis title={groupName}>
+                      {groupName}
+                    </Typography.Text>
+                  );
                 }
                 const markerIndex = findGroupIndexForStep(queue, row.queueIndex);
                 if (markerIndex == null) return groupName;
@@ -852,19 +1016,53 @@ export function SequenceEditTab() {
             },
             {
               title: '名称',
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <span>{row.item.name || '—'}</span>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {row.item.template_source === 'general' ? '通用' : 'VI'}
-                    {row.item.kind ? ` · ${row.item.kind}` : ''}
-                  </Typography.Text>
-                </Space>
-              ),
+              width: 168,
+              fixed: 'left',
+              ellipsis: true,
+              render: (_, row) => {
+                const source = row.item.template_source === 'general' ? '通用' : 'VI';
+                const kind = row.item.kind ? ` · ${row.item.kind}` : '';
+                const name = row.item.name || '—';
+                return (
+                  <div style={{ minWidth: 0 }}>
+                    <Typography.Text ellipsis title={name}>
+                      {name}
+                    </Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+                      {source}
+                      {kind}
+                    </Typography.Text>
+                  </div>
+                );
+              },
             },
             {
+              title: 'Spec 段',
+              width: 96,
+              ellipsis: true,
+              render: (_, row) => {
+                const markerIndex = findGroupIndexForStep(queue, row.queueIndex);
+                const section =
+                  markerIndex != null
+                    ? String(queue[markerIndex]?.spec_section ?? '').trim()
+                    : effectiveSpecSectionForStep(queue, row.queueIndex);
+                if (markerIndex != null && isFirstStepInGroup(queue, row.queueIndex)) {
+                  return renderGroupSpecCell(markerIndex, section);
+                }
+                if (!section) {
+                  return <Typography.Text type="secondary">{EMPTY_PLACEHOLDER}</Typography.Text>;
+                }
+                return (
+                  <Typography.Text style={{ fontSize: 12 }} ellipsis title={section}>
+                    {section}
+                  </Typography.Text>
+                );
+              },
+            },
+            ...limitValueColumns,
+            {
               title: '启用',
-              width: 70,
+              width: 64,
               render: (_, row) => (
                 <Switch
                   size="small"
@@ -876,12 +1074,12 @@ export function SequenceEditTab() {
             },
             {
               title: 'Fail',
-              width: 110,
+              width: 96,
               render: (_, row) => (
                 <Select
                   size="small"
                   value={row.item.fail_policy === 'continue' ? 'continue' : 'stop'}
-                  style={{ width: 96 }}
+                  style={{ width: 88 }}
                   disabled={savingRowIndexes.includes(row.queueIndex)}
                   options={[
                     { value: 'stop', label: '停止' },
@@ -893,21 +1091,24 @@ export function SequenceEditTab() {
             },
             {
               title: '资源',
-              width: 140,
-              render: (_, row) => (
-                <Space size={[4, 4]} wrap>
-                  {(Array.isArray(row.item.resources) ? row.item.resources : []).map((name) => (
-                    <Tag key={name}>{name}</Tag>
-                  ))}
-                </Space>
-              ),
+              width: 112,
+              ellipsis: true,
+              render: (_, row) => {
+                const resources = Array.isArray(row.item.resources) ? row.item.resources : [];
+                if (!resources.length) return EMPTY_PLACEHOLDER;
+                return (
+                  <Typography.Text ellipsis title={resources.join(', ')} style={{ fontSize: 12 }}>
+                    {resources.join(', ')}
+                  </Typography.Text>
+                );
+              },
             },
             {
               title: 'Spec',
-              width: 180,
+              width: 132,
               ellipsis: true,
               render: (_, row) => (
-                <Typography.Text style={{ fontSize: 12 }}>
+                <Typography.Text style={{ fontSize: 12 }} ellipsis>
                   {formatStepSpecSummary(
                     row.item as Record<string, unknown>,
                     resolveSectionMetricCount(row.item),
@@ -917,7 +1118,8 @@ export function SequenceEditTab() {
             },
             {
               title: '操作',
-              width: 220,
+              width: 200,
+              fixed: 'right',
               render: (_, row) => (
                 <Space wrap>
                   <Button size="small" onClick={() => openDetail(row.queueIndex)}>
@@ -1035,68 +1237,68 @@ export function SequenceEditTab() {
             </div>
             <div>
               <Typography.Text strong>Spec 模板</Typography.Text>
-              <Select
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                placeholder="选择中心 Spec 模板（可选）"
-                value={specTemplateDraft ?? undefined}
-                style={{ width: '100%', marginTop: 8 }}
-                options={specTemplates.map((tpl) => ({
-                  value: tpl.id,
-                  label: `#${tpl.id} ${tpl.name}${tpl.source_filename ? ` · ${tpl.source_filename}` : ''}`,
-                }))}
-                onChange={(value) => {
-                  const nextId = value ?? null;
-                  setSpecTemplateDraft(nextId);
-                  setSpecMetricsDraft([]);
-                  if (nextId != null) void ensureSpecTemplateDetails([nextId]);
-                }}
-              />
-            </div>
-            <div>
-              <Typography.Text strong>Section</Typography.Text>
-              <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                完整 INI 段名，如 FMT_HT；也可使用变量，如 ${'${SpecSection}'}（站点变量默认
-                SpecSection=FMT_HT，通道 overlay 可覆盖为 FMT_RT 等）。
-              </Typography.Paragraph>
-              <Space.Compact style={{ width: '100%', marginTop: 8 }}>
-                <Input
-                  placeholder="FMT_HT"
-                  value={specSectionDraft}
-                  onChange={(e) => {
-                    setSpecSectionDraft(e.target.value);
-                    setSpecMetricsDraft([]);
-                  }}
-                />
+              {detailInheritedGroupIndex != null ? (
+                <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                  继承自分组「{queue[detailInheritedGroupIndex]?.name || '分组'}」
+                  {queue[detailInheritedGroupIndex]?.spec_section
+                    ? ` · ${queue[detailInheritedGroupIndex]?.spec_section}`
+                    : ''}
+                </Typography.Paragraph>
+              ) : (
                 <Select
                   allowClear
-                  placeholder="插入变量"
-                  value={variableInsertDraft ?? undefined}
-                  style={{ width: 140 }}
-                  options={variables.map((row) => ({
-                    value: row.name,
-                    label: row.name,
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="选择中心 Spec 模板（可选）"
+                  value={specTemplateDraft ?? undefined}
+                  style={{ width: '100%', marginTop: 8 }}
+                  options={specTemplates.map((tpl) => ({
+                    value: tpl.id,
+                    label: `#${tpl.id} ${tpl.name}${tpl.source_filename ? ` · ${tpl.source_filename}` : ''}`,
                   }))}
                   onChange={(value) => {
-                    if (value) insertVariableIntoSection(String(value));
+                    const nextId = value ?? null;
+                    setSpecTemplateDraft(nextId);
+                    setSpecSectionDraft('');
+                    setSpecMetricsDraft([]);
+                    if (nextId != null) void ensureSpecTemplateDetails([nextId]);
                   }}
                 />
-              </Space.Compact>
-              {detailSectionOptions.length ? (
-                <Select
-                  allowClear
-                  placeholder="从模板选择 Section"
-                  style={{ width: '100%', marginTop: 8 }}
-                  options={detailSectionOptions}
-                  onChange={(value) => {
-                    if (value) {
-                      setSpecSectionDraft(String(value));
-                      setSpecMetricsDraft([]);
+              )}
+            </div>
+            <div>
+              <Typography.Text strong>Spec 段</Typography.Text>
+              {detailInheritedGroupIndex != null ? (
+                <Typography.Paragraph style={{ margin: '8px 0 0' }}>
+                  {queue[detailInheritedGroupIndex]?.spec_section || EMPTY_PLACEHOLDER}
+                </Typography.Paragraph>
+              ) : (
+                <>
+                  <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                    只能从所选 Spec 模板的 Section 列表中选择。
+                  </Typography.Paragraph>
+                  <Select
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder={
+                      specTemplateDraft == null
+                        ? '请先选择 Spec 模板'
+                        : detailSectionOptions.length
+                          ? '从模板选择 Section'
+                          : '模板无可用 Section'
                     }
-                  }}
-                />
-              ) : null}
+                    value={specSectionDraft || undefined}
+                    style={{ width: '100%', marginTop: 8 }}
+                    options={detailSectionOptions}
+                    disabled={specTemplateDraft == null || !detailSectionOptions.length}
+                    onChange={(value) => {
+                      setSpecSectionDraft(value ? String(value) : '');
+                      setSpecMetricsDraft([]);
+                    }}
+                  />
+                </>
+              )}
             </div>
             <div>
               <Typography.Text strong>指标</Typography.Text>
@@ -1107,16 +1309,22 @@ export function SequenceEditTab() {
                 mode="multiple"
                 allowClear
                 placeholder={
-                  specTemplateDraft == null
-                    ? '请先选择 Spec 模板'
-                    : detailMetricOptions.length
-                      ? '选择指标（可选）'
-                      : '输入 Section 后可选指标'
+                  detailInheritedGroupIndex != null
+                    ? '继承分组 Spec，不可单独选择'
+                    : specTemplateDraft == null
+                      ? '请先选择 Spec 模板'
+                      : detailMetricOptions.length
+                        ? '选择指标（可选）'
+                        : '选择 Section 后可选指标'
                 }
                 value={specMetricsDraft}
                 style={{ width: '100%', marginTop: 8 }}
                 options={detailMetricOptions}
-                disabled={!specTemplateDraft || !detailMetricOptions.length}
+                disabled={
+                  detailInheritedGroupIndex != null ||
+                  !specTemplateDraft ||
+                  !detailMetricOptions.length
+                }
                 onChange={(value) => setSpecMetricsDraft(value.map(String))}
               />
             </div>
@@ -1167,21 +1375,61 @@ export function SequenceEditTab() {
       <Modal
         title={groupNameModal === 'group' ? '编成一组' : '新建分组'}
         open={groupNameModal != null}
-        onCancel={() => setGroupNameModal(null)}
+        onCancel={resetGroupModal}
         onOk={() => void confirmGroupName()}
         okText="确定"
         cancelText="取消"
         destroyOnClose
       >
         <Form layout="vertical" style={{ marginTop: 8 }}>
-          <Form.Item label="分组名称" required style={{ marginBottom: 0 }}>
+          <Form.Item label="分组名称" required>
             <Input
               value={groupNameInput}
               onChange={(event) => setGroupNameInput(event.target.value)}
               onPressEnter={() => void confirmGroupName()}
-              placeholder="分组名称"
+              placeholder="如：光模块"
               maxLength={100}
               autoFocus
+            />
+          </Form.Item>
+          <Form.Item
+            label="Spec 模板（可选）"
+            extra="选择后须指定 Spec 段；组内步骤将继承该判限"
+          >
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择中心 Spec 模板"
+              value={groupSpecTemplateDraft ?? undefined}
+              options={specTemplates.map((tpl) => ({
+                value: tpl.id,
+                label: `#${tpl.id} ${tpl.name}${tpl.source_filename ? ` · ${tpl.source_filename}` : ''}`,
+              }))}
+              onChange={(value) => {
+                const nextId = value ?? null;
+                setGroupSpecTemplateDraft(nextId);
+                setGroupSpecSectionDraft('');
+                if (nextId != null) void ensureSpecTemplateDetails([nextId]);
+              }}
+            />
+          </Form.Item>
+          <Form.Item label="Spec 段" style={{ marginBottom: 0 }}>
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder={
+                groupSpecTemplateDraft == null
+                  ? '请先选择 Spec 模板'
+                  : groupModalSectionOptions.length
+                    ? '从模板选择 Section'
+                    : '模板无可用 Section'
+              }
+              value={groupSpecSectionDraft || undefined}
+              options={groupModalSectionOptions}
+              disabled={groupSpecTemplateDraft == null || !groupModalSectionOptions.length}
+              onChange={(value) => setGroupSpecSectionDraft(value ? String(value) : '')}
             />
           </Form.Item>
         </Form>

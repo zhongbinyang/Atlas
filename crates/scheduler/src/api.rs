@@ -545,6 +545,22 @@ fn queue_replace_error_response(err: QueueReplaceError) -> (StatusCode, Json<Err
                 error: format!("{template_source} template not found: {template_id}"),
             }),
         ),
+        QueueReplaceError::InvalidSpecSection {
+            spec_template_id,
+            spec_section,
+            message,
+        } => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: if spec_section.is_empty() {
+                    format!("invalid spec binding for template {spec_template_id}: {message}")
+                } else {
+                    format!(
+                        "invalid spec section {spec_section:?} for template {spec_template_id}: {message}"
+                    )
+                },
+            }),
+        ),
         QueueReplaceError::Db(e) => {
             tracing::error!("vi run queue db error: {e}");
             db_error()

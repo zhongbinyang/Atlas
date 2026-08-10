@@ -9,6 +9,7 @@ import {
 export type DetailStepRow = {
   position: number;
   groupName: string;
+  specSection: string;
   name: string;
   /** Display label: VI / 通用 */
   sourceLabel: string;
@@ -19,10 +20,161 @@ export type DetailStepRow = {
   ok: boolean | null;
   error: string;
   measured: Record<string, unknown>;
+  limitCells: LimitValueCells;
   limitsSummary: string;
   resultJson: string;
   result: Record<string, unknown> | null;
 };
+
+export type LimitValueCells = {
+  value: string;
+  min: string;
+  max: string;
+  unit: string;
+};
+
+export type ParsedLimitRule = {
+  output: string;
+  min: string;
+  max: string;
+  unit: string;
+  expect: string;
+};
+
+export type SpecTemplateLike = {
+  spec?: {
+    sections?: Record<string, Record<string, { min?: number | null; max?: number | null }>>;
+  };
+};
+
+function formatLimitBound(value: unknown): string {
+  if (value == null || value === '') return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return String(value).trim();
+}
+
+export function emptyLimitValueCells(): LimitValueCells {
+  return {
+    value: EMPTY_PLACEHOLDER,
+    min: EMPTY_PLACEHOLDER,
+    max: EMPTY_PLACEHOLDER,
+    unit: EMPTY_PLACEHOLDER,
+  };
+}
+
+export function parseLimitRules(limits: unknown): ParsedLimitRule[] {
+  if (!Array.isArray(limits)) return [];
+  return limits
+    .map((item) => {
+      const rule = asRecord(item);
+      return {
+        output: String(rule.output ?? rule.name ?? '').trim(),
+        min: formatLimitBound(rule.min),
+        max: formatLimitBound(rule.max),
+        unit: rule.unit != null ? String(rule.unit).trim() : '',
+        expect: formatLimitBound(rule.expect ?? rule.expected),
+      };
+    })
+    .filter((rule) => rule.output || rule.min || rule.max || rule.expect);
+}
+
+export function limitValueCellsFromRule(
+  rule: ParsedLimitRule | undefined,
+  measured?: Record<string, unknown>,
+): LimitValueCells {
+  if (!rule) return emptyLimitValueCells();
+  let value = '';
+  if (measured) {
+    if (rule.output && measured[rule.output] != null) {
+      value = String(measured[rule.output]);
+    } else {
+      const keys = Object.keys(measured);
+      if (keys.length === 1) {
+        value = String(measured[keys[0]!]);
+      } else if (keys.length > 0) {
+        value = String(measured[keys[0]!]);
+      }
+    }
+  }
+  if (!value && rule.expect) value = rule.expect;
+  return {
+    value: value || EMPTY_PLACEHOLDER,
+    min: rule.min || EMPTY_PLACEHOLDER,
+    max: rule.max || EMPTY_PLACEHOLDER,
+    unit: rule.unit || EMPTY_PLACEHOLDER,
+  };
+}
+
+export function limitValueCellsFromLimits(
+  limits: unknown,
+  measured?: Record<string, unknown>,
+): LimitValueCells {
+  const rules = parseLimitRules(limits);
+  if (rules.length) {
+    return limitValueCellsFromRule(rules[0], measured);
+  }
+  if (measured) {
+    const keys = Object.keys(measured);
+    if (keys.length) {
+      return {
+        value: String(measured[keys[0]!]),
+        min: EMPTY_PLACEHOLDER,
+        max: EMPTY_PLACEHOLDER,
+        unit: EMPTY_PLACEHOLDER,
+      };
+    }
+  }
+  return emptyLimitValueCells();
+}
+
+export function resolveStepLimitPreview(
+  item: Record<string, unknown>,
+  specTemplateDetails: Record<number, SpecTemplateLike>,
+): LimitValueCells {
+  const handLimits = parseLimitRules(item.limits);
+  if (handLimits.length) {
+    return limitValueCellsFromRule(handLimits[0]);
+  }
+
+  const templateId = toSpecTemplateId(item.spec_template_id);
+  const section = String(item.spec_section ?? '').trim();
+  if (templateId == null || !section || section.includes('${')) {
+    return emptyLimitValueCells();
+  }
+
+  const sections = specTemplateDetails[templateId]?.spec?.sections;
+  const sectionMetrics = sections?.[section];
+  if (!sectionMetrics) return emptyLimitValueCells();
+
+  const selectedMetrics = normalizeStringArray(item.spec_metrics);
+  const metricNames = selectedMetrics.length
+    ? selectedMetrics
+    : Object.keys(sectionMetrics).sort((a, b) => a.localeCompare(b));
+  const metric = metricNames[0];
+  if (!metric) return emptyLimitValueCells();
+
+  const bound = sectionMetrics[metric];
+  if (!bound) return emptyLimitValueCells();
+
+  return {
+    value: EMPTY_PLACEHOLDER,
+    min: bound.min != null ? String(bound.min) : EMPTY_PLACEHOLDER,
+    max: bound.max != null ? String(bound.max) : EMPTY_PLACEHOLDER,
+    unit: EMPTY_PLACEHOLDER,
+  };
+}
+
+export const LIMIT_VALUE_COLUMN_DEFS = [
+  { key: 'value', title: '值', width: 72 },
+  { key: 'min', title: '下限', width: 64 },
+  { key: 'max', title: '上限', width: 64 },
+  { key: 'unit', title: '单位', width: 56 },
+] as const;
+
+export const LIMIT_VALUE_COLUMNS_WIDTH = LIMIT_VALUE_COLUMN_DEFS.reduce(
+  (sum, col) => sum + col.width,
+  0,
+);
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -104,6 +256,29 @@ export function collectMeasuredKeys(rows: DetailStepRow[]): string[] {
   return [...keys].sort((a, b) => a.localeCompare(b));
 }
 
+function resolveGroupSpecSections(queue: QueueItem[], key: (item: QueueItem, index: number) => number) {
+  const map: Record<number, string> = {};
+  let current = '';
+  (Array.isArray(queue) ? queue : []).forEach((item, index) => {
+    const row = item || {};
+    if (row.template_source === 'group') {
+      current = String(row.spec_section ?? '').trim();
+      map[key(row, index)] = current;
+      return;
+    }
+    const own = String(row.spec_section ?? '').trim();
+    map[key(row, index)] = current || own || EMPTY_PLACEHOLDER;
+  });
+  return map;
+}
+
+/** Map step queue positions to Spec section labels for display. */
+export function groupSpecSectionByQueuePosition(queue: QueueItem[]): Record<number, string> {
+  return resolveGroupSpecSections(queue, (row, index) =>
+    row.position != null ? Number(row.position) : index,
+  );
+}
+
 function resolveGroupNames(queue: QueueItem[], key: (item: QueueItem, index: number) => number) {
   const map: Record<number, string> = {};
   let current: string | null = null;
@@ -145,6 +320,63 @@ export function findGroupIndexForStep(queue: QueueItem[], stepIndex: number): nu
     if (queue[i]?.template_source === 'group') return i;
   }
   return null;
+}
+
+export type GroupSpecBinding = {
+  spec_template_id: number | null;
+  spec_section: string;
+};
+
+const toSpecTemplateId = (value: unknown): number | null => {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Map queue array indexes to the active group's Spec binding (group marker or step). */
+export function groupSpecByQueueIndex(queue: QueueItem[]): Record<number, GroupSpecBinding> {
+  const map: Record<number, GroupSpecBinding> = {};
+  let current: GroupSpecBinding | null = null;
+  (Array.isArray(queue) ? queue : []).forEach((item, index) => {
+    const row = item || {};
+    if (row.template_source === 'group') {
+      const binding: GroupSpecBinding = {
+        spec_template_id: toSpecTemplateId(row.spec_template_id),
+        spec_section: String(row.spec_section ?? '').trim(),
+      };
+      current = binding;
+      map[index] = binding;
+      return;
+    }
+    map[index] = current ?? { spec_template_id: null, spec_section: '' };
+  });
+  return map;
+}
+
+/** Effective Spec section label for a step row (group binding or step's own). */
+export function effectiveSpecSectionForStep(queue: QueueItem[], stepIndex: number): string {
+  const groupIndex = findGroupIndexForStep(queue, stepIndex);
+  if (groupIndex != null) {
+    return String(queue[groupIndex]?.spec_section ?? '').trim();
+  }
+  return String(queue[stepIndex]?.spec_section ?? '').trim();
+}
+
+/** Copy group Spec binding onto all descendant steps until the next group marker. */
+export function applyGroupSpecToDescendants(queue: QueueItem[], groupIndex: number): QueueItem[] {
+  const group = queue[groupIndex];
+  if (!group || group.template_source !== 'group') return queue;
+  const patch: Pick<QueueItem, 'spec_template_id' | 'spec_section' | 'spec_metrics'> = {
+    spec_template_id: group.spec_template_id ?? null,
+    spec_section: String(group.spec_section ?? '').trim(),
+    spec_metrics: [],
+  };
+  const next = queue.slice();
+  for (let i = groupIndex + 1; i < next.length; i++) {
+    if (next[i]?.template_source === 'group') break;
+    next[i] = { ...next[i], ...patch };
+  }
+  return next;
 }
 
 export function isFirstStepInGroup(queue: QueueItem[], stepIndex: number): boolean {
@@ -202,6 +434,7 @@ export function buildDetailStepRows(
   queue: QueueItem[],
 ): DetailStepRow[] {
   const groupNames = groupNameByQueuePosition(queue);
+  const specSections = groupSpecSectionByQueuePosition(queue);
   const queueMeta = queueMetaByPosition(queue);
   return buildSequenceChannelDetailSteps(channel, queue).map((step) => {
     const result = step.result;
@@ -215,9 +448,11 @@ export function buildDetailStepRows(
       }
     }
     const { sourceLabel, kind } = resolveStepSourceAndKind(step.position, queueMeta, result);
+    const limitCells = limitValueCellsFromLimits(result?.limits, measured);
     return {
       position: step.position,
       groupName: groupNames[step.position] ?? EMPTY_PLACEHOLDER,
+      specSection: specSections[step.position] ?? EMPTY_PLACEHOLDER,
       name: step.name,
       sourceLabel,
       kind,
@@ -226,6 +461,7 @@ export function buildDetailStepRows(
       ok: typeof result?.ok === 'boolean' ? result.ok : null,
       error: result?.error != null ? String(result.error) : '',
       measured,
+      limitCells,
       limitsSummary: formatLimitsSummary(result?.limits),
       resultJson,
       result,

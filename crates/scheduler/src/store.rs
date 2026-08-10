@@ -519,7 +519,22 @@ pub enum QueueReplaceError {
         template_source: String,
         template_id: i64,
     },
+    InvalidSpecSection {
+        spec_template_id: i64,
+        spec_section: String,
+        message: String,
+    },
     Db(sqlx::Error),
+}
+
+fn spec_json_contains_section(spec_json: &str, section: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(spec_json) else {
+        return false;
+    };
+    value
+        .get("sections")
+        .and_then(|sections| sections.get(section))
+        .is_some()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2441,6 +2456,63 @@ impl Store {
         Ok(rows.into_iter().map(|r| r.into_item()).collect())
     }
 
+    async fn validate_queue_spec_binding(
+        &self,
+        spec_template_id: Option<i64>,
+        spec_section: &str,
+    ) -> Result<(), QueueReplaceError> {
+        let section = spec_section.trim();
+        match (spec_template_id, section.is_empty()) {
+            (None, true) => Ok(()),
+            (Some(_), true) => Err(QueueReplaceError::InvalidSpecSection {
+                spec_template_id: spec_template_id.unwrap_or(0),
+                spec_section: String::new(),
+                message: "spec_section is required when spec_template_id is set".into(),
+            }),
+            (None, false) if section.contains("${") => Ok(()),
+            (None, false) => Err(QueueReplaceError::InvalidSpecSection {
+                spec_template_id: 0,
+                spec_section: section.to_string(),
+                message: "spec_template_id is required when spec_section is set".into(),
+            }),
+            (Some(template_id), false) if section.contains("${") => {
+                let got = self
+                    .get_spec_template(template_id)
+                    .await
+                    .map_err(QueueReplaceError::Db)?;
+                if got.is_some() {
+                    Ok(())
+                } else {
+                    Err(QueueReplaceError::BadTemplate {
+                        template_source: "spec".into(),
+                        template_id,
+                    })
+                }
+            }
+            (Some(template_id), false) => {
+                let got = self
+                    .get_spec_template(template_id)
+                    .await
+                    .map_err(QueueReplaceError::Db)?;
+                let Some(template) = got else {
+                    return Err(QueueReplaceError::BadTemplate {
+                        template_source: "spec".into(),
+                        template_id,
+                    });
+                };
+                if spec_json_contains_section(&template.spec_json, section) {
+                    Ok(())
+                } else {
+                    Err(QueueReplaceError::InvalidSpecSection {
+                        spec_template_id: template_id,
+                        spec_section: section.to_string(),
+                        message: format!("section not found in spec template {template_id}"),
+                    })
+                }
+            }
+        }
+    }
+
     pub async fn replace_vi_run_queue(
         &self,
         agent_id: &str,
@@ -2452,6 +2524,8 @@ impl Store {
 
         let mut normalized_items = Vec::with_capacity(items.len());
         for item in items {
+            Self::validate_queue_spec_binding(self, item.spec_template_id, &item.spec_section)
+                .await?;
             let source = item.template_source.as_str();
             match source {
                 "group" => {
@@ -2461,6 +2535,7 @@ impl Store {
                     } else {
                         title.to_string()
                     };
+                    let spec_section = item.spec_section.trim().to_string();
                     normalized_items.push(ViRunQueueReplaceItem {
                         template_source: "group".into(),
                         vi_template_id: None,
@@ -2474,8 +2549,8 @@ impl Store {
                         title,
                         collapsed: item.collapsed,
                         resources_json: "[]".into(),
-                        spec_template_id: None,
-                        spec_section: String::new(),
+                        spec_template_id: item.spec_template_id,
+                        spec_section,
                         spec_metrics_json: "[]".into(),
                     });
                 }
@@ -3825,6 +3900,72 @@ mod tests {
         assert_eq!(reloaded.len(), 2);
         assert_eq!(reloaded[0].template_source, "group");
         assert_eq!(reloaded[0].template_name, "预处理");
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_group_spec_roundtrip() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let spec_json = r#"{"version":1,"sections":{"FMT_HT":{"TX_AP":{"min":-2,"max":4}}}}"#;
+        let spec_tpl = store
+            .create_spec_template(
+                "fmt-spec",
+                "",
+                "",
+                "Tunn_FMT_Spec.ini",
+                spec_json,
+                Some(&agent.id),
+            )
+            .await
+            .unwrap();
+        let tpl = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
+
+        let items = vec![
+            ViRunQueueReplaceItem {
+                template_source: "group".into(),
+                vi_template_id: None,
+                general_template_id: None,
+                inputs_json: None,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits_json: "[]".into(),
+                note: "".into(),
+                title: "光模块".into(),
+                collapsed: false,
+                resources_json: "[]".into(),
+                spec_template_id: Some(spec_tpl.id),
+                spec_section: "FMT_HT".into(),
+                spec_metrics_json: "[]".into(),
+            },
+            ViRunQueueReplaceItem {
+                template_source: "labview".into(),
+                vi_template_id: Some(tpl.id),
+                general_template_id: None,
+                inputs_json: None,
+                enabled: true,
+                breakpoint: false,
+                fail_policy: "stop".into(),
+                limits_json: "[]".into(),
+                note: "".into(),
+                title: "".into(),
+                collapsed: false,
+                resources_json: "[]".into(),
+                spec_template_id: Some(spec_tpl.id),
+                spec_section: "FMT_HT".into(),
+                spec_metrics_json: "[]".into(),
+            },
+        ];
+        let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].template_source, "group");
+        assert_eq!(listed[0].template_name, "光模块");
+        assert_eq!(listed[0].spec_template_id, Some(spec_tpl.id));
+        assert_eq!(listed[0].spec_section, "FMT_HT");
+
+        let reloaded = store.list_vi_run_queue(&agent.id).await.unwrap();
+        assert_eq!(reloaded[0].spec_template_id, Some(spec_tpl.id));
+        assert_eq!(reloaded[0].spec_section, "FMT_HT");
     }
 
     #[tokio::test]

@@ -12,6 +12,8 @@ import {
   buildDetailStepRows,
   collectMeasuredKeys,
   type DetailStepRow,
+  LIMIT_VALUE_COLUMN_DEFS,
+  LIMIT_VALUE_COLUMNS_WIDTH,
 } from './sequenceDetailModels';
 import {
   buildActiveSequenceSummary,
@@ -165,9 +167,17 @@ export function SequenceChannelDetailPage() {
         render: (_, row) => String(row.position + 1).padStart(2, '0'),
       },
       {
-        title: '组名',
+        title: '分组',
         dataIndex: 'groupName',
         width: 120,
+        fixed: 'left',
+        ellipsis: true,
+        render: (value: string) => value || EMPTY_PLACEHOLDER,
+      },
+      {
+        title: 'Spec 段',
+        dataIndex: 'specSection',
+        width: 100,
         fixed: 'left',
         ellipsis: true,
         render: (value: string) => value || EMPTY_PLACEHOLDER,
@@ -179,6 +189,23 @@ export function SequenceChannelDetailPage() {
         width: 180,
         ellipsis: true,
       },
+      ...LIMIT_VALUE_COLUMN_DEFS.map(({ key, title, width }) => ({
+        title,
+        width,
+        align: 'right' as const,
+        ellipsis: true,
+        render: (_: unknown, row: DetailStepRow) => {
+          const text = row.limitCells[key] || EMPTY_PLACEHOLDER;
+          return (
+            <Typography.Text
+              style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+              ellipsis={{ tooltip: text === EMPTY_PLACEHOLDER ? undefined : text }}
+            >
+              {text}
+            </Typography.Text>
+          );
+        },
+      })),
       {
         title: '来源',
         dataIndex: 'sourceLabel',
@@ -333,7 +360,8 @@ export function SequenceChannelDetailPage() {
                       rowKey={(row) => String(row.position)}
                       dataSource={rows}
                       pagination={false}
-                      scroll={{ x: Math.max(960, 700 + measuredKeys.length * 120) }}
+                      scroll={{ x: 1180 + LIMIT_VALUE_COLUMNS_WIDTH }}
+                      tableLayout="fixed"
                       locale={{ emptyText: '暂无测试项（队列为空或尚未产生进度）' }}
                       columns={testColumns}
                     />

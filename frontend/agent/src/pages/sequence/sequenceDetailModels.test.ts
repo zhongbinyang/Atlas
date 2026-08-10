@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyGroupSpecToDescendants,
   buildChannelLogText,
   buildDetailStepRows,
   collectMeasuredKeys,
+  effectiveSpecSectionForStep,
   findGroupIndexForStep,
   formatLimitsSummary,
   formatStepSpecSummary,
   groupNameByQueueIndex,
+  groupSpecByQueueIndex,
+  groupSpecSectionByQueuePosition,
   isFirstStepInGroup,
+  limitValueCellsFromLimits,
   listQueueStepRows,
+  resolveStepLimitPreview,
 } from './sequenceDetailModels';
 import type { ChannelProgress, QueueItem } from './sequenceRunModels';
 
@@ -20,8 +26,21 @@ describe('sequenceDetailModels', () => {
 
     const queue: QueueItem[] = [
       { position: 0, name: 'Eye', template_source: 'labview', kind: 'labview' },
-      { position: 1, name: '光模块', template_source: 'group' },
-      { position: 2, name: 'Power', template_source: 'labview', kind: 'labview' },
+      {
+        position: 1,
+        name: '光模块',
+        template_source: 'group',
+        spec_template_id: 3,
+        spec_section: 'FMT_HT',
+      },
+      {
+        position: 2,
+        name: 'Power',
+        template_source: 'labview',
+        kind: 'labview',
+        spec_template_id: 3,
+        spec_section: 'FMT_HT',
+      },
       { position: 3, name: 'AgentVer', template_source: 'general', kind: 'version' },
     ];
     const channel: ChannelProgress = {
@@ -65,6 +84,14 @@ describe('sequenceDetailModels', () => {
     expect(rows[0].sourceLabel).toBe('VI');
     expect(rows[0].kind).toBe('labview');
     expect(rows[1].groupName).toBe('光模块');
+    expect(rows[1].specSection).toBe('FMT_HT');
+    expect(rows[0].limitCells).toEqual({
+      value: '8.1',
+      min: '7',
+      max: '12',
+      unit: '—',
+    });
+    expect(rows[1].limitCells.value).toBe('4.2');
     expect(rows[2].sourceLabel).toBe('通用');
     expect(rows[2].kind).toBe('version');
     expect(collectMeasuredKeys(rows)).toEqual(['ER_dB', 'Power_dBm']);
@@ -98,6 +125,68 @@ describe('sequenceDetailModels', () => {
     expect(isFirstStepInGroup(queue, 2)).toBe(true);
     expect(isFirstStepInGroup(queue, 3)).toBe(false);
     expect(findGroupIndexForStep(queue, 3)).toBe(1);
+  });
+
+  it('propagates group spec binding to descendant steps', () => {
+    const queue: QueueItem[] = [
+      {
+        name: '光模块',
+        template_source: 'group',
+        spec_template_id: 2,
+        spec_section: 'FMT_HT',
+      },
+      { name: 'StepA', template_source: 'labview' },
+      { name: 'StepB', template_source: 'labview' },
+    ];
+    const synced = applyGroupSpecToDescendants(queue, 0);
+    expect(synced[1].spec_template_id).toBe(2);
+    expect(synced[1].spec_section).toBe('FMT_HT');
+    expect(synced[2].spec_section).toBe('FMT_HT');
+    expect(effectiveSpecSectionForStep(synced, 2)).toBe('FMT_HT');
+    expect(groupSpecByQueueIndex(synced)[2]).toEqual({
+      spec_template_id: 2,
+      spec_section: 'FMT_HT',
+    });
+    expect(groupSpecSectionByQueuePosition(synced)[2]).toBe('FMT_HT');
+  });
+
+  it('builds limit value cells from limits and spec preview', () => {
+    expect(
+      limitValueCellsFromLimits(
+        [{ output: 'ER_dB', min: 7, max: 12, unit: 'dB' }],
+        { ER_dB: 8.1 },
+      ),
+    ).toEqual({
+      value: '8.1',
+      min: '7',
+      max: '12',
+      unit: 'dB',
+    });
+    expect(
+      resolveStepLimitPreview(
+        {
+          spec_template_id: 3,
+          spec_section: 'FMT_HT',
+          spec_metrics: ['TX_AP'],
+        },
+        {
+          3: {
+            spec: {
+              sections: {
+                FMT_HT: {
+                  TX_AP: { min: -2, max: 4 },
+                },
+              },
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      value: '—',
+      min: '-2',
+      max: '4',
+      unit: '—',
+    });
   });
 
   it('formats step spec summary for template, hand limits, and empty', () => {
