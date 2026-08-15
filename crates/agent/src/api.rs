@@ -6,7 +6,7 @@ use axum::{
     routing::{get, patch, post, put},
     Json, Router,
 };
-use common::{AgentStatusResponse, ErrorBody, RegisterAgentRequest};
+use crate::dto::{AgentStatusResponse, ErrorBody, RegisterAgentRequest};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

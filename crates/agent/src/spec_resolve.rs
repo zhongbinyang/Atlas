@@ -1,6 +1,6 @@
 //! Resolve sequence step limits from a Spec template section plus hand-edited overrides.
 
-use common::SpecBound;
+use crate::dto::SpecBound;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;

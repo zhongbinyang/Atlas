@@ -8,7 +8,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
- "common",
  "hostname",
  "http-body-util",
  "local-ip-address",

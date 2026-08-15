@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use common::RegisterAgentRequest;
+use crate::dto::RegisterAgentRequest;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -65,11 +65,11 @@ pub async fn resolve_agent_id(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct AgentSettingsPayload {
     #[serde(default, deserialize_with = "deserialize_units_flex")]
-    pub units: Vec<common::AgentUnit>,
+    pub units: Vec<crate::dto::AgentUnit>,
     #[serde(default)]
-    pub variables: Vec<common::AgentVariable>,
+    pub variables: Vec<crate::dto::AgentVariable>,
     #[serde(default)]
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::dto::ArrayExpandMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -119,13 +119,13 @@ pub struct UpdateAgentConfigProfileBody {
     pub source_filename: String,
 }
 
-fn deserialize_units_flex<'de, D>(deserializer: D) -> Result<Vec<common::AgentUnit>, D::Error>
+fn deserialize_units_flex<'de, D>(deserializer: D) -> Result<Vec<crate::dto::AgentUnit>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
     let raw = serde_json::to_string(&value).unwrap_or_else(|_| "[]".into());
-    Ok(common::parse_units_json(&raw))
+    Ok(crate::dto::parse_units_json(&raw))
 }
 
 pub async fn get_agent_settings(
@@ -152,7 +152,7 @@ pub async fn get_agent_settings(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct CenterUnitsPayload {
     #[serde(default, deserialize_with = "deserialize_units_flex")]
-    pub units: Vec<common::AgentUnit>,
+    pub units: Vec<crate::dto::AgentUnit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
 }

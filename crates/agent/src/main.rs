@@ -2,6 +2,7 @@ mod advertise;
 mod api;
 mod channel_run;
 mod config;
+mod dto;
 mod expand;
 mod general;
 mod labview;
@@ -70,7 +71,7 @@ async fn main() {
         sequence_lifecycle_test_hooks: Arc::new(api::SequenceLifecycleTestHooks::default()),
     };
 
-    let reg = common::RegisterAgentRequest {
+    let reg = crate::dto::RegisterAgentRequest {
         name: hostname,
         ip,
         port: cfg.port,

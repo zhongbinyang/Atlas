@@ -14,7 +14,7 @@ pub fn enrich_settings(
         fill_unit_descriptions(&mut settings.units);
     }
     if settings.variables.is_empty() {
-        settings.variables = common::default_agent_variables()
+        settings.variables = crate::dto::default_agent_variables()
             .into_iter()
             .map(|mut v| {
                 v.value = builtin_value(&v.name, hostname, ip);
@@ -24,12 +24,12 @@ pub fn enrich_settings(
         return settings;
     }
     for v in &mut settings.variables {
-        if v.name == common::VAR_HOSTNAME {
+        if v.name == crate::dto::VAR_HOSTNAME {
             v.value = hostname.to_string();
             if v.description.trim().is_empty() {
                 v.description = "本机主机名；打开配置或展开时按本机刷新".into();
             }
-        } else if v.name == common::VAR_IP {
+        } else if v.name == crate::dto::VAR_IP {
             v.value = ip.to_string();
             if v.description.trim().is_empty() {
                 v.description = "本机 IP；打开配置或展开时按本机刷新".into();
@@ -39,8 +39,8 @@ pub fn enrich_settings(
     settings
 }
 
-fn fill_unit_descriptions(units: &mut [common::AgentUnit]) {
-    let defaults = common::default_agent_units();
+fn fill_unit_descriptions(units: &mut [crate::dto::AgentUnit]) {
+    let defaults = crate::dto::default_agent_units();
     for u in units.iter_mut() {
         if !u.description.trim().is_empty() {
             continue;
@@ -52,9 +52,9 @@ fn fill_unit_descriptions(units: &mut [common::AgentUnit]) {
 }
 
 fn builtin_value(name: &str, hostname: &str, ip: &str) -> String {
-    if name == common::VAR_HOSTNAME {
+    if name == crate::dto::VAR_HOSTNAME {
         hostname.to_string()
-    } else if name == common::VAR_IP {
+    } else if name == crate::dto::VAR_IP {
         ip.to_string()
     } else {
         String::new()
@@ -121,7 +121,7 @@ pub fn sanitize_profile_ident(raw: &str) -> Option<String> {
 /// Arrays use `array_expand_mode`: semicolon join or JSON text.
 pub fn flatten_setting_json(
     setting: &Value,
-    array_expand_mode: common::ArrayExpandMode,
+    array_expand_mode: crate::dto::ArrayExpandMode,
 ) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     let Some(sections) = setting.as_object() else {
@@ -149,10 +149,10 @@ pub fn flatten_setting_json(
                         continue;
                     }
                     match array_expand_mode {
-                        common::ArrayExpandMode::Json => {
+                        crate::dto::ArrayExpandMode::Json => {
                             serde_json::to_string(arr).unwrap_or_default()
                         }
-                        common::ArrayExpandMode::Semicolon => arr
+                        crate::dto::ArrayExpandMode::Semicolon => arr
                             .iter()
                             .filter_map(|v| match v {
                                 Value::Null => None,
@@ -301,11 +301,11 @@ mod tests {
     fn existing_hostname_refreshed_from_machine() {
         let out = enrich_settings(
             AgentSettingsPayload {
-                units: vec![common::AgentUnit {
+                units: vec![crate::dto::AgentUnit {
                     symbol: "dBm".into(),
                     description: "光功率".into(),
                 }],
-                variables: vec![common::AgentVariable {
+                variables: vec![crate::dto::AgentVariable {
                     name: "Hostname".into(),
                     value: "stale".into(),
                     description: String::new(),
@@ -333,7 +333,7 @@ mod tests {
                 "Intru_Com_Add": "192.168.1.10"
             }
         });
-        let map = flatten_setting_json(&setting, common::ArrayExpandMode::Semicolon);
+        let map = flatten_setting_json(&setting, crate::dto::ArrayExpandMode::Semicolon);
         assert_eq!(map.get("EVB_Setting_IP_Add").map(String::as_str), Some("10.0.0.1"));
         assert_eq!(map.get("EVB_Setting_Port").map(String::as_str), Some("5025"));
         assert!(!map.contains_key("EVB_Setting_Com_Add"));
@@ -351,7 +351,7 @@ mod tests {
                 "Note": "ok"
             }
         });
-        let map = flatten_setting_json(&setting, common::ArrayExpandMode::Semicolon);
+        let map = flatten_setting_json(&setting, crate::dto::ArrayExpandMode::Semicolon);
         assert_eq!(
             map.get("Cal_Light_ER").map(String::as_str),
             Some("4.58;4.5;4.6;4.6")
@@ -366,7 +366,7 @@ mod tests {
                 "Light_ER": [4.58, 4.5, 4.6, 4.6]
             }
         });
-        let map = flatten_setting_json(&setting, common::ArrayExpandMode::Json);
+        let map = flatten_setting_json(&setting, crate::dto::ArrayExpandMode::Json);
         assert_eq!(
             map.get("Cal_Light_ER").map(String::as_str),
             Some("[4.58,4.5,4.6,4.6]")
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn expand_priority_manual_over_device_over_cal() {
         let settings = AgentSettingsPayload {
-            variables: vec![common::AgentVariable {
+            variables: vec![crate::dto::AgentVariable {
                 name: "EVB_Setting_IP_Add".into(),
                 value: "manual".into(),
                 description: String::new(),
