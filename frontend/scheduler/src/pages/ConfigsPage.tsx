@@ -92,9 +92,30 @@ export function ConfigsPage() {
     ]);
     setDeviceProfiles(devices);
     setCalibrationProfiles(cals);
+    return { devices, cals };
   };
 
-  const load = useCallback(async () => {
+  const patchDetailHeader = (
+    agentId: string,
+    summaryItems: AgentConfigSummary[],
+    devices: AgentConfigProfile[],
+    cals: AgentConfigProfile[],
+  ) => {
+    setDetail((prev) => {
+      if (!prev || prev.agent_id !== agentId) return prev;
+      const row = summaryItems.find((item) => item.agent_id === agentId);
+      const activeDevice = devices.find((profile) => profile.is_active);
+      const activeCal = cals.find((profile) => profile.is_active);
+      return {
+        ...prev,
+        active_device_name: row?.active_device_name ?? activeDevice?.name ?? prev.active_device_name,
+        active_calibration_name:
+          row?.active_calibration_name ?? activeCal?.name ?? prev.active_calibration_name,
+      };
+    });
+  };
+
+  const load = useCallback(async (): Promise<AgentConfigSummary[]> => {
     setLoading(true);
     try {
       const [summaryItems, templateItems] = await Promise.all([
@@ -103,13 +124,21 @@ export function ConfigsPage() {
       ]);
       setSummaries(summaryItems);
       setTemplates(templateItems);
+      return summaryItems;
     } catch (error) {
       const detailText = error instanceof Error ? error.message : String(error);
       message.error('加载机台配置失败：' + detailText);
+      return [];
     } finally {
       setLoading(false);
     }
   }, [message]);
+
+  const refreshProfilesAndDetail = async (agentId: string) => {
+    const { devices, cals } = await reloadProfiles(agentId);
+    const summaryItems = await load();
+    patchDetailHeader(agentId, summaryItems, devices, cals);
+  };
 
   useEffect(() => {
     void load();
@@ -133,13 +162,19 @@ export function ConfigsPage() {
         schedulerApi.getAgentChannels(row.agent_id),
       ]);
       setDetail({ ...row, _settings: settings, _channels: channels } as AgentConfigSummary);
-      await reloadProfiles(row.agent_id);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       message.error('加载详情失败：' + text);
       closeAgentDetail();
+      return;
     } finally {
       setDetailLoading(false);
+    }
+    try {
+      await reloadProfiles(row.agent_id);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      message.error('加载配置档列表失败：' + text);
     }
   };
 
@@ -152,8 +187,7 @@ export function ConfigsPage() {
         await schedulerApi.activateCalibrationProfile(detail.agent_id, profileId);
       }
       message.success(kind === 'device' ? '已启用设备配置档' : '已启用校验配置档');
-      await reloadProfiles(detail.agent_id);
-      await load();
+      await refreshProfilesAndDetail(detail.agent_id);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       message.error('启用失败：' + text);
@@ -380,8 +414,7 @@ export function ConfigsPage() {
                   agentId={detail.agent_id}
                   kind="device"
                   onDone={async () => {
-                    await reloadProfiles(detail.agent_id);
-                    await load();
+                    await refreshProfilesAndDetail(detail.agent_id);
                   }}
                 />
               </Space>
@@ -425,8 +458,7 @@ export function ConfigsPage() {
                   agentId={detail.agent_id}
                   kind="calibration"
                   onDone={async () => {
-                    await reloadProfiles(detail.agent_id);
-                    await load();
+                    await refreshProfilesAndDetail(detail.agent_id);
                   }}
                 />
               </Space>
