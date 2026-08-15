@@ -15,7 +15,7 @@ pub async fn run_status_poller(store: Store, client: reqwest::Client, interval_s
             let url = format!("http://{}:{}/api/status", agent.ip, agent.port);
             match client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    if let Ok(st) = resp.json::<common::AgentStatusResponse>().await {
+                    if let Ok(st) = resp.json::<crate::dto::AgentStatusResponse>().await {
                         if let Err(e) = store
                             .update_agent_metrics(
                                 &agent.id,

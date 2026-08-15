@@ -1,8 +1,12 @@
+mod agent_settings;
 mod api;
 mod config;
 mod db;
+mod dto;
+mod error;
 mod labview_cmd;
 mod poller;
+mod spec_ini;
 mod store;
 mod web;
 

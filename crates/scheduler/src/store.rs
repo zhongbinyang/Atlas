@@ -16,13 +16,13 @@ pub struct Agent {
     pub created_at: String,
 }
 
-pub use common::{AgentUnit, AgentVariable};
+pub use crate::agent_settings::{AgentUnit, AgentVariable};
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentSettings {
     pub units: Vec<AgentUnit>,
     pub variables: Vec<AgentVariable>,
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     pub updated_at: Option<String>,
 }
 
@@ -43,7 +43,7 @@ struct CenterUnitsRow {
 impl CenterUnitsRow {
     fn into_units(self) -> CenterUnits {
         CenterUnits {
-            units: common::parse_units_json(&self.units_json),
+            units: crate::agent_settings::parse_units_json(&self.units_json),
             updated_at: Some(self.updated_at),
         }
     }
@@ -168,13 +168,13 @@ struct AgentSettingsRow {
 
 impl AgentSettingsRow {
     fn into_settings(self) -> AgentSettings {
-        let units = common::parse_units_json(&self.units_json);
+        let units = crate::agent_settings::parse_units_json(&self.units_json);
         let variables: Vec<AgentVariable> =
             serde_json::from_str(&self.variables_json).unwrap_or_default();
         AgentSettings {
             units,
             variables,
-            array_expand_mode: common::ArrayExpandMode::parse(&self.array_expand_mode),
+            array_expand_mode: crate::agent_settings::ArrayExpandMode::parse(&self.array_expand_mode),
             updated_at: Some(self.updated_at),
         }
     }
@@ -324,7 +324,7 @@ pub struct AgentConfigSnapshotChannel {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentConfigSnapshot {
     pub variables: Vec<AgentVariable>,
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     pub device_profiles: Vec<AgentConfigSnapshotProfile>,
     pub calibration_profiles: Vec<AgentConfigSnapshotProfile>,
     pub channels: Vec<AgentConfigSnapshotChannel>,
@@ -342,7 +342,7 @@ pub struct AgentConfigSummary {
     pub active_device_name: Option<String>,
     pub active_calibration_name: Option<String>,
     pub channel_count: usize,
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     pub settings_updated_at: Option<String>,
 }
 
@@ -700,8 +700,8 @@ impl Store {
             .map(|r| r.into_settings())
             .unwrap_or_else(|| AgentSettings {
                 units: Vec::new(),
-                variables: common::default_agent_variables(),
-                array_expand_mode: common::ArrayExpandMode::Semicolon,
+                variables: crate::agent_settings::default_agent_variables(),
+                array_expand_mode: crate::agent_settings::ArrayExpandMode::Semicolon,
                 updated_at: None,
             }))
     }
@@ -711,7 +711,7 @@ impl Store {
         &self,
         agent_id: &str,
         variables: &[AgentVariable],
-        array_expand_mode: common::ArrayExpandMode,
+        array_expand_mode: crate::agent_settings::ArrayExpandMode,
     ) -> Result<AgentSettings, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let variables_json = serde_json::to_string(variables).unwrap_or_else(|_| "[]".into());
@@ -766,9 +766,9 @@ impl Store {
         .await
         .unwrap_or_default();
 
-        let mut units = common::default_agent_units();
+        let mut units = crate::agent_settings::default_agent_units();
         for (raw,) in legacy_rows {
-            let parsed = common::parse_units_json(&raw);
+            let parsed = crate::agent_settings::parse_units_json(&raw);
             if !parsed.is_empty() {
                 units = parsed;
                 break;
@@ -4062,8 +4062,8 @@ mod tests {
         store
             .upsert_agent_settings(
                 &agent.id,
-                &common::default_agent_variables(),
-                common::ArrayExpandMode::Semicolon,
+                &crate::agent_settings::default_agent_variables(),
+                crate::agent_settings::ArrayExpandMode::Semicolon,
             )
             .await
             .unwrap();

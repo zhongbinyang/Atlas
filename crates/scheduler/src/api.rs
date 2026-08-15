@@ -5,7 +5,9 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use common::{parse_spec_ini, spec_document_to_json, ErrorBody, RegisterAgentRequest};
+use crate::dto::RegisterAgentRequest;
+use crate::error::ErrorBody;
+use crate::spec_ini::{parse_spec_ini, spec_document_to_json};
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
@@ -259,7 +261,7 @@ pub struct AgentConfigSummaryView {
     pub active_device_name: Option<String>,
     pub active_calibration_name: Option<String>,
     pub channel_count: usize,
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     pub settings_updated_at: Option<String>,
 }
 
@@ -760,7 +762,7 @@ pub struct AgentSettingsView {
     pub units: Vec<crate::store::AgentUnit>,
     pub variables: Vec<crate::store::AgentVariable>,
     #[serde(default)]
-    pub array_expand_mode: common::ArrayExpandMode,
+    pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -781,7 +783,7 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
     let raw = serde_json::to_string(&value).unwrap_or_else(|_| "[]".into());
-    Ok(common::parse_units_json(&raw))
+    Ok(crate::agent_settings::parse_units_json(&raw))
 }
 
 fn validate_units(units: &[crate::store::AgentUnit]) -> Option<String> {
