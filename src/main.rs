@@ -8,6 +8,7 @@ mod labview_cmd;
 mod poller;
 mod spec_ini;
 mod store;
+mod test_runs;
 mod web;
 
 use std::net::SocketAddr;

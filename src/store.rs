@@ -586,7 +586,7 @@ impl Store {
         Self { pool }
     }
 
-    pub fn pool(&self) -> &PgPool {
+    pub(crate) fn pool(&self) -> &sqlx::PgPool {
         &self.pool
     }
 
