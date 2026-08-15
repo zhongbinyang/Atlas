@@ -17,8 +17,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SpecTemplateDetail, SpecTemplateSummary } from '../api/types';
-import { describeApiError } from '@shared/formatError';
-import { formatSpecParseError, parseSpecIni } from '@shared/specIni';
+import { describeApiError } from '../lib/formatError';
+import { formatSpecParseError, parseSpecIni } from '../lib/specIni';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
 
 type UploadPreview = {
