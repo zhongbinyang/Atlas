@@ -11,7 +11,7 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
 import type { Agent, TestRunDetail, TestRunListItem, TestRunStep } from '../api/types';
@@ -43,6 +43,7 @@ function RunList() {
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [overall, setOverall] = useState<string | undefined>(undefined);
   const [sn, setSn] = useState('');
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     void schedulerApi.listAgents().then((next) => {
@@ -52,25 +53,33 @@ function RunList() {
     });
   }, [message]);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    try {
-      const page = await schedulerApi.listTestRuns({
+    void schedulerApi
+      .listTestRuns({
         agent_id: agentId,
         overall,
         sn,
+      })
+      .then((page) => {
+        if (!cancelled) {
+          setItems(Array.isArray(page?.items) ? page.items : []);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setItems([]);
+          message.error('加载运行失败：' + describeApiError(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
-      setItems(Array.isArray(page?.items) ? page.items : []);
-    } catch (error) {
-      message.error('加载运行失败：' + describeApiError(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [agentId, message, overall, sn]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, message, overall, sn, reloadToken]);
 
   const columns = useMemo<ColumnsType<TestRunListItem>>(
     () => [
@@ -111,7 +120,7 @@ function RunList() {
         <Typography.Title level={3} style={{ margin: 0 }}>
           运行
         </Typography.Title>
-        <Button onClick={() => void load()} loading={loading}>
+        <Button onClick={() => setReloadToken((token) => token + 1)} loading={loading}>
           刷新
         </Button>
       </Space>
