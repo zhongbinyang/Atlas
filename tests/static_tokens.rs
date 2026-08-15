@@ -48,7 +48,7 @@ fn scheduler_defaults_postgres_to_loopback() {
     let scheduler_dir = manifest_dir();
     let config = fs::read_to_string(scheduler_dir.join("src/config.rs")).unwrap();
     let db = fs::read_to_string(scheduler_dir.join("src/db.rs")).unwrap();
-    let readme = fs::read_to_string(scheduler_dir.join("../../README.md")).unwrap();
+    let readme = fs::read_to_string(scheduler_dir.join("README.md")).unwrap();
     let loopback_url = "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable";
 
     assert!(

@@ -1,29 +1,24 @@
 # ATLAS 测试机台编排系统
 
-Rust 工作区（拆仓前仍在同一仓库）：**atlas-center**（端口 **9080**）与 Windows **atlas-station**（端口 **9090**）。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询机台状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
+本仓库是单包 **atlas-center**（端口 **9080**）。Windows 机台端 **atlas-station**（端口 **9090**）在独立仓库。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询机台状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
 
-WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **Spec 模板** / **单位**；Agent hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。
+WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **Spec 模板** / **单位**；Station hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。
 
 ## 前端开发（React）
 
-源码位于 `frontend/scheduler` 与 `frontend/agent`（互相独立，技术栈均为 Vite + React + TypeScript + Ant Design + ECharts）。
+中心源码位于 `frontend/`（Vite + React + TypeScript + Ant Design + ECharts）。Station UI 在 atlas-station 仓库。
 
 ```powershell
-cd frontend/scheduler
+cd frontend
 npm install
-npm run dev    # http://127.0.0.1:5173，代理 /api -> 9080
-
-cd frontend/agent
-npm install
-npm run dev    # http://127.0.0.1:5174，代理 /api -> 9090
+npm run dev    # http://127.0.0.1:5173 ，代理 /api -> 9080
 ```
 
 发布前构建并同步到 Rust 静态目录：
 
 ```powershell
 .\scripts\build-frontend.ps1
-cargo build -p scheduler
-cargo build -p agent
+cargo build --release
 ```
 
 ## 安全提示
@@ -38,7 +33,7 @@ cargo build -p agent
 docker compose up -d postgres
 .\scripts\sync-atlas-db.ps1
 $env:SCHEDULER_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"
-cargo run -p scheduler
+cargo run
 ```
 
 本地连接串：`postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable`（用户/密码/库名与远程默认一致）。
@@ -162,16 +157,16 @@ cargo build --release
 
 ```powershell
 $env:SCHEDULER_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable"
-cargo run --release -p scheduler
+cargo run --release
 ```
 
 浏览器打开 `http://127.0.0.1:9080` 进入 atlas-center WebUI。
 
-**终端 B — Agent（Windows）：**
+**终端 B — atlas-station（Windows，独立仓库）：**
 
 ```powershell
 $env:AGENT_CENTER_URL = "http://127.0.0.1:9080"
-cargo run --release -p agent
+cargo run --release
 ```
 
 浏览器打开 `http://127.0.0.1:9090` 进入 atlas-station WebUI。
@@ -192,10 +187,7 @@ cargo run --release -p agent
 ## 测试
 
 ```powershell
-cargo test --workspace
-# 或分包：
-cargo test -p agent
-cargo test -p scheduler
+cargo test
 ```
 
 自动化测试使用 mock/fake CLI，**不** 依赖本机 LabVIEW；需硬件或真实 CLI 的用例标有 `#[ignore]` 或仅作手工验收。
@@ -203,8 +195,9 @@ cargo test -p scheduler
 ## 目录结构
 
 ```
-crates/
-  common/     共享类型与 API 模型
-  scheduler/  调度中心服务 + WebUI
-  agent/      Windows 执行节点 + WebUI
+src/          atlas-center 服务
+frontend/     中心 WebUI
+static/       前端构建产物
+migrations/   PostgreSQL
+tests/
 ```

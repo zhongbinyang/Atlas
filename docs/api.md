@@ -1,12 +1,12 @@
 # ATLAS API 与调用关系
 
-**无鉴权。** 仅限可信内网。路由以各服务 `crates/*/src/api.rs` 的 `router()` 为准。
+**无鉴权。** 仅限可信内网。路由以各服务 `src/api.rs` 的 `router()` 为准。
 
 | 服务 | 默认基址 | 代码 |
 |------|----------|------|
-| **atlas-center** | `http://127.0.0.1:9080` | `crates/scheduler` |
-| **atlas-station** | `http://127.0.0.1:9090` | `crates/agent` |
-| **数据库** | Postgres（仅中心连接） | `crates/scheduler` → `Store` |
+| **atlas-center** | `http://127.0.0.1:9080` | `src/api.rs` |
+| **atlas-station** | `http://127.0.0.1:9090` | atlas-station `src/api.rs` |
+| **数据库** | Postgres（仅中心连接） | `src` → `Store` |
 
 两套 HTTP API **独立**（通常不同主机）。浏览器 **只打本机对应 WebUI 后端**：中心页 → 中心 API；Agent 页 → Agent API。Agent **从不**直连数据库；持久化一律经中心 API 落库。
 
@@ -14,8 +14,8 @@
 
 | 标记 | 含义 |
 |------|------|
-| **中心 WebUI** | `crates/scheduler/static` 直接调用中心 `/api/*` |
-| **Agent WebUI** | `crates/agent/static` 直接调用 Agent `/api/*` |
+| **中心 WebUI** | `static` 直接调用中心 `/api/*` |
+| **Agent WebUI** | atlas-station `static` 直接调用 Agent `/api/*` |
 | **Agent 进程** | Agent 服务端代调中心（注册、写模板、队列、设置等） |
 | **中心 Poller** | 中心后台周期拉取各 Agent `GET /api/status` |
 | **未使用** | 两端 WebUI 均未调用（可能仍被 Agent 进程使用，见备注） |
