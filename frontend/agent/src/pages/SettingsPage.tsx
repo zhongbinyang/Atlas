@@ -14,7 +14,7 @@ import {
   Upload,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { REFRESH_LABEL } from '@shared/uiCopy';
+import { REFRESH_LABEL } from '../lib/uiCopy';
 import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import { CollapsibleCard } from '../components/CollapsibleCard';

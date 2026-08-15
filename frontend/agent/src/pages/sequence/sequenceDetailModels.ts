@@ -1,4 +1,4 @@
-import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
+import { EMPTY_PLACEHOLDER } from '../../lib/uiCopy';
 import type { ChannelProgress, QueueItem } from './sequenceRunModels';
 import {
   buildSequenceChannelDetailSteps,

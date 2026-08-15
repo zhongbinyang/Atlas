@@ -2,7 +2,7 @@ import { App, Button, Card, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
+import { EMPTY_PLACEHOLDER } from '../../lib/uiCopy';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
 import { JsonBlock } from '../../components/JsonBlock';

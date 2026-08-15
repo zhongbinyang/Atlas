@@ -17,7 +17,7 @@ import {
   Typography,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { EMPTY_PLACEHOLDER } from '@shared/uiCopy';
+import { EMPTY_PLACEHOLDER } from '../../lib/uiCopy';
 import { agentApi } from '../../api/agentApi';
 import { ApiError } from '../../api/client';
 import type { SpecTemplateDetail, SpecTemplateSummary, ViRunQueueStep } from '../../api/types';
