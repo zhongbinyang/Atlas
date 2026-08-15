@@ -4,8 +4,8 @@
 
 | 服务 | 默认基址 | 代码 |
 |------|----------|------|
-| **调度中心** | `http://127.0.0.1:26630` | `crates/scheduler` |
-| **Agent** | `http://127.0.0.1:26631` | `crates/agent` |
+| **atlas-center** | `http://127.0.0.1:9080` | `crates/scheduler` |
+| **atlas-station** | `http://127.0.0.1:9090` | `crates/agent` |
 | **数据库** | Postgres（仅中心连接） | `crates/scheduler` → `Store` |
 
 两套 HTTP API **独立**（通常不同主机）。浏览器 **只打本机对应 WebUI 后端**：中心页 → 中心 API；Agent 页 → Agent API。Agent **从不**直连数据库；持久化一律经中心 API 落库。
@@ -42,9 +42,9 @@ flowchart LR
   end
   DB[(Postgres)]
 
-  SW -->|HTTP_26630| SA
-  AW -->|HTTP_26631| AA
-  AA -->|HTTP_26630| SA
+  SW -->|HTTP_9080| SA
+  AW -->|HTTP_9090| AA
+  AA -->|HTTP_9080| SA
   SA --> DB
   SA -->|poll_status| AA
   AA --> CLI
@@ -329,7 +329,7 @@ sequenceDiagram
 
 # 第一部分：调度中心 API
 
-**基址：** `http://127.0.0.1:26630`  
+**基址：** `http://127.0.0.1:9080`  
 **可调用的 WebUI：** 仅 **中心 WebUI**。Agent 浏览器不直接打中心。
 
 ## 1.1 接口一览与使用方
@@ -379,7 +379,7 @@ sequenceDiagram
 **POST** `/api/agents/register` · 使用方：**Agent 进程**
 
 ```json
-{ "name": "LINE-01", "ip": "192.168.1.10", "port": 26631 }
+{ "name": "LINE-01", "ip": "192.168.1.10", "port": 9090 }
 ```
 
 **GET** `/api/agents` · 使用方：**中心 WebUI** · **Agent 进程**  
@@ -581,7 +581,7 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 
 # 第二部分：Agent API
 
-**基址：** `http://127.0.0.1:26631`  
+**基址：** `http://127.0.0.1:9090`  
 **可调用的 WebUI：** 仅 **Agent WebUI**。中心浏览器不直接打 Agent 业务接口。
 
 多数「持久化」接口会：`resolve_agent_id`（`GET` 中心 `/api/agents`）→ 再调中心对应资源。

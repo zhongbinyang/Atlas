@@ -1,6 +1,6 @@
 # ATLAS 测试机台编排系统
 
-Rust 工作区：**ATLAS 中心**（端口 **26630**）与 Windows **测试机台 Agent**（端口 **26631**）。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询 Agent 状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
+Rust 工作区（拆仓前仍在同一仓库）：**atlas-center**（端口 **9080**）与 Windows **atlas-station**（端口 **9090**）。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询机台状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
 
 WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **Spec 模板** / **单位**；Agent hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。
 
@@ -11,11 +11,11 @@ WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）�
 ```powershell
 cd frontend/scheduler
 npm install
-npm run dev    # http://127.0.0.1:5173，代理 /api -> 26630
+npm run dev    # http://127.0.0.1:9080，代理 /api -> 9080
 
 cd frontend/agent
 npm install
-npm run dev    # http://127.0.0.1:5174，代理 /api -> 26631
+npm run dev    # http://127.0.0.1:9090，代理 /api -> 9090
 ```
 
 发布前构建并同步到 Rust 静态目录：
@@ -53,10 +53,10 @@ cargo run -p scheduler
 
 ## 端口
 
-| 服务 | 默认端口 | WebUI / API 地址 |
-|------|----------|------------------|
-| 调度中心 | 26630 | `http://127.0.0.1:26630` |
-| Agent | 26631 | `http://127.0.0.1:26631` |
+| 服务 | 默认端口 | WebUI / API |
+|------|----------|-------------|
+| atlas-center | 9080 | `http://127.0.0.1:9080` |
+| atlas-station | 9090 | `http://127.0.0.1:9090` |
 
 ## 环境变量
 
@@ -65,7 +65,7 @@ cargo run -p scheduler
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `SCHEDULER_BIND` | `0.0.0.0` | 监听地址 |
-| `SCHEDULER_PORT` | `26630` | 监听端口 |
+| `SCHEDULER_PORT` | `9080` | 监听端口 |
 | `SCHEDULER_DATABASE_URL` | `postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable` | PostgreSQL 连接串 |
 | `SCHEDULER_POLL_STATUS_INTERVAL_SECS` | `5` | Agent 状态巡检间隔（秒） |
 
@@ -75,9 +75,9 @@ cargo run -p scheduler
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `AGENT_CENTER_URL` | *（必填）* | 调度中心根地址，例如 `http://127.0.0.1:26630` |
+| `AGENT_CENTER_URL` | *（必填）* | 调度中心根地址，例如 `http://127.0.0.1:9080` |
 | `AGENT_BIND` | `0.0.0.0` | 监听地址 |
-| `AGENT_PORT` | `26631` | 监听端口 |
+| `AGENT_PORT` | `9090` | 监听端口 |
 | `AGENT_ADVERTISE_IP` | 自动探测（优先：连向中心的出口网卡 IP；排除 Mihomo `198.18/15` 等虚拟地址） | 向调度中心注册的 IP；探测不准时可手动指定 |
 | `AGENT_HOSTNAME` | 系统计算机名 | 向调度中心注册的电脑名称 |
 | `AGENT_LOG_DIR` | `%LOCALAPPDATA%\atlas-agent\logs` | Agent 日志根目录（**不写控制台**）；见下方布局 |
@@ -132,12 +132,12 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 
 | 位置 | 路由 / 分区 | 说明 |
 |------|-------------|------|
-| Agent WebUI（`:26631`） | VI / **通用** / **API** / **序列** / **配置** | VI 工作台；通用；REST；序列；本机台单位与变量 |
-| ATLAS 中心 WebUI（`:26630`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
-| ATLAS 中心 WebUI | `#/agents/{id}` | Agent **详情**：状态概览（无截图 / 历史 / 文件） |
-| ATLAS 中心 WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**删除** |
-| ATLAS 中心 WebUI | `#/sequences` | **序列模板**：浏览步骤数/来源机台；**删除** |
-| ATLAS 中心 WebUI | `#/specs` | **Spec 模板**：上传 `*_Spec.ini`、预览 section/指标、**删除** |
+| atlas-station WebUI（`:9090`） | VI / **通用** / **API** / **序列** / **配置** | VI 工作台；通用；REST；序列；本机台单位与变量 |
+| atlas-center WebUI（`:9080`） | `#/machines` | **机台** 卡片网格；点击卡片进入 Agent 详情 |
+| atlas-center WebUI | `#/agents/{id}` | Agent **详情**：状态概览（无截图 / 历史 / 文件） |
+| atlas-center WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**删除** |
+| atlas-center WebUI | `#/sequences` | **序列模板**：浏览步骤数/来源机台；**删除** |
+| atlas-center WebUI | `#/specs` | **Spec 模板**：上传 `*_Spec.ini`、预览 section/指标、**删除** |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。
 
@@ -165,21 +165,21 @@ $env:SCHEDULER_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/atlas
 cargo run --release -p scheduler
 ```
 
-浏览器打开 `http://127.0.0.1:26630` 进入 ATLAS 中心 WebUI。
+浏览器打开 `http://127.0.0.1:9080` 进入 atlas-center WebUI。
 
 **终端 B — Agent（Windows）：**
 
 ```powershell
-$env:AGENT_CENTER_URL = "http://127.0.0.1:26630"
+$env:AGENT_CENTER_URL = "http://127.0.0.1:9080"
 cargo run --release -p agent
 ```
 
-浏览器打开 `http://127.0.0.1:26631` 进入 Agent WebUI。
+浏览器打开 `http://127.0.0.1:9090` 进入 atlas-station WebUI。
 
 ## 手工联调清单
 
-1. **调度中心启动**：监听 `:26630`；`GET http://127.0.0.1:26630/` 返回 WebUI（200）；默认 `#/machines` 显示机台卡片。
-2. **Agent 注册**：约 5 秒内，`GET http://127.0.0.1:26630/api/agents` 可见该 Agent 为 `online`，并带有 CPU、内存占用百分比；卡片与详情页状态一致。
+1. **调度中心启动**：监听 `:9080`；`GET http://127.0.0.1:9080/` 返回 WebUI（200）；默认 `#/machines` 显示机台卡片。
+2. **Agent 注册**：约 5 秒内，`GET http://127.0.0.1:9080/api/agents` 可见该 Agent 为 `online`，并带有 CPU、内存占用百分比；卡片与详情页状态一致。
 3. **机台卡片 → 详情**：点击卡片进入 `#/agents/{id}`；仅状态概览；**返回机台** 回到卡片网格。
 4. **已注册功能页**：打开 `#/functions`；按机台筛选；查看 VI / 通用分栏、名称/**来源机台**/路径/入参；可 **删除** 模板（无修改）。
 5. **序列模板页**：打开 `#/sequences`；可见已保存序列模板；可 **删除**。
