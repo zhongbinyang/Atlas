@@ -157,11 +157,11 @@ mod tests {
     #[test]
     fn parses_center_host() {
         assert_eq!(
-            host_from_center_url("http://10.102.30.18:26630").as_deref(),
+            host_from_center_url("http://10.102.30.18:9080").as_deref(),
             Some("10.102.30.18")
         );
         assert_eq!(
-            host_from_center_url("http://10.102.30.18:26630/api").as_deref(),
+            host_from_center_url("http://10.102.30.18:9080/api").as_deref(),
             Some("10.102.30.18")
         );
     }
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn override_wins() {
         assert_eq!(
-            resolve_advertise_ip(Some("10.102.30.10"), "http://10.102.30.18:26630"),
+            resolve_advertise_ip(Some("10.102.30.10"), "http://10.102.30.18:9080"),
             "10.102.30.10"
         );
     }

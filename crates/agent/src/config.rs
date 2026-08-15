@@ -19,7 +19,7 @@ impl AgentConfig {
             .ok()
             .map(|s| s.parse::<u16>().map_err(|e| e.to_string()))
             .transpose()?
-            .unwrap_or(26631);
+            .unwrap_or(9090);
         let advertise_ip = std::env::var("AGENT_ADVERTISE_IP").ok();
         let hostname = std::env::var("AGENT_HOSTNAME").ok();
         let log_dir = crate::logging::resolve_log_dir(std::env::var("AGENT_LOG_DIR").ok().as_deref());
@@ -52,12 +52,12 @@ mod tests {
     static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn default_port_is_26631() {
+    fn default_port_is_9090() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("AGENT_PORT");
-        std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:26630");
+        std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:9080");
         let cfg = AgentConfig::load_from_env().unwrap();
-        assert_eq!(cfg.port, 26631);
+        assert_eq!(cfg.port, 9090);
         std::env::remove_var("AGENT_CENTER_URL");
     }
 
@@ -73,7 +73,7 @@ mod tests {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("AGENT_LABVIEW_CLI");
         std::env::remove_var("AGENT_LABVIEW_GETINFO_VI");
-        std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:26630");
+        std::env::set_var("AGENT_CENTER_URL", "http://127.0.0.1:9080");
         let cfg = AgentConfig::load_from_env().unwrap();
         assert_eq!(
             cfg.labview_cli,
