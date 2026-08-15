@@ -17,6 +17,10 @@ use crate::store::{
     SpecTemplateSummary, Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
     ViTemplatePatch,
 };
+use crate::test_runs::{
+    NewTestRun, NewTestRunContext, NewTestRunStep, TestRunContext, TestRunDetail, TestRunListItem,
+    TestRunListQuery, TestRunStep,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -674,6 +678,8 @@ pub fn router(state: AppState) -> Router {
             "/api/agents/{id}/channels",
             get(list_agent_channels).put(put_agent_channels),
         )
+        .route("/api/test-runs", get(list_test_runs).post(create_test_run))
+        .route("/api/test-runs/{id}", get(get_test_run))
         .with_state(state)
 }
 
@@ -3021,6 +3027,395 @@ async fn put_vi_run_queue(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateTestRunRequest {
+    id: String,
+    agent_id: Option<String>,
+    channel_index: i32,
+    channel_name: String,
+    sequence_template_id: Option<i64>,
+    run_generation: i64,
+    overall: String,
+    stopped: bool,
+    failed_at: Option<i32>,
+    elapsed_ms: i64,
+    started_at: String,
+    finished_at: String,
+    #[serde(default)]
+    context: CreateTestRunContext,
+    #[serde(default)]
+    steps: Vec<CreateTestRunStep>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CreateTestRunContext {
+    #[serde(default)]
+    sn: String,
+    #[serde(default)]
+    work_order: String,
+    #[serde(default)]
+    product_pn: String,
+    #[serde(default)]
+    corner: String,
+    #[serde(default)]
+    hostname: String,
+    config_revision: Option<i64>,
+    #[serde(default)]
+    device_profile_id: String,
+    #[serde(default)]
+    device_profile_name: String,
+    #[serde(default)]
+    calibration_profile_id: String,
+    #[serde(default)]
+    calibration_profile_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTestRunStep {
+    position: i32,
+    queue_item_id: String,
+    template_id: String,
+    template_source: String,
+    name: String,
+    kind: String,
+    ok: bool,
+    status: String,
+    #[serde(default)]
+    elapsed_ms: i64,
+    measured: Option<serde_json::Value>,
+    limits: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+    spec_template_id: Option<i64>,
+    #[serde(default)]
+    spec_section: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestRunListParams {
+    agent_id: Option<String>,
+    overall: Option<String>,
+    sn: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct TestRunDetailView {
+    id: String,
+    agent_id: Option<String>,
+    channel_index: i32,
+    channel_name: String,
+    sequence_template_id: Option<i64>,
+    run_generation: i64,
+    overall: String,
+    stopped: bool,
+    failed_at: Option<i32>,
+    elapsed_ms: i64,
+    started_at: String,
+    finished_at: String,
+    created_at: String,
+    context: TestRunContextView,
+    steps: Vec<TestRunStepView>,
+}
+
+#[derive(Debug, Serialize)]
+struct TestRunContextView {
+    sn: String,
+    work_order: String,
+    product_pn: String,
+    corner: String,
+    hostname: String,
+    config_revision: Option<i64>,
+    device_profile_id: String,
+    device_profile_name: String,
+    calibration_profile_id: String,
+    calibration_profile_name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TestRunStepView {
+    position: i32,
+    queue_item_id: String,
+    template_id: String,
+    template_source: String,
+    name: String,
+    kind: String,
+    ok: bool,
+    status: String,
+    elapsed_ms: i64,
+    measured: Option<serde_json::Value>,
+    limits: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+    spec_template_id: Option<i64>,
+    spec_section: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TestRunListItemView {
+    id: String,
+    agent_id: Option<String>,
+    channel_index: i32,
+    channel_name: String,
+    sequence_template_id: Option<i64>,
+    overall: String,
+    elapsed_ms: i64,
+    started_at: String,
+    finished_at: String,
+    sn: String,
+    work_order: String,
+    hostname: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TestRunListResponse {
+    items: Vec<TestRunListItemView>,
+    total: i64,
+}
+
+fn store_error(e: sqlx::Error) -> (StatusCode, Json<ErrorBody>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorBody {
+            error: e.to_string(),
+        }),
+    )
+}
+
+fn bad_request(error: impl Into<String>) -> (StatusCode, Json<ErrorBody>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorBody {
+            error: error.into(),
+        }),
+    )
+}
+
+fn validate_create_test_run(req: &CreateTestRunRequest) -> Option<&'static str> {
+    if req.id.trim().is_empty() {
+        return Some("id is required");
+    }
+    if !matches!(req.overall.as_str(), "pass" | "fail" | "error" | "aborted") {
+        return Some("overall must be pass, fail, error, or aborted");
+    }
+    if req.channel_index < 0 {
+        return Some("channel_index must be non-negative");
+    }
+    if req.started_at.trim().is_empty() {
+        return Some("started_at is required");
+    }
+    if req.finished_at.trim().is_empty() {
+        return Some("finished_at is required");
+    }
+    None
+}
+
+impl From<TestRunContext> for TestRunContextView {
+    fn from(c: TestRunContext) -> Self {
+        Self {
+            sn: c.sn,
+            work_order: c.work_order,
+            product_pn: c.product_pn,
+            corner: c.corner,
+            hostname: c.hostname,
+            config_revision: c.config_revision,
+            device_profile_id: c.device_profile_id,
+            device_profile_name: c.device_profile_name,
+            calibration_profile_id: c.calibration_profile_id,
+            calibration_profile_name: c.calibration_profile_name,
+        }
+    }
+}
+
+impl From<TestRunStep> for TestRunStepView {
+    fn from(s: TestRunStep) -> Self {
+        Self {
+            position: s.position,
+            queue_item_id: s.queue_item_id,
+            template_id: s.template_id,
+            template_source: s.template_source,
+            name: s.name,
+            kind: s.kind,
+            ok: s.ok,
+            status: s.status,
+            elapsed_ms: s.elapsed_ms,
+            measured: s.measured,
+            limits: s.limits,
+            result: s.result,
+            error: s.error,
+            spec_template_id: s.spec_template_id,
+            spec_section: s.spec_section,
+        }
+    }
+}
+
+impl From<TestRunDetail> for TestRunDetailView {
+    fn from(d: TestRunDetail) -> Self {
+        Self {
+            id: d.id,
+            agent_id: d.agent_id,
+            channel_index: d.channel_index,
+            channel_name: d.channel_name,
+            sequence_template_id: d.sequence_template_id,
+            run_generation: d.run_generation,
+            overall: d.overall,
+            stopped: d.stopped,
+            failed_at: d.failed_at,
+            elapsed_ms: d.elapsed_ms,
+            started_at: d.started_at,
+            finished_at: d.finished_at,
+            created_at: d.created_at,
+            context: d.context.into(),
+            steps: d.steps.into_iter().map(TestRunStepView::from).collect(),
+        }
+    }
+}
+
+impl From<TestRunListItem> for TestRunListItemView {
+    fn from(i: TestRunListItem) -> Self {
+        Self {
+            id: i.id,
+            agent_id: i.agent_id,
+            channel_index: i.channel_index,
+            channel_name: i.channel_name,
+            sequence_template_id: i.sequence_template_id,
+            overall: i.overall,
+            elapsed_ms: i.elapsed_ms,
+            started_at: i.started_at,
+            finished_at: i.finished_at,
+            sn: i.sn,
+            work_order: i.work_order,
+            hostname: i.hostname,
+        }
+    }
+}
+
+impl CreateTestRunRequest {
+    fn into_new(self) -> NewTestRun {
+        NewTestRun {
+            id: self.id.trim().to_string(),
+            agent_id: self.agent_id,
+            channel_index: self.channel_index,
+            channel_name: self.channel_name,
+            sequence_template_id: self.sequence_template_id,
+            run_generation: self.run_generation,
+            overall: self.overall,
+            stopped: self.stopped,
+            failed_at: self.failed_at,
+            elapsed_ms: self.elapsed_ms,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            context: NewTestRunContext {
+                sn: self.context.sn,
+                work_order: self.context.work_order,
+                product_pn: self.context.product_pn,
+                corner: self.context.corner,
+                hostname: self.context.hostname,
+                config_revision: self.context.config_revision,
+                device_profile_id: self.context.device_profile_id,
+                device_profile_name: self.context.device_profile_name,
+                calibration_profile_id: self.context.calibration_profile_id,
+                calibration_profile_name: self.context.calibration_profile_name,
+            },
+            steps: self
+                .steps
+                .into_iter()
+                .map(|s| NewTestRunStep {
+                    position: s.position,
+                    queue_item_id: s.queue_item_id,
+                    template_id: s.template_id,
+                    template_source: s.template_source,
+                    name: s.name,
+                    kind: s.kind,
+                    ok: s.ok,
+                    status: s.status,
+                    elapsed_ms: s.elapsed_ms,
+                    measured: s.measured,
+                    limits: s.limits,
+                    result: s.result,
+                    error: s.error,
+                    spec_template_id: s.spec_template_id,
+                    spec_section: s.spec_section,
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn create_test_run(
+    State(s): State<AppState>,
+    Json(req): Json<CreateTestRunRequest>,
+) -> impl IntoResponse {
+    if let Some(msg) = validate_create_test_run(&req) {
+        return bad_request(msg).into_response();
+    }
+
+    if let Some(agent_id) = req.agent_id.as_deref() {
+        match s.store.agent_exists(agent_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return bad_request("unknown agent_id").into_response();
+            }
+            Err(e) => return store_error(e).into_response(),
+        }
+    }
+
+    match s.store.insert_test_run(req.into_new()).await {
+        Ok(outcome) => {
+            let status = if outcome.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(TestRunDetailView::from(outcome.detail))).into_response()
+        }
+        Err(e) => store_error(e).into_response(),
+    }
+}
+
+async fn list_test_runs(
+    State(s): State<AppState>,
+    Query(params): Query<TestRunListParams>,
+) -> impl IntoResponse {
+    let query = TestRunListQuery {
+        agent_id: params.agent_id,
+        overall: params.overall,
+        sn: params.sn,
+        from: params.from,
+        to: params.to,
+        limit: params.limit.unwrap_or(100),
+        offset: params.offset.unwrap_or(0),
+    };
+    match s.store.list_test_runs(query).await {
+        Ok(page) => (
+            StatusCode::OK,
+            Json(TestRunListResponse {
+                items: page.items.into_iter().map(TestRunListItemView::from).collect(),
+                total: page.total,
+            }),
+        )
+            .into_response(),
+        Err(e) => store_error(e).into_response(),
+    }
+}
+
+async fn get_test_run(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match s.store.get_test_run(&id).await {
+        Ok(Some(detail)) => (StatusCode::OK, Json(TestRunDetailView::from(detail))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "test run not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => store_error(e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3885,5 +4280,115 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "agent not found");
+    }
+
+    fn sample_test_run_body(agent_id: &str, id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "agent_id": agent_id,
+            "channel_index": 0,
+            "channel_name": "CH0",
+            "sequence_template_id": null,
+            "run_generation": 1,
+            "overall": "pass",
+            "stopped": false,
+            "failed_at": null,
+            "elapsed_ms": 10,
+            "started_at": "2026-08-15T14:00:00+00:00",
+            "finished_at": "2026-08-15T14:01:00+00:00",
+            "context": { "sn": "SN001", "work_order": "WO-1", "hostname": "ATE01" },
+            "steps": [{
+                "position": 1,
+                "queue_item_id": "q-1",
+                "template_id": "12",
+                "template_source": "labview",
+                "name": "TX_AP",
+                "kind": "labview",
+                "ok": true,
+                "status": "pass",
+                "elapsed_ms": 8,
+                "measured": {"TX_AP": 1.2},
+                "limits": [],
+                "result": {"TX_AP": "pass"},
+                "error": null,
+                "spec_template_id": null,
+                "spec_section": "FMT_HT"
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_run_post_get_list_and_idempotent() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+        let body = sample_test_run_body(&agent_id, "api-run-1");
+
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app.clone().oneshot(
+            Request::builder().uri("/api/test-runs/api-run-1").body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let detail: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(detail["context"]["sn"], "SN001");
+        assert_eq!(detail["steps"].as_array().unwrap().len(), 1);
+
+        let resp = app.clone().oneshot(
+            Request::builder()
+                .uri(format!("/api/test-runs?agent_id={agent_id}&overall=pass&sn=SN001"))
+                .body(Body::empty())
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let page: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"][0]["id"], "api-run-1");
+    }
+
+    #[tokio::test]
+    async fn test_run_post_rejects_bad_overall_empty_id_and_unknown_agent() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let mut bad = sample_test_run_body(&agent_id, "x");
+        bad["overall"] = serde_json::json!("maybe");
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &bad)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let mut bad = sample_test_run_body(&agent_id, "");
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &bad)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let mut bad = sample_test_run_body("missing-agent", "y");
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &bad)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_run_unknown_sequence_template_still_created() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+        let mut body = sample_test_run_body(&agent_id, "api-run-tpl");
+        body["sequence_template_id"] = serde_json::json!(999999);
+        let resp = app.clone().oneshot(json_request("POST", "/api/test-runs", &body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let detail: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert!(detail["sequence_template_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_run_get_missing_is_404() {
+        let test = test_app().await;
+        let resp = test.router.clone().oneshot(
+            Request::builder().uri("/api/test-runs/nope").body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
