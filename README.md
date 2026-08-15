@@ -2,7 +2,7 @@
 
 本仓库是单包 **atlas-center**（端口 **9080**）。Windows 机台端 **atlas-station**（端口 **9090**）在独立仓库。中心用 PostgreSQL（默认 `127.0.0.1:5432/atlas`）保存机台、VI/通用功能模板与序列模板，轮询机台状态。两端均提供中文 WebUI 与 REST API。HTTP 接口汇总见 [docs/api.md](docs/api.md)。
 
-WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **Spec 模板** / **单位**；Station hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。
+WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）：中心 hash 路由 **机台** / **机台详情** / **已注册功能** / **序列模板** / **运行** / **Spec 模板** / **单位**；Station hash 路由 **VI** / **通用** / **REST** / **序列** / **配置**。顶栏品牌为 **ATLAS**。中心 **Spec 模板** 页（`#/specs`）可上传 legacy `*_Spec.ini` 为产品限值模板库，序列步骤可引用模板 section 自动生成 Pass/Fail 规则。中心 **运行** 页（`#/runs`）可查已落库的通道终态。
 
 ## 前端开发（React）
 
@@ -121,7 +121,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 5. **按序执行**：`POST /api/sequence/run` 可选 body `{ "sn", "work_order", "sequence_template_id", "channel_indexes" }`；开始时清空结果，执行中可轮询 `GET /api/sequence/run/progress` 按步刷新。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 Delay/REST 试跑共用 busy 槽，忙碌时返回 409。序列一次性跑完，不再支持断点暂停。
 6. **中止**：保留 `POST /api/sequence/run/abort`；`POST /api/sequence/run/continue` 已移除（410 Gone）。WebUI 顶部状态区集中提供通道选择、开始/中止与总体结果；SN/工单当前不在 WebUI 展示或提交，API 字段仍保留兼容性。
 7. **序列模板**：Agent 可将当前队列 **保存为模板**（中心表 `sequence_templates` + `sequence_template_steps`），或从「中心序列模板」**加载到当前队列**。中心 `#/sequences` 可浏览并 **删除** 模板（不再提供「加载到机台」）。
-8. **运行结果**：不落库「最近一次结果」；运行页始终按所选通道展示固定卡片，卡片实时显示当前步骤、完成统计、当前步耗时和通道总耗时。点击整张卡片进入对应通道详情，按原队列顺序以具名组分区展示步骤；组头汇总组状态及完成/通过/失败/跳过计数，轮询刷新时保留各组和步骤的展开状态及摘要焦点。详情仍可查看每步状态、实测/Spec、输入输出、原始 JSON 和实际耗时。详细结果（含毫秒耗时）写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
+8. **运行结果**：终态写入 Postgres `test_runs`；本机 `sequence_runs` JSON 仍是备份。中心 WebUI `#/runs` 可查。运行页始终按所选通道展示固定卡片，卡片实时显示当前步骤、完成统计、当前步耗时和通道总耗时。点击整张卡片进入对应通道详情，按原队列顺序以具名组分区展示步骤；组头汇总组状态及完成/通过/失败/跳过计数，轮询刷新时保留各组和步骤的展开状态及摘要焦点。详情仍可查看每步状态、实测/Spec、输入输出、原始 JSON 和实际耗时。详细结果（含毫秒耗时）仍写入 Agent 日志文件（见 `AGENT_LOG_DIR` / `sequence_runs`）。通用 tracing 写入按日 `agent-YYYY-MM-DD.log`，**不输出到控制台**。
 
 ### WebUI 入口
 
@@ -132,6 +132,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 | atlas-center WebUI | `#/agents/{id}` | Agent **详情**：状态概览（无截图 / 历史 / 文件） |
 | atlas-center WebUI | `#/functions` | **已注册功能**：VI + 通用分栏；按 **来源机台** 筛选；**删除** |
 | atlas-center WebUI | `#/sequences` | **序列模板**：浏览步骤数/来源机台；**删除** |
+| atlas-center WebUI | `#/runs` | **运行**：按机台 / 总结果 / SN 查通道终态；点行进 `#/runs/{id}` 看逐步详情 |
 | atlas-center WebUI | `#/specs` | **Spec 模板**：上传 `*_Spec.ini`、预览 section/指标、**删除** |
 
 VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器作为路径来源）。Agent 注册到中心后（启动自动注册或点击「重新注册」）方可成功「注册到中心」。

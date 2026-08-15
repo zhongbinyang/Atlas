@@ -81,6 +81,9 @@ flowchart LR
 | `agent_calibration_profiles` | 每台机多套校准配置档（同上） |
 | `agent_channels` | 每台机通道定义（`channel_index` / `name` / `enabled` / `overlay_json`） |
 | `spec_templates` | 产品 Spec INI 解析后的模板库（`spec_json` + 元数据） |
+| `test_runs` | 每通道一次终态（overall / 耗时 / 模板快照） |
+| `test_run_context` | 1:1 SN / 工单 / hostname；PN、温度角第一期空串 |
+| `test_run_steps` | 逐步实测、限值、Pass/Fail |
 
 ---
 
@@ -303,7 +306,7 @@ sequenceDiagram
   end
 ```
 
-完成后 Agent 写本机序列运行日志；**不**把逐步结果写回中心库。
+完成后 Agent 写本机序列运行日志；通道终态另 POST 中心 `/api/test-runs` 落库（best-effort，失败不影响 HTTP 结果）。
 
 ---
 
@@ -324,6 +327,8 @@ sequenceDiagram
 | 序列执行 | Agent WebUI → Agent `/api/sequence/run*` → 读中心队列+设置 → 本机逐步执行 |
 | 中心 Spec 模板库 | 中心 WebUI `#/specs` → `GET/POST/DELETE /api/spec-templates` → DB |
 | 步骤绑定 Spec 模板 | Agent WebUI 步骤详情 → `PUT run-queue` 写入 `spec_template_id` / `spec_section` / `spec_metrics`；执行时 Agent 解析模板 section 并与手填 `limits` 合并（同名 `output` 手填优先） |
+| 通道终态回写 | Agent 进程 → 中心 `POST /api/test-runs` → DB（`test_runs` + `test_run_context` + `test_run_steps`） |
+| 中心查运行 | 中心 WebUI `#/runs` → `GET /api/test-runs` / `GET /api/test-runs/{id}` → DB |
 
 ---
 
@@ -369,6 +374,9 @@ sequenceDiagram
 | GET/POST | `/api/agents/{id}/calibration-profiles` | **Agent 进程** | 校准配置档（同上） |
 | PUT/DELETE | `/api/agents/{id}/calibration-profiles/{profileId}` | **Agent 进程** | |
 | POST | `/api/agents/{id}/calibration-profiles/{profileId}/activate` | **Agent 进程** | |
+| POST | `/api/test-runs` | **Agent 进程** | 通道终态落库；201 新建 / 200 同 id 已有 / 400 校验失败 |
+| GET | `/api/test-runs` | **中心 WebUI** | 列表；query `agent_id` `overall` `sn` `from` `to` `limit` `offset` |
+| GET | `/api/test-runs/{id}` | **中心 WebUI** | 详情；缺失 → 404 |
 
 ## 1.2 健康检查
 
@@ -576,6 +584,119 @@ GET 的 `units` 来自全局 `center_units`（只读附带）；PUT **持久化 
 ```
 
 同一 agent 每类至多一条 `is_active=true`。Agent 展开 `${Var}` 时：手工 variables > 当前 device flatten > 当前 calibration flatten（`Section_Key`，空值跳过）。Flatten **不写回** `variables_json`。
+
+## 1.9 测试运行
+
+通道序列到达终态后，**Agent 进程** POST 中心落库；中心 WebUI `#/runs` 只读查询。第一期无 PATCH / DELETE；中心 WebUI 不调用 POST。
+
+**POST** `/api/test-runs` · 使用方：**Agent 进程** · 201 新建 / 200 同 `id` 已有（不覆盖）/ 400 校验失败
+
+```json
+{
+  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "agent_id": "…",
+  "channel_index": 0,
+  "channel_name": "CH0",
+  "sequence_template_id": 12,
+  "run_generation": 42,
+  "overall": "pass",
+  "stopped": false,
+  "failed_at": null,
+  "elapsed_ms": 1234,
+  "started_at": "2026-08-15T14:00:00+00:00",
+  "finished_at": "2026-08-15T14:01:02+00:00",
+  "context": {
+    "sn": "SN001",
+    "work_order": "WO-1",
+    "product_pn": "",
+    "corner": "",
+    "hostname": "ATE01",
+    "config_revision": 3,
+    "device_profile_id": "",
+    "device_profile_name": "",
+    "calibration_profile_id": "",
+    "calibration_profile_name": ""
+  },
+  "steps": [
+    {
+      "position": 1,
+      "queue_item_id": "q-1",
+      "template_id": "12",
+      "template_source": "labview",
+      "name": "TX_AP",
+      "kind": "labview",
+      "ok": true,
+      "status": "pass",
+      "elapsed_ms": 100,
+      "measured": { "TX_AP": 1.2 },
+      "limits": [{ "output": "TX_AP", "min": -2, "max": 4 }],
+      "result": { "TX_AP": "pass" },
+      "error": null,
+      "spec_template_id": 1,
+      "spec_section": "FMT_HT"
+    }
+  ]
+}
+```
+
+校验：
+
+| 条件 | 响应 |
+|------|------|
+| `id` 非空且可作主键 | 否则 400 |
+| `overall` 为 `pass` / `fail` / `error` / `aborted` | 否则 400 |
+| `channel_index` ≥ 0 | 否则 400 |
+| `started_at` / `finished_at` 非空 | 否则 400 |
+| `agent_id` 在 `agents` 中不存在 | 400（不要插悬挂 FK） |
+| `sequence_template_id` 指向不存在模板 | 当作 `null` 写入，不 400 |
+| 同 `id` 已存在 | **200** + 已有完整资源（不覆盖） |
+| 写入成功 | **201** + 完整资源（含 steps、context） |
+
+`context` 可省略，视为全空默认。`steps` 可空数组（例如 worker panic）。机台无对应 GET/代理页。
+
+**GET** `/api/test-runs` · 使用方：**中心 WebUI**
+
+Query：`agent_id` `overall` `sn` `from` `to` `limit` `offset`
+
+| 参数 | 含义 |
+|------|------|
+| `agent_id` | 精确 |
+| `overall` | 精确 |
+| `sn` | 精确匹配 `test_run_context.sn`；空参数忽略，不匹配空串 |
+| `from` | `finished_at` ≥ 此字符串；调用方应传 UTC RFC3339（与库内格式一致，按 TEXT 比较） |
+| `to` | `finished_at` ≤ 此字符串；同上 |
+| `limit` | 默认 100，最大 200 |
+| `offset` | 默认 0 |
+
+排序：`finished_at DESC, id DESC`。列表项不含 `steps`，含 context 摘要（`sn` / `work_order` / `hostname`）：
+
+```json
+{
+  "items": [
+    {
+      "id": "…",
+      "agent_id": "…",
+      "channel_index": 0,
+      "channel_name": "CH0",
+      "sequence_template_id": 12,
+      "overall": "pass",
+      "elapsed_ms": 1234,
+      "started_at": "…",
+      "finished_at": "…",
+      "sn": "SN001",
+      "work_order": "WO-1",
+      "hostname": "ATE01"
+    }
+  ],
+  "total": 1
+}
+```
+
+`total` 为过滤后的总行数，供分页。
+
+**GET** `/api/test-runs/{id}` · 使用方：**中心 WebUI**
+
+返回 POST 成功时的完整资源（run + context + 按 `position` 排序的 steps）。不存在 → 404。
 
 ---
 
