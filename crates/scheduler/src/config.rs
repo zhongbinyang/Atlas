@@ -12,7 +12,7 @@ impl SchedulerConfig {
             port: std::env::var("SCHEDULER_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(26630),
+                .unwrap_or(9080),
             database_url: std::env::var("SCHEDULER_DATABASE_URL").unwrap_or_else(|_| {
                 "postgres://postgres:postgres@127.0.0.1:5432/atlas?sslmode=disable".into()
             }),
@@ -21,5 +21,30 @@ impl SchedulerConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_port_is_9080() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("SCHEDULER_PORT");
+        let cfg = SchedulerConfig::load();
+        assert_eq!(cfg.port, 9080);
+    }
+
+    #[test]
+    fn env_port_overrides_default() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        std::env::set_var("SCHEDULER_PORT", "18080");
+        let cfg = SchedulerConfig::load();
+        assert_eq!(cfg.port, 18080);
+        std::env::remove_var("SCHEDULER_PORT");
     }
 }
