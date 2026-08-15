@@ -11,11 +11,11 @@ WebUI 统一为 **Vite + React + Ant Design + ECharts**（两端源码独立）�
 ```powershell
 cd frontend/scheduler
 npm install
-npm run dev    # http://127.0.0.1:9080，代理 /api -> 9080
+npm run dev    # http://127.0.0.1:5173，代理 /api -> 9080
 
 cd frontend/agent
 npm install
-npm run dev    # http://127.0.0.1:9090，代理 /api -> 9090
+npm run dev    # http://127.0.0.1:5174，代理 /api -> 9090
 ```
 
 发布前构建并同步到 Rust 静态目录：
