@@ -49,4 +49,18 @@ describe('schedulerApi', () => {
       }),
     );
   });
+
+  it('posts a device profile under the agent id', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ id: 'p1' }), { status: 200 }));
+    await schedulerApi.createDeviceProfile('agent 1', {
+      name: 'Device',
+      setting: { A: { B: 1 } },
+      source_filename: 'Device_CFG.ini',
+      activate: true,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/agents/agent%201/device-profiles',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
 });

@@ -97,3 +97,20 @@ export type CreateSpecTemplateRequest = {
   source_filename?: string;
   created_by_agent_id?: string;
 };
+
+export type AgentConfigProfile = {
+  id: string;
+  agent_id: string;
+  name: string;
+  setting: Record<string, unknown>;
+  is_active: boolean;
+  source_filename: string;
+  updated_at?: string;
+};
+
+export type CreateProfileBody = {
+  name: string;
+  setting: Record<string, unknown>;
+  source_filename: string;
+  activate: boolean;
+};

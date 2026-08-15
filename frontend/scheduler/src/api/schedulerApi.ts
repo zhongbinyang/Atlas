@@ -1,8 +1,10 @@
 import { apiRequest } from './client';
 import type {
   Agent,
+  AgentConfigProfile,
   AgentConfigSummary,
   AgentConfigTemplate,
+  CreateProfileBody,
   CreateSpecTemplateRequest,
   GeneralTemplate,
   SequenceTemplate,
@@ -80,4 +82,32 @@ export const schedulerApi = {
     apiRequest<void>(`/api/spec-templates/${encodeURIComponent(String(id))}`, {
       method: 'DELETE',
     }),
+  listDeviceProfiles: (agentId: string) =>
+    apiRequest<AgentConfigProfile[]>(
+      `/api/agents/${encodeURIComponent(agentId)}/device-profiles`,
+    ),
+  createDeviceProfile: (agentId: string, body: CreateProfileBody) =>
+    apiRequest<AgentConfigProfile>(
+      `/api/agents/${encodeURIComponent(agentId)}/device-profiles`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  activateDeviceProfile: (agentId: string, profileId: string) =>
+    apiRequest<unknown>(
+      `/api/agents/${encodeURIComponent(agentId)}/device-profiles/${encodeURIComponent(profileId)}/activate`,
+      { method: 'POST' },
+    ),
+  listCalibrationProfiles: (agentId: string) =>
+    apiRequest<AgentConfigProfile[]>(
+      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles`,
+    ),
+  createCalibrationProfile: (agentId: string, body: CreateProfileBody) =>
+    apiRequest<AgentConfigProfile>(
+      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  activateCalibrationProfile: (agentId: string, profileId: string) =>
+    apiRequest<unknown>(
+      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}/activate`,
+      { method: 'POST' },
+    ),
 };
