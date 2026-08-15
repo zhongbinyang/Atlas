@@ -21,6 +21,8 @@ vi.mock('./api/schedulerApi', () => ({
     listUnits: vi.fn(),
     listViTemplates: vi.fn(),
     saveUnits: vi.fn(),
+    listTestRuns: vi.fn(),
+    getTestRun: vi.fn(),
   },
 }));
 
@@ -182,6 +184,45 @@ describe('Scheduler App routes', () => {
     vi.mocked(schedulerApi.deleteSequenceTemplate).mockResolvedValue(undefined);
     vi.mocked(schedulerApi.listUnits).mockResolvedValue(units);
     vi.mocked(schedulerApi.saveUnits).mockResolvedValue({ units });
+    vi.mocked(schedulerApi.listTestRuns).mockResolvedValue({
+      items: [{
+        id: 'run-1',
+        agent_id: 'agent-1',
+        channel_index: 0,
+        channel_name: 'CH0',
+        sequence_template_id: 12,
+        overall: 'pass',
+        elapsed_ms: 12,
+        started_at: '2026-08-15T14:00:00+00:00',
+        finished_at: '2026-08-15T14:01:00+00:00',
+        sn: 'SN001',
+        work_order: 'WO-1',
+        hostname: 'ATE01',
+      }],
+      total: 1,
+    });
+    vi.mocked(schedulerApi.getTestRun).mockResolvedValue({
+      id: 'run-1',
+      agent_id: 'agent-1',
+      channel_index: 0,
+      channel_name: 'CH0',
+      sequence_template_id: 12,
+      run_generation: 1,
+      overall: 'pass',
+      stopped: false,
+      failed_at: null,
+      elapsed_ms: 12,
+      started_at: '2026-08-15T14:00:00+00:00',
+      finished_at: '2026-08-15T14:01:00+00:00',
+      created_at: '2026-08-15T14:01:01+00:00',
+      context: { sn: '', work_order: '', hostname: 'ATE01' },
+      steps: [{
+        position: 1, queue_item_id: 'q-1', template_id: '12', template_source: 'labview',
+        name: 'TX_AP', kind: 'labview', ok: true, status: 'pass', elapsed_ms: 8,
+        measured: { TX_AP: 1.2 }, limits: [], result: {}, error: null,
+        spec_template_id: null, spec_section: 'FMT_HT',
+      }],
+    });
   });
 
   afterEach(async () => {
@@ -342,4 +383,25 @@ describe('Scheduler App routes', () => {
       ]);
     });
   });
+
+  it('lists test runs and opens a detail with empty SN as dash', async () => {
+    rendered = await renderAt('#/runs');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('运行');
+      expect(document.body.textContent).toContain('SN001');
+      expect(document.body.textContent).toContain('CH0');
+    });
+    const row = Array.from(document.querySelectorAll('tr')).find((el) =>
+      (el.textContent || '').includes('SN001'),
+    );
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      expect(schedulerApi.getTestRun).toHaveBeenCalledWith('run-1');
+      expect(document.body.textContent).toContain('TX_AP');
+      expect(document.body.textContent).toContain('—');
+    });
+  });
 });
+

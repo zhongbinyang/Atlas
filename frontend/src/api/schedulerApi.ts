@@ -10,9 +10,30 @@ import type {
   SequenceTemplate,
   SpecTemplateDetail,
   SpecTemplateSummary,
+  TestRunDetail,
+  TestRunListPage,
+  TestRunListParams,
   UnitRow,
   ViTemplate,
 } from './types';
+
+const withTestRunListQuery = (params: TestRunListParams = {}): string => {
+  const search = new URLSearchParams();
+  const setUnlessEmpty = (key: 'agent_id' | 'overall' | 'sn' | 'from' | 'to', value?: string) => {
+    if (value && value.trim() !== '') {
+      search.set(key, value);
+    }
+  };
+  setUnlessEmpty('agent_id', params.agent_id);
+  setUnlessEmpty('overall', params.overall);
+  setUnlessEmpty('sn', params.sn);
+  setUnlessEmpty('from', params.from);
+  setUnlessEmpty('to', params.to);
+  if (params.limit != null) search.set('limit', String(params.limit));
+  if (params.offset != null) search.set('offset', String(params.offset));
+  const qs = search.toString().replace(/\+/g, '%20');
+  return qs ? `/api/test-runs?${qs}` : '/api/test-runs';
+};
 
 const withAgentFilter = (path: string, agentId?: string): string =>
   path + (agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '');
@@ -110,4 +131,8 @@ export const schedulerApi = {
       `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}/activate`,
       { method: 'POST' },
     ),
+  listTestRuns: (params: TestRunListParams = {}) =>
+    apiRequest<TestRunListPage>(withTestRunListQuery(params)),
+  getTestRun: (id: string) =>
+    apiRequest<TestRunDetail>(`/api/test-runs/${encodeURIComponent(id)}`),
 };

@@ -114,3 +114,82 @@ export type CreateProfileBody = {
   source_filename: string;
   activate: boolean;
 };
+
+export type TestRunListItem = {
+  id: string;
+  agent_id: string | null;
+  channel_index: number;
+  channel_name: string;
+  sequence_template_id: number | null;
+  overall: string;
+  elapsed_ms: number;
+  started_at: string;
+  finished_at: string;
+  sn: string;
+  work_order: string;
+  hostname: string;
+};
+
+export type TestRunListPage = {
+  items: TestRunListItem[];
+  total: number;
+};
+
+export type TestRunListParams = {
+  agent_id?: string;
+  overall?: string;
+  sn?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type TestRunContext = {
+  sn: string;
+  work_order: string;
+  hostname: string;
+  product_pn?: string;
+  corner?: string;
+  config_revision?: number | null;
+  device_profile_id?: string;
+  device_profile_name?: string;
+  calibration_profile_id?: string;
+  calibration_profile_name?: string;
+};
+
+export type TestRunStep = {
+  position: number;
+  queue_item_id: string;
+  template_id: string;
+  template_source: string;
+  name: string;
+  kind: string;
+  ok: boolean;
+  status: string;
+  elapsed_ms: number;
+  measured: unknown;
+  limits: unknown;
+  result: unknown;
+  error: string | null;
+  spec_template_id: number | null;
+  spec_section: string;
+};
+
+export type TestRunDetail = {
+  id: string;
+  agent_id: string | null;
+  channel_index: number;
+  channel_name: string;
+  sequence_template_id: number | null;
+  run_generation: number;
+  overall: string;
+  stopped: boolean;
+  failed_at: number | null;
+  elapsed_ms: number;
+  started_at: string;
+  finished_at: string;
+  created_at: string;
+  context: TestRunContext;
+  steps: TestRunStep[];
+};

@@ -6,6 +6,7 @@ import { AgentDetailPage } from './pages/AgentDetailPage';
 import { ConfigsPage } from './pages/ConfigsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
 import { MachinesPage } from './pages/MachinesPage';
+import { RunsPage } from './pages/RunsPage';
 import { SequencesPage } from './pages/SequencesPage';
 import { SpecsPage } from './pages/SpecsPage';
 import { UnitsPage } from './pages/UnitsPage';
@@ -21,6 +22,8 @@ export function App() {
               <Route path="/agents/:id" element={<AgentDetailPage />} />
               <Route path="/functions" element={<FunctionsPage />} />
               <Route path="/sequences" element={<SequencesPage />} />
+              <Route path="/runs" element={<RunsPage />} />
+              <Route path="/runs/:id" element={<RunsPage />} />
               <Route path="/configs" element={<ConfigsPage />} />
               <Route path="/specs" element={<SpecsPage />} />
               <Route path="/units" element={<UnitsPage />} />

@@ -63,4 +63,16 @@ describe('schedulerApi', () => {
       expect.objectContaining({ method: 'POST' }),
     );
   });
+
+  it('lists test runs with query string', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ items: [], total: 0 }), { status: 200 }),
+    );
+    await schedulerApi.listTestRuns({ agent_id: 'a 1', overall: 'pass', sn: 'S N' });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/test-runs?agent_id=a%201&overall=pass&sn=S%20N',
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+  });
 });
+
