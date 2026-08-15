@@ -8,18 +8,21 @@ import {
   Input,
   Modal,
   Space,
-  Spin,
   Table,
   Typography,
   Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
-import type { SpecTemplateDetail, SpecTemplateSummary } from '../api/types';
+import type { SpecTemplateSummary } from '../api/types';
+import { HelpLabel, HelpTip } from '../components/HelpTip';
+import { PageHeader } from '../components/PageHeader';
 import { describeApiError } from '../lib/formatError';
 import { formatSpecParseError, parseSpecIni } from '../lib/specIni';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
+import { SPEC_HELP } from './specHelp';
 
 type UploadPreview = {
   iniText: string;
@@ -30,27 +33,7 @@ type UploadPreview = {
   warnings: string[];
 };
 
-type SectionRow = {
-  key: string;
-  section: string;
-  metricCount: number;
-};
-
-type MetricRow = {
-  key: string;
-  metric: string;
-  min: string;
-  max: string;
-};
-
 const PREVIEW_SECTION_LIMIT = 8;
-
-function formatBound(value: number | null | undefined): string {
-  if (value === null || value === undefined) {
-    return '∞';
-  }
-  return String(value);
-}
 
 function countMetrics(sections: Record<string, Record<string, unknown>>): number {
   return Object.values(sections).reduce((sum, metrics) => sum + Object.keys(metrics).length, 0);
@@ -69,14 +52,12 @@ function readIniFile(file: File, onSuccess: (text: string) => void, onError: (me
 
 export function SpecsPage() {
   const { message, modal } = AntApp.useApp();
+  const navigate = useNavigate();
   const [templates, setTemplates] = useState<SpecTemplateSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detail, setDetail] = useState<SpecTemplateDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [form] = Form.useForm<{ name: string; product_pn: string; note: string }>();
   const uploadName = Form.useWatch('name', form);
 
@@ -158,27 +139,6 @@ export function SpecsPage() {
     }
   };
 
-  const closeDetail = () => {
-    setDetailOpen(false);
-    setDetail(null);
-    setDetailLoading(false);
-  };
-
-  const openDetail = async (row: SpecTemplateSummary) => {
-    setDetailOpen(true);
-    setDetail(null);
-    setDetailLoading(true);
-    try {
-      const data = await schedulerApi.getSpecTemplate(row.id);
-      setDetail(data);
-    } catch (error) {
-      message.error('加载详情失败：' + describeApiError(error));
-      closeDetail();
-    } finally {
-      setDetailLoading(false);
-    }
-  };
-
   const deleteTemplate = (template: SpecTemplateSummary) => {
     const label = template.name || String(template.id);
     modal.confirm({
@@ -221,8 +181,8 @@ export function SpecsPage() {
         fixed: 'right',
         render: (_, row) => (
           <Space>
-            <Button size="small" type="link" onClick={() => void openDetail(row)}>
-              查看
+            <Button size="small" type="link" onClick={() => navigate(`/specs/${row.id}`)}>
+              编辑
             </Button>
             <Button size="small" danger onClick={() => deleteTemplate(row)}>
               删除
@@ -231,33 +191,8 @@ export function SpecsPage() {
         ),
       },
     ],
-    [],
+    [navigate],
   );
-
-  const detailSections = useMemo<SectionRow[]>(() => {
-    const sections = detail?.spec?.sections ?? {};
-    return Object.entries(sections).map(([section, metrics]) => ({
-      key: section,
-      section,
-      metricCount: Object.keys(metrics).length,
-    }));
-  }, [detail]);
-
-  const detailMetrics = useMemo<MetricRow[]>(() => {
-    const sections = detail?.spec?.sections ?? {};
-    const rows: MetricRow[] = [];
-    for (const [section, metrics] of Object.entries(sections)) {
-      for (const [metric, bound] of Object.entries(metrics)) {
-        rows.push({
-          key: `${section}:${metric}`,
-          metric: `${section} · ${metric}`,
-          min: formatBound(bound.min),
-          max: formatBound(bound.max),
-        });
-      }
-    }
-    return rows;
-  }, [detail]);
 
   const previewSectionNames = uploadPreview?.sectionNames ?? [];
   const previewSectionOverflow =
@@ -267,30 +202,32 @@ export function SpecsPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          Spec 模板
-        </Typography.Title>
-        <Space>
-          <Upload
-            accept=".ini,text/plain"
-            showUploadList={false}
-            beforeUpload={(file) => {
-              readIniFile(
-                file,
-                (text) => openUploadPreview(text, file.name),
-                (errorText) => message.error(errorText),
-              );
-              return false;
-            }}
-          >
-            <Button type="primary">上传 .ini</Button>
-          </Upload>
-          <Button onClick={() => void load()} loading={loading}>
-            刷新
-          </Button>
-        </Space>
-      </Space>
+      <PageHeader
+        title={<HelpLabel label="Spec 模板" text={SPEC_HELP.page} />}
+        extra={
+          <Space>
+            <Button onClick={() => navigate('/specs/new')}>新建</Button>
+            <Upload
+              accept=".ini,text/plain"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                readIniFile(
+                  file,
+                  (text) => openUploadPreview(text, file.name),
+                  (errorText) => message.error(errorText),
+                );
+                return false;
+              }}
+            >
+              <Button type="primary">导入 INI</Button>
+            </Upload>
+            <HelpTip text={SPEC_HELP.iniImport} />
+            <Button onClick={() => void load()} loading={loading}>
+              刷新
+            </Button>
+          </Space>
+        }
+      />
 
       <Card>
         <Table
@@ -298,7 +235,7 @@ export function SpecsPage() {
           columns={columns}
           dataSource={templates}
           loading={loading}
-          locale={{ emptyText: '暂无 Spec 模板（请上传 *_Spec.ini）' }}
+          locale={{ emptyText: '暂无 Spec 模板，可新建或导入 INI' }}
           pagination={DEFAULT_TABLE_PAGINATION}
           scroll={{ x: true }}
         />
@@ -370,68 +307,6 @@ export function SpecsPage() {
             </Form>
           </Space>
         ) : null}
-      </Modal>
-
-      <Modal
-        title={detail ? `Spec 模板 · ${detail.name}` : 'Spec 模板详情'}
-        open={detailOpen}
-        onCancel={closeDetail}
-        footer={null}
-        width={900}
-        destroyOnClose
-      >
-        <Spin spinning={detailLoading}>
-          {detail ? (
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              <Descriptions size="small" column={2} bordered>
-                <Descriptions.Item label="ID">{detail.id}</Descriptions.Item>
-                <Descriptions.Item label="产品 PN">{detail.product_pn || '—'}</Descriptions.Item>
-                <Descriptions.Item label="来源文件">{detail.source_filename || '—'}</Descriptions.Item>
-                <Descriptions.Item label="Sections">{detail.section_count}</Descriptions.Item>
-                <Descriptions.Item label="创建机台">
-                  {detail.created_by_agent_name || '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="更新时间">
-                  {formatTimestamp(detail.updated_at)}
-                </Descriptions.Item>
-                <Descriptions.Item label="备注" span={2}>
-                  {detail.note || '—'}
-                </Descriptions.Item>
-              </Descriptions>
-              <Typography.Title level={5}>Sections</Typography.Title>
-              <Table
-                size="small"
-                pagination={DEFAULT_TABLE_PAGINATION}
-                rowKey="key"
-                dataSource={detailSections}
-                columns={[
-                  { title: 'Section', dataIndex: 'section', sorter: textSorter('section') },
-                  {
-                    title: '指标数',
-                    dataIndex: 'metricCount',
-                    width: 96,
-                    sorter: (a, b) => a.metricCount - b.metricCount,
-                  },
-                ]}
-              />
-              <Typography.Title level={5}>指标上下限</Typography.Title>
-              <Table
-                size="small"
-                pagination={DEFAULT_TABLE_PAGINATION}
-                rowKey="key"
-                dataSource={detailMetrics}
-                scroll={{ y: 360 }}
-                columns={[
-                  { title: 'Section · 指标', dataIndex: 'metric' },
-                  { title: 'LL', dataIndex: 'min', width: 120 },
-                  { title: 'UL', dataIndex: 'max', width: 120 },
-                ]}
-              />
-            </Space>
-          ) : !detailLoading ? (
-            <Typography.Text type="secondary">暂无详情</Typography.Text>
-          ) : null}
-        </Spin>
       </Modal>
     </Space>
   );

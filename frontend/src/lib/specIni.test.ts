@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parseBoundToken, parseSpecIni, specDocumentToJson } from './specIni';
+import {
+  parseBoundToken,
+  parseSpecIni,
+  prepareSpecFromRows,
+  specDocumentToJson,
+  specToEditableRows,
+} from './specIni';
 
 describe('parseSpecIni', () => {
   it('parses_ul_ll_pairs', () => {
@@ -54,6 +60,51 @@ describe('specDocumentToJson', () => {
     expect(json.version).toBe(1);
     expect(json.sections['S']['JitterRMS'].min).toBeNull();
     expect(json.sections['S']['JitterRMS'].max).toBeNull();
+  });
+});
+
+describe('spec editable rows', () => {
+  it('roundtrips spec JSON through editable rows', () => {
+    const spec = {
+      version: 1 as const,
+      sections: {
+        FMT_HT: { TX_AP: { min: -2, max: 4 } },
+      },
+    };
+    const rows = specToEditableRows(spec);
+    expect(rows).toEqual([
+      expect.objectContaining({ section: 'FMT_HT', metric: 'TX_AP', min: '-2', max: '4' }),
+    ]);
+    expect(prepareSpecFromRows(rows)).toEqual({
+      ok: true,
+      spec: {
+        version: 1,
+        sections: { FMT_HT: { TX_AP: { min: -2, max: 4 } } },
+      },
+    });
+  });
+
+  it('treats empty and infinity tokens as unbounded', () => {
+    expect(
+      prepareSpecFromRows([
+        { _key: '1', section: 'S', metric: 'Jitter', min: '', max: 'inf' },
+      ]),
+    ).toEqual({
+      ok: true,
+      spec: { version: 1, sections: { S: { Jitter: { min: null, max: null } } } },
+    });
+  });
+
+  it('rejects duplicate section+metric and incomplete rows', () => {
+    expect(
+      prepareSpecFromRows([
+        { _key: '1', section: 'A', metric: 'M', min: '0', max: '1' },
+        { _key: '2', section: 'A', metric: 'M', min: '2', max: '3' },
+      ]),
+    ).toEqual({ ok: false, error: '重复项：[A] M' });
+    expect(
+      prepareSpecFromRows([{ _key: '1', section: 'A', metric: '', min: '0', max: '1' }]),
+    ).toEqual({ ok: false, error: 'Section 和指标必须同时填写' });
   });
 });
 

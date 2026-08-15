@@ -16,10 +16,29 @@ CREATE TABLE IF NOT EXISTS test_runs (
 
 CREATE INDEX IF NOT EXISTS idx_test_runs_finished
   ON test_runs (finished_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_test_runs_agent_finished
-  ON test_runs (agent_id, finished_at DESC);
 CREATE INDEX IF NOT EXISTS idx_test_runs_overall_finished
   ON test_runs (overall, finished_at DESC);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'test_runs'
+      AND column_name = 'agent_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_test_runs_agent_finished
+      ON test_runs (agent_id, finished_at DESC);
+  ELSIF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'test_runs'
+      AND column_name = 'station_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_test_runs_station_finished
+      ON test_runs (station_id, finished_at DESC);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS test_run_context (
   test_run_id TEXT PRIMARY KEY REFERENCES test_runs(id) ON DELETE CASCADE,

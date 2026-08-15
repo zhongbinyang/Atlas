@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
+import { PageHeader } from '../components/PageHeader';
 import {
   agentStatus,
   getAgentTelemetry,
@@ -119,14 +120,15 @@ export function MachinesPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          机台
-        </Typography.Title>
-        <Button onClick={() => void load(true)} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title="机台"
+        description="查看各机台在线状态与资源占用。"
+        extra={
+          <Button onClick={() => void load(true)} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       {loadError ? (
         <Alert
@@ -244,6 +246,17 @@ export function MachinesPage() {
                     <Typography.Text>CPU {formatPercent(agent.cpu_percent)}</Typography.Text>
                     <Typography.Text>内存 {formatPercent(agent.memory_percent)}</Typography.Text>
                   </Space>
+                  <Button
+                    size="small"
+                    type="link"
+                    style={{ paddingInline: 0 }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      navigate('/agents/' + encodeURIComponent(agent.id));
+                    }}
+                  >
+                    查看
+                  </Button>
                 </Space>
               </Card>
             </Col>

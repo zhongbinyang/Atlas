@@ -90,12 +90,21 @@ export type SpecTemplateDetail = {
 };
 
 export type CreateSpecTemplateRequest = {
-  ini_text: string;
+  ini_text?: string;
+  spec?: SpecTemplateDetail['spec'];
   name?: string;
   product_pn?: string;
   note?: string;
   source_filename?: string;
   created_by_agent_id?: string;
+};
+
+export type UpdateSpecTemplateRequest = {
+  name: string;
+  product_pn?: string;
+  note?: string;
+  source_filename?: string;
+  spec: SpecTemplateDetail['spec'];
 };
 
 export type AgentConfigProfile = {
@@ -113,6 +122,12 @@ export type CreateProfileBody = {
   setting: Record<string, unknown>;
   source_filename: string;
   activate: boolean;
+};
+
+export type UpdateProfileBody = {
+  name: string;
+  setting: Record<string, unknown>;
+  source_filename: string;
 };
 
 export type TestRunListItem = {

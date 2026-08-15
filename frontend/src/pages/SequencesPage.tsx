@@ -3,6 +3,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { SequenceTemplate } from '../api/types';
+import { PageHeader } from '../components/PageHeader';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
 
 export function SequencesPage() {
@@ -73,6 +74,8 @@ export function SequencesPage() {
       },
       {
         title: '操作',
+        width: 80,
+        fixed: 'right',
         render: (_, record) => (
           <Button danger size="small" onClick={() => deleteTemplate(record)}>
             删除
@@ -85,14 +88,15 @@ export function SequencesPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          序列模板
-        </Typography.Title>
-        <Button onClick={() => void load()} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title="序列模板"
+        description="机台上报并保存在中心的序列模板。"
+        extra={
+          <Button onClick={() => void load()} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
         <Table

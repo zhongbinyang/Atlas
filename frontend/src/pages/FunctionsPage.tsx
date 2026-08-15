@@ -1,20 +1,14 @@
-import { App as AntApp, Button, Card, Select, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { Agent, GeneralTemplate, ViTemplate } from '../api/types';
+import { PageHeader } from '../components/PageHeader';
 import { DEFAULT_TABLE_PAGINATION } from '../utils/tableHelpers';
 
-type SourceFilter = 'all' | 'labview' | 'general';
 type FunctionTemplate =
   | (ViTemplate & { _source: 'labview' })
   | (GeneralTemplate & { _source: 'general' });
-
-const sourceOptions: Array<{ label: string; value: SourceFilter }> = [
-  { label: '全部', value: 'all' },
-  { label: 'VI', value: 'labview' },
-  { label: '通用', value: 'general' },
-];
 
 function sourceLabel(source: FunctionTemplate['_source']): string {
   return source === 'general' ? '通用' : 'VI';
@@ -66,7 +60,6 @@ export function FunctionsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [templates, setTemplates] = useState<FunctionTemplate[]>([]);
   const [agentId, setAgentId] = useState('');
-  const [source, setSource] = useState<SourceFilter>('all');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -82,30 +75,22 @@ export function FunctionsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const requests: Array<Promise<FunctionTemplate[]>> = [];
-      if (source === 'all' || source === 'labview') {
-        requests.push(
-          schedulerApi
-            .listViTemplates(agentId || undefined)
-            .then((items) => items.map((item) => ({ ...item, _source: 'labview' as const }))),
-        );
-      }
-      if (source === 'all' || source === 'general') {
-        requests.push(
-          schedulerApi
-            .listGeneralTemplates(agentId || undefined)
-            .then((items) => items.map((item) => ({ ...item, _source: 'general' as const }))),
-        );
-      }
-      const groups = await Promise.all(requests);
-      setTemplates(groups.flat());
+      const [viItems, generalItems] = await Promise.all([
+        schedulerApi
+          .listViTemplates(agentId || undefined)
+          .then((items) => items.map((item) => ({ ...item, _source: 'labview' as const }))),
+        schedulerApi
+          .listGeneralTemplates(agentId || undefined)
+          .then((items) => items.map((item) => ({ ...item, _source: 'general' as const }))),
+      ]);
+      setTemplates([...viItems, ...generalItems]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       message.error('加载功能模板失败：' + detail);
     } finally {
       setLoading(false);
     }
-  }, [agentId, message, source]);
+  }, [agentId, message]);
 
   useEffect(() => {
     void load();
@@ -160,6 +145,8 @@ export function FunctionsPage() {
       { title: '入参', dataIndex: 'inputs', render: inputsPreview },
       {
         title: '操作',
+        width: 80,
+        fixed: 'right',
         render: (_, record) => (
           <Button danger size="small" onClick={() => deleteTemplate(record)}>
             删除
@@ -175,59 +162,66 @@ export function FunctionsPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          已注册功能
-        </Typography.Title>
-        <Button onClick={() => void load()} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title="已注册功能"
+        description="中心已注册的 VI 与通用功能模板。"
+        extra={
+          <Button onClick={() => void load()} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
-        <Space wrap>
-          <Typography.Text>机台筛选</Typography.Text>
-          <Select
-            value={agentId}
-            onChange={setAgentId}
-            options={[
-              { label: '全部', value: '' },
-              ...agents.map((agent) => ({ label: agent.name || agent.id, value: agent.id })),
+        <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+          <Space wrap>
+            <Typography.Text>机台筛选</Typography.Text>
+            <Select
+              value={agentId}
+              onChange={setAgentId}
+              options={[
+                { label: '全部', value: '' },
+                ...agents.map((agent) => ({ label: agent.name || agent.id, value: agent.id })),
+              ]}
+              style={{ width: 220 }}
+            />
+          </Space>
+          <Tabs
+            items={[
+              {
+                key: 'labview',
+                label: '中心VI功能',
+                children: (
+                  <Table
+                    rowKey={(record) => 'vi-' + String(record.id)}
+                    columns={columns}
+                    dataSource={viTemplates}
+                    loading={loading}
+                    locale={{ emptyText: '暂无已注册 VI 功能' }}
+                    pagination={DEFAULT_TABLE_PAGINATION}
+                    scroll={{ x: true }}
+                  />
+                ),
+              },
+              {
+                key: 'general',
+                label: '中心通用功能',
+                children: (
+                  <Table
+                    rowKey={(record) => 'general-' + String(record.id)}
+                    columns={columns}
+                    dataSource={generalTemplates}
+                    loading={loading}
+                    locale={{ emptyText: '暂无已注册通用功能' }}
+                    pagination={DEFAULT_TABLE_PAGINATION}
+                    scroll={{ x: true }}
+                  />
+                ),
+              },
             ]}
-            style={{ width: 220 }}
           />
-          <Typography.Text>来源筛选</Typography.Text>
-          <Select value={source} onChange={setSource} options={sourceOptions} style={{ width: 140 }} />
         </Space>
       </Card>
-
-      {source !== 'general' && (
-        <Card title="中心VI功能">
-          <Table
-            rowKey={(record) => 'vi-' + String(record.id)}
-            columns={columns}
-            dataSource={viTemplates}
-            loading={loading}
-            locale={{ emptyText: '暂无已注册 VI 功能' }}
-            pagination={DEFAULT_TABLE_PAGINATION}
-            scroll={{ x: true }}
-          />
-        </Card>
-      )}
-
-      {source !== 'labview' && (
-        <Card title="中心通用功能">
-          <Table
-            rowKey={(record) => 'general-' + String(record.id)}
-            columns={columns}
-            dataSource={generalTemplates}
-            loading={loading}
-            locale={{ emptyText: '暂无已注册通用功能' }}
-            pagination={DEFAULT_TABLE_PAGINATION}
-            scroll={{ x: true }}
-          />
-        </Card>
-      )}
     </Space>
   );
 }

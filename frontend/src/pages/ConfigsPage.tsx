@@ -9,113 +9,33 @@ import {
   Table,
   Tabs,
   Tag,
-  Typography,
-  Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
-import type { AgentConfigProfile, AgentConfigSummary, AgentConfigTemplate } from '../api/types';
-import { textToSettingJson } from '../lib/deviceCfgIni';
+import type { AgentConfigSummary, AgentConfigTemplate } from '../api/types';
+import { HelpLabel } from '../components/HelpTip';
+import { PageHeader } from '../components/PageHeader';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
+import { CONFIG_HELP } from './configHelp';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
 
-function ProfileImportBar({
-  agentId,
-  kind,
-  onDone,
-}: {
-  agentId: string;
-  kind: 'device' | 'calibration';
-  onDone: () => Promise<void>;
-}) {
-  const { message } = AntApp.useApp();
-  const create =
-    kind === 'device' ? schedulerApi.createDeviceProfile : schedulerApi.createCalibrationProfile;
-  const label = kind === 'device' ? '设备' : '校验';
-  return (
-    <Upload
-      accept=".ini,.toml,text/plain"
-      showUploadList={false}
-      beforeUpload={(file) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          void (async () => {
-            const text = String(reader.result || '');
-            const parsed = textToSettingJson(text, file.name);
-            const name = file.name.replace(/\.[^.]+$/, '') || label;
-            try {
-              await create(agentId, {
-                name,
-                setting: parsed.setting,
-                source_filename: file.name,
-                activate: true,
-              });
-              message.success(`已导入并启用${label}配置档 ${name}`);
-              await onDone();
-            } catch (error) {
-              message.error(`导入失败: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          })();
-        };
-        reader.readAsText(file);
-        return false;
-      }}
-    >
-      <Button>导入{label} INI</Button>
-    </Upload>
-  );
-}
-
 export function ConfigsPage() {
   const { message, modal } = AntApp.useApp();
+  const navigate = useNavigate();
   const [summaries, setSummaries] = useState<AgentConfigSummary[]>([]);
   const [templates, setTemplates] = useState<AgentConfigTemplate[]>([]);
   const [loading, setLoading] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detail, setDetail] = useState<AgentConfigSummary | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [templateDetailOpen, setTemplateDetailOpen] = useState(false);
   const [templateDetail, setTemplateDetail] = useState<Record<string, unknown> | null>(null);
   const [templateDetailLoading, setTemplateDetailLoading] = useState(false);
-  const [deviceProfiles, setDeviceProfiles] = useState<AgentConfigProfile[]>([]);
-  const [calibrationProfiles, setCalibrationProfiles] = useState<AgentConfigProfile[]>([]);
 
-  const reloadProfiles = async (agentId: string) => {
-    const [devices, cals] = await Promise.all([
-      schedulerApi.listDeviceProfiles(agentId),
-      schedulerApi.listCalibrationProfiles(agentId),
-    ]);
-    setDeviceProfiles(devices);
-    setCalibrationProfiles(cals);
-    return { devices, cals };
-  };
-
-  const patchDetailHeader = (
-    agentId: string,
-    summaryItems: AgentConfigSummary[],
-    devices: AgentConfigProfile[],
-    cals: AgentConfigProfile[],
-  ) => {
-    setDetail((prev) => {
-      if (!prev || prev.agent_id !== agentId) return prev;
-      const row = summaryItems.find((item) => item.agent_id === agentId);
-      const activeDevice = devices.find((profile) => profile.is_active);
-      const activeCal = cals.find((profile) => profile.is_active);
-      return {
-        ...prev,
-        active_device_name: row?.active_device_name ?? activeDevice?.name ?? prev.active_device_name,
-        active_calibration_name:
-          row?.active_calibration_name ?? activeCal?.name ?? prev.active_calibration_name,
-      };
-    });
-  };
-
-  const load = useCallback(async (): Promise<AgentConfigSummary[]> => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [summaryItems, templateItems] = await Promise.all([
@@ -124,75 +44,16 @@ export function ConfigsPage() {
       ]);
       setSummaries(summaryItems);
       setTemplates(templateItems);
-      return summaryItems;
     } catch (error) {
-      const detailText = error instanceof Error ? error.message : String(error);
-      message.error('加载机台配置失败：' + detailText);
-      return [];
+      message.error(`加载机台配置失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setLoading(false);
     }
   }, [message]);
 
-  const refreshProfilesAndDetail = async (agentId: string) => {
-    const { devices, cals } = await reloadProfiles(agentId);
-    const summaryItems = await load();
-    patchDetailHeader(agentId, summaryItems, devices, cals);
-  };
-
   useEffect(() => {
     void load();
   }, [load]);
-
-  const closeAgentDetail = () => {
-    setDetailOpen(false);
-    setDetail(null);
-    setDetailLoading(false);
-    setDeviceProfiles([]);
-    setCalibrationProfiles([]);
-  };
-
-  const openAgentDetail = async (row: AgentConfigSummary) => {
-    setDetail(row);
-    setDetailOpen(true);
-    setDetailLoading(true);
-    try {
-      const [settings, channels] = await Promise.all([
-        schedulerApi.getAgentSettings(row.agent_id),
-        schedulerApi.getAgentChannels(row.agent_id),
-      ]);
-      setDetail({ ...row, _settings: settings, _channels: channels } as AgentConfigSummary);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      message.error('加载详情失败：' + text);
-      closeAgentDetail();
-      return;
-    } finally {
-      setDetailLoading(false);
-    }
-    try {
-      await reloadProfiles(row.agent_id);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      message.error('加载配置档列表失败：' + text);
-    }
-  };
-
-  const activateProfile = async (kind: 'device' | 'calibration', profileId: string) => {
-    if (!detail) return;
-    try {
-      if (kind === 'device') {
-        await schedulerApi.activateDeviceProfile(detail.agent_id, profileId);
-      } else {
-        await schedulerApi.activateCalibrationProfile(detail.agent_id, profileId);
-      }
-      message.success(kind === 'device' ? '已启用设备配置档' : '已启用校验配置档');
-      await refreshProfilesAndDetail(detail.agent_id);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      message.error('启用失败：' + text);
-    }
-  };
 
   const closeTemplateDetail = () => {
     setTemplateDetailOpen(false);
@@ -208,8 +69,7 @@ export function ConfigsPage() {
       const data = await schedulerApi.getAgentConfigTemplate(row.id);
       setTemplateDetail(data);
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      message.error('加载模板详情失败：' + text);
+      message.error(`加载模板详情失败：${error instanceof Error ? error.message : String(error)}`);
       closeTemplateDetail();
     } finally {
       setTemplateDetailLoading(false);
@@ -230,8 +90,7 @@ export function ConfigsPage() {
           message.success('配置模板已删除');
           await load();
         } catch (error) {
-          const detailText = error instanceof Error ? error.message : String(error);
-          message.error('删除失败：' + detailText);
+          message.error(`删除失败：${error instanceof Error ? error.message : String(error)}`);
           throw error;
         }
       },
@@ -283,13 +142,13 @@ export function ConfigsPage() {
         width: 80,
         fixed: 'right',
         render: (_, row) => (
-          <Button size="small" type="link" onClick={() => void openAgentDetail(row)}>
-            查看
+          <Button size="small" type="link" onClick={() => navigate(`/configs/${row.agent_id}`)}>
+            编辑
           </Button>
         ),
       },
     ],
-    [],
+    [navigate],
   );
 
   const templateColumns = useMemo<ColumnsType<AgentConfigTemplate>>(
@@ -325,30 +184,25 @@ export function ConfigsPage() {
     [],
   );
 
-  const detailSettings = asRecord((detail as { _settings?: unknown } | null)?._settings);
-  const detailChannels = Array.isArray((detail as { _channels?: unknown } | null)?._channels)
-    ? ((detail as { _channels?: unknown[] })._channels as unknown[])
-    : [];
-
   const templateConfig = asRecord(templateDetail?.config);
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          机台配置
-        </Typography.Title>
-        <Button onClick={() => void load()} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title={<HelpLabel label="机台配置" text={CONFIG_HELP.page} />}
+        extra={
+          <Button onClick={() => void load()} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
         <Tabs
           items={[
             {
               key: 'agents',
-              label: '各机台当前配置',
+              label: <HelpLabel label="各机台当前配置" text={CONFIG_HELP.agentTab} />,
               children: (
                 <Table
                   rowKey={(row) => row.agent_id}
@@ -363,14 +217,14 @@ export function ConfigsPage() {
             },
             {
               key: 'templates',
-              label: '中心配置模板',
+              label: <HelpLabel label="中心配置模板" text={CONFIG_HELP.templateTab} />,
               children: (
                 <Table
                   rowKey={(row) => String(row.id)}
                   columns={templateColumns}
                   dataSource={templates}
                   loading={loading}
-                  locale={{ emptyText: '暂无配置模板（可在 Agent 配置页保存）' }}
+                  locale={{ emptyText: '暂无配置模板' }}
                   pagination={DEFAULT_TABLE_PAGINATION}
                   scroll={{ x: true }}
                 />
@@ -379,163 +233,6 @@ export function ConfigsPage() {
           ]}
         />
       </Card>
-
-      <Modal
-        title={detail ? `配置详情 · ${detail.agent_name}` : '配置详情'}
-        open={detailOpen}
-        onCancel={closeAgentDetail}
-        footer={null}
-        width={900}
-        destroyOnClose
-      >
-        <Spin spinning={detailLoading}>
-          {detail ? (
-            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              <Descriptions size="small" column={2} bordered>
-                <Descriptions.Item label="机台 ID">{detail.agent_id}</Descriptions.Item>
-                <Descriptions.Item label="IP">{detail.agent_ip}</Descriptions.Item>
-                <Descriptions.Item label="变量数">{detail.variable_count}</Descriptions.Item>
-                <Descriptions.Item label="通道数">{detail.channel_count}</Descriptions.Item>
-                <Descriptions.Item label="当前设备档">
-                  {detail.active_device_name || '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="当前校准档">
-                  {detail.active_calibration_name || '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="配置更新" span={2}>
-                  {formatTimestamp(detail.settings_updated_at)}
-                </Descriptions.Item>
-              </Descriptions>
-              <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-                <Typography.Title level={5} style={{ margin: 0 }}>
-                  设备配置档
-                </Typography.Title>
-                <ProfileImportBar
-                  agentId={detail.agent_id}
-                  kind="device"
-                  onDone={async () => {
-                    await refreshProfilesAndDetail(detail.agent_id);
-                  }}
-                />
-              </Space>
-              <Table
-                size="small"
-                pagination={false}
-                rowKey={(row) => row.id}
-                dataSource={deviceProfiles}
-                locale={{ emptyText: '暂无设备配置档' }}
-                columns={[
-                  { title: '名称', dataIndex: 'name' },
-                  {
-                    title: '状态',
-                    dataIndex: 'is_active',
-                    width: 80,
-                    render: (value: boolean) =>
-                      value ? <Tag color="success">启用中</Tag> : <Tag>未启用</Tag>,
-                  },
-                  { title: '来源文件', dataIndex: 'source_filename' },
-                  {
-                    title: '操作',
-                    width: 80,
-                    render: (_, row) => (
-                      <Button
-                        size="small"
-                        type="link"
-                        disabled={row.is_active}
-                        onClick={() => void activateProfile('device', row.id)}
-                      >
-                        启用
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-              <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-                <Typography.Title level={5} style={{ margin: 0 }}>
-                  校验配置档
-                </Typography.Title>
-                <ProfileImportBar
-                  agentId={detail.agent_id}
-                  kind="calibration"
-                  onDone={async () => {
-                    await refreshProfilesAndDetail(detail.agent_id);
-                  }}
-                />
-              </Space>
-              <Table
-                size="small"
-                pagination={false}
-                rowKey={(row) => row.id}
-                dataSource={calibrationProfiles}
-                locale={{ emptyText: '暂无校验配置档' }}
-                columns={[
-                  { title: '名称', dataIndex: 'name' },
-                  {
-                    title: '状态',
-                    dataIndex: 'is_active',
-                    width: 80,
-                    render: (value: boolean) =>
-                      value ? <Tag color="success">启用中</Tag> : <Tag>未启用</Tag>,
-                  },
-                  { title: '来源文件', dataIndex: 'source_filename' },
-                  {
-                    title: '操作',
-                    width: 80,
-                    render: (_, row) => (
-                      <Button
-                        size="small"
-                        type="link"
-                        disabled={row.is_active}
-                        onClick={() => void activateProfile('calibration', row.id)}
-                      >
-                        启用
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-              <Typography.Title level={5}>变量</Typography.Title>
-              <Table
-                size="small"
-                pagination={DEFAULT_TABLE_PAGINATION}
-                rowKey={(_, index) => String(index)}
-                dataSource={Array.isArray(detailSettings.variables) ? detailSettings.variables : []}
-                locale={{ emptyText: '暂无变量' }}
-                columns={[
-                  { title: '名称', dataIndex: 'name' },
-                  { title: '值', dataIndex: 'value' },
-                  { title: '说明', dataIndex: 'description' },
-                ]}
-              />
-              <Typography.Title level={5}>通道</Typography.Title>
-              <Table
-                size="small"
-                pagination={DEFAULT_TABLE_PAGINATION}
-                rowKey={(_, index) => String(index)}
-                dataSource={detailChannels}
-                locale={{ emptyText: '暂无通道' }}
-                columns={[
-                  { title: '#', dataIndex: 'channel_index', width: 64 },
-                  { title: '名称', dataIndex: 'name' },
-                  {
-                    title: '启用',
-                    dataIndex: 'enabled',
-                    width: 72,
-                    render: (value) => (value === false ? '否' : '是'),
-                  },
-                  {
-                    title: 'Overlay 键数',
-                    render: (_, row) => {
-                      const overlay = asRecord(asRecord(row).overlay);
-                      return Object.keys(overlay).length;
-                    },
-                  },
-                ]}
-              />
-            </Space>
-          ) : null}
-        </Spin>
-      </Modal>
 
       <Modal
         title={
@@ -584,4 +281,3 @@ export function ConfigsPage() {
     </Space>
   );
 }
-

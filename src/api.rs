@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::store::{
     parse_resources_json, parse_spec_metrics_json, Agent, AgentConfigSnapshot,
     AgentConfigTemplateEnriched,
-    GeneralTemplateEnriched, QueueReplaceError, SequenceTemplateEnriched, SequenceTemplateStep,
+    GeneralTemplateEnriched, QueueReplaceError,     SequenceTemplateEnriched, SequenceTemplateStep,
     SpecTemplateSummary, Store, ViRunQueueItem, ViRunQueueReplaceItem, ViTemplateEnriched,
+    DEFAULT_QUEUE_SECTION_TITLE, is_queue_section_marker,
     ViTemplatePatch,
 };
 use crate::test_runs::{
@@ -189,11 +190,11 @@ impl TryFrom<GeneralTemplateEnriched> for GeneralTemplateView {
 }
 
 fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTemplateStepView, String> {
-    let name = if step.template_source == "group" {
-        if step.title.trim().is_empty() {
-            "分组".to_string()
+    let name = if is_queue_section_marker(&step.template_source) {
+        if step.section_name.trim().is_empty() {
+            DEFAULT_QUEUE_SECTION_TITLE.to_string()
         } else {
-            step.title.clone()
+            step.section_name.clone()
         }
     } else {
         String::new()
@@ -337,7 +338,10 @@ pub struct SpecTemplateDetailView {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSpecTemplateRequest {
+    #[serde(default)]
     pub ini_text: String,
+    #[serde(default)]
+    pub spec: Option<serde_json::Value>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -347,6 +351,18 @@ pub struct CreateSpecTemplateRequest {
     #[serde(default)]
     pub source_filename: String,
     pub created_by_agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSpecTemplateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub product_pn: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub source_filename: String,
+    pub spec: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -482,7 +498,7 @@ pub struct ReplaceViRunQueueItem {
     pub limits: serde_json::Value,
     #[serde(default)]
     pub note: String,
-    /// Group title (`template_source=group`); ignored for steps.
+    /// Section name (`template_source=section`); ignored for steps.
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -586,9 +602,9 @@ fn db_error() -> (StatusCode, Json<ErrorBody>) {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
-        .route("/api/agents/register", post(register_agent))
-        .route("/api/agents", get(list_agents))
-        .route("/api/agents/{id}", get(get_agent))
+        .route("/api/stations/register", post(register_agent))
+        .route("/api/stations", get(list_agents))
+        .route("/api/stations/{id}", get(get_agent))
         .route(
             "/api/vi-templates",
             get(list_vi_templates).post(create_vi_template),
@@ -616,20 +632,20 @@ pub fn router(state: AppState) -> Router {
             get(get_sequence_template).delete(delete_sequence_template),
         )
         .route(
-            "/api/sequence-templates/{id}/load-to-agent",
+            "/api/sequence-templates/{id}/load-to-station",
             post(load_sequence_template_to_agent),
         )
-        .route("/api/agent-configs", get(list_agent_config_summaries))
+        .route("/api/station-configs", get(list_agent_config_summaries))
         .route(
-            "/api/agent-config-templates",
+            "/api/station-config-templates",
             get(list_agent_config_templates).post(create_agent_config_template),
         )
         .route(
-            "/api/agent-config-templates/{id}",
+            "/api/station-config-templates/{id}",
             get(get_agent_config_template).delete(delete_agent_config_template),
         )
         .route(
-            "/api/agent-config-templates/{id}/load-to-agent",
+            "/api/station-config-templates/{id}/load-to-station",
             post(load_agent_config_template_to_agent),
         )
         .route(
@@ -638,44 +654,46 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/spec-templates/{id}",
-            get(get_spec_template).delete(delete_spec_template),
+            get(get_spec_template)
+                .put(update_spec_template)
+                .delete(delete_spec_template),
         )
-        .route("/api/agent-configs/clone", post(clone_agent_config))
+        .route("/api/station-configs/clone", post(clone_agent_config))
         .route(
-            "/api/agents/{id}/run-queue",
+            "/api/stations/{id}/run-queue",
             get(get_vi_run_queue).put(put_vi_run_queue),
         )
         .route(
-            "/api/agents/{id}/settings",
+            "/api/stations/{id}/settings",
             get(get_agent_settings).put(put_agent_settings),
         )
         .route("/api/units", get(get_center_units).put(put_center_units))
         .route(
-            "/api/agents/{id}/device-profiles",
+            "/api/stations/{id}/device-profiles",
             get(list_device_profiles).post(create_device_profile),
         )
         .route(
-            "/api/agents/{id}/device-profiles/{profile_id}",
+            "/api/stations/{id}/device-profiles/{profile_id}",
             put(update_device_profile).delete(delete_device_profile),
         )
         .route(
-            "/api/agents/{id}/device-profiles/{profile_id}/activate",
+            "/api/stations/{id}/device-profiles/{profile_id}/activate",
             post(activate_device_profile),
         )
         .route(
-            "/api/agents/{id}/calibration-profiles",
+            "/api/stations/{id}/calibration-profiles",
             get(list_calibration_profiles).post(create_calibration_profile),
         )
         .route(
-            "/api/agents/{id}/calibration-profiles/{profile_id}",
+            "/api/stations/{id}/calibration-profiles/{profile_id}",
             put(update_calibration_profile).delete(delete_calibration_profile),
         )
         .route(
-            "/api/agents/{id}/calibration-profiles/{profile_id}/activate",
+            "/api/stations/{id}/calibration-profiles/{profile_id}/activate",
             post(activate_calibration_profile),
         )
         .route(
-            "/api/agents/{id}/channels",
+            "/api/stations/{id}/channels",
             get(list_agent_channels).put(put_agent_channels),
         )
         .route("/api/test-runs", get(list_test_runs).post(create_test_run))
@@ -2231,6 +2249,49 @@ fn spec_section_count(spec: &serde_json::Value) -> i64 {
         .unwrap_or(0)
 }
 
+fn empty_spec_json() -> serde_json::Value {
+    serde_json::json!({ "version": 1, "sections": {} })
+}
+
+fn validate_spec_json(spec: &serde_json::Value) -> Result<String, String> {
+    let obj = spec
+        .as_object()
+        .ok_or_else(|| "spec must be a JSON object".to_string())?;
+    let sections = obj
+        .get("sections")
+        .ok_or_else(|| "spec.sections is required".to_string())?;
+    let sections = sections
+        .as_object()
+        .ok_or_else(|| "spec.sections must be an object".to_string())?;
+    for (section, metrics) in sections {
+        let metrics = metrics.as_object().ok_or_else(|| {
+            format!("spec.sections[{section}] must be an object")
+        })?;
+        for (metric, bound) in metrics {
+            let bound = bound.as_object().ok_or_else(|| {
+                format!("spec.sections[{section}].{metric} must be an object")
+            })?;
+            for key in ["min", "max"] {
+                match bound.get(key) {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(v) if v.is_number() => {}
+                    _ => {
+                        return Err(format!(
+                            "spec.sections[{section}].{metric}.{key} must be a number or null"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut normalized = obj.clone();
+    if !normalized.contains_key("version") {
+        normalized.insert("version".into(), serde_json::json!(1));
+    }
+    serde_json::to_string(&serde_json::Value::Object(normalized))
+        .map_err(|e| e.to_string())
+}
+
 fn spec_template_list_item_view(s: SpecTemplateSummary) -> SpecTemplateListItemView {
     SpecTemplateListItemView {
         id: s.id,
@@ -2520,34 +2581,49 @@ async fn create_spec_template(
     State(s): State<AppState>,
     Json(req): Json<CreateSpecTemplateRequest>,
 ) -> impl IntoResponse {
-    if req.ini_text.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "ini_text is required".into(),
-            }),
-        )
-            .into_response();
-    }
-    let parsed = match parse_spec_ini(&req.ini_text) {
-        Ok(r) => r,
-        Err(e) => {
+    let spec_json = if !req.ini_text.trim().is_empty() {
+        let parsed = match parse_spec_ini(&req.ini_text) {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response();
+            }
+        };
+        if parsed.document.sections.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorBody { error: e }),
+                Json(ErrorBody {
+                    error: "no sections".into(),
+                }),
             )
                 .into_response();
         }
-    };
-    if parsed.document.sections.is_empty() {
+        spec_document_to_json(&parsed.document).to_string()
+    } else if let Some(spec) = req.spec.as_ref() {
+        match validate_spec_json(spec) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody { error: e }),
+                )
+                    .into_response();
+            }
+        }
+    } else if !req.name.trim().is_empty() {
+        empty_spec_json().to_string()
+    } else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: "no sections".into(),
+                error: "ini_text, spec, or name is required".into(),
             }),
         )
             .into_response();
-    }
+    };
     if let Some(agent_id) = req.created_by_agent_id.as_deref() {
         if !agent_id.trim().is_empty() {
             match s.store.get_agent(agent_id.trim()).await {
@@ -2568,7 +2644,6 @@ async fn create_spec_template(
             }
         }
     }
-    let spec_json = spec_document_to_json(&parsed.document).to_string();
     let name = default_spec_template_name(&req.name, &req.source_filename);
     let created_by_agent_id = req
         .created_by_agent_id
@@ -2603,7 +2678,9 @@ async fn create_spec_template(
                 name: template.name,
                 product_pn: template.product_pn,
                 source_filename: template.source_filename,
-                section_count: parsed.document.sections.len() as i64,
+                section_count: spec_section_count(
+                    &serde_json::from_str(&spec_json).unwrap_or_else(|_| empty_spec_json()),
+                ),
                 created_by_agent_name,
                 updated_at: template.updated_at,
             });
@@ -2667,6 +2744,94 @@ async fn get_spec_template(
         updated_at: template.updated_at,
     };
     (StatusCode::OK, Json(view)).into_response()
+}
+
+async fn update_spec_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateSpecTemplateRequest>,
+) -> impl IntoResponse {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "name is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    if name.len() > 128 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "name too long (max 128)".into(),
+            }),
+        )
+            .into_response();
+    }
+    let spec_json = match validate_spec_json(&req.spec) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody { error: e }),
+            )
+                .into_response();
+        }
+    };
+    match s
+        .store
+        .update_spec_template(
+            id,
+            name,
+            req.product_pn.trim(),
+            req.note.trim(),
+            req.source_filename.trim(),
+            &spec_json,
+        )
+        .await
+    {
+        Ok(Some(template)) => {
+            let spec: serde_json::Value = serde_json::from_str(&template.spec_json)
+                .unwrap_or_else(|_| empty_spec_json());
+            let created_by_agent_name = match template.created_by_agent_id.as_deref() {
+                Some(agent_id) if !agent_id.is_empty() => s
+                    .store
+                    .get_agent(agent_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name),
+                _ => None,
+            };
+            let view = SpecTemplateDetailView {
+                id: template.id,
+                name: template.name,
+                product_pn: template.product_pn,
+                note: template.note,
+                source_filename: template.source_filename,
+                section_count: spec_section_count(&spec),
+                spec,
+                created_by_agent_id: template.created_by_agent_id,
+                created_by_agent_name: created_by_agent_name.filter(|n| !n.is_empty()),
+                created_at: template.created_at,
+                updated_at: template.updated_at,
+            };
+            (StatusCode::OK, Json(view)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "spec template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("update spec template: {e}");
+            db_error().into_response()
+        }
+    }
 }
 
 async fn delete_spec_template(
@@ -2887,8 +3052,8 @@ async fn put_vi_run_queue(
         } else {
             item.template_source.trim().to_string()
         };
-        let (vi_template_id, general_template_id, title) = match source.as_str() {
-            "group" => (None, None, item.name),
+        let (vi_template_id, general_template_id, section_name) = match source.as_str() {
+            "section" => (None, None, item.name),
             "general" => {
                 if item.general_template_id.is_none() {
                     return (
@@ -3002,7 +3167,7 @@ async fn put_vi_run_queue(
             fail_policy: item.fail_policy,
             limits_json,
             note: item.note,
-            title,
+            section_name,
             collapsed: item.collapsed,
             resources_json,
             spec_template_id: item.spec_template_id,
@@ -3450,7 +3615,7 @@ mod tests {
         };
         Request::builder()
             .method("POST")
-            .uri("/api/agents/register")
+            .uri("/api/stations/register")
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
@@ -3939,7 +4104,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/api/agents/{agent_id}/run-queue"),
+                &format!("/api/stations/{agent_id}/run-queue"),
                 &put_body,
             ))
             .await
@@ -3954,7 +4119,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/agents/{agent_id}/run-queue"))
+                    .uri(format!("/api/stations/{agent_id}/run-queue"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4008,7 +4173,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/api/agents/{agent_id}/run-queue"),
+                &format!("/api/stations/{agent_id}/run-queue"),
                 &put_meta_body,
             ))
             .await
@@ -4033,7 +4198,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/agents/{agent_id}/run-queue"))
+                    .uri(format!("/api/stations/{agent_id}/run-queue"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4064,7 +4229,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/api/agents/{agent_id}/run-queue"),
+                &format!("/api/stations/{agent_id}/run-queue"),
                 &put_body,
             ))
             .await
@@ -4100,7 +4265,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/agents/{agent_id}/run-queue"))
+                    .uri(format!("/api/stations/{agent_id}/run-queue"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4130,7 +4295,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/api/agents/{agent_a}/run-queue"),
+                &format!("/api/stations/{agent_a}/run-queue"),
                 &put_body,
             ))
             .await
@@ -4201,6 +4366,32 @@ mod tests {
 
         let resp = app
             .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/spec-templates/{}", created.id),
+                &serde_json::json!({
+                    "name": "AS0805 Spec edited",
+                    "product_pn": "PN1",
+                    "note": "edited",
+                    "spec": {
+                        "version": 1,
+                        "sections": {
+                            "FMT_HT": { "TX_AP": { "min": -3.0, "max": 5.0 } }
+                        }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let updated: SpecTemplateDetailView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated.name, "AS0805 Spec edited");
+        assert_eq!(updated.product_pn, "PN1");
+        assert_eq!(updated.spec["sections"]["FMT_HT"]["TX_AP"]["min"], -3.0);
+
+        let resp = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("DELETE")
@@ -4255,7 +4446,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/agents/{unknown_id}/run-queue"))
+                    .uri(format!("/api/stations/{unknown_id}/run-queue"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4271,7 +4462,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/api/agents/{unknown_id}/run-queue"),
+                &format!("/api/stations/{unknown_id}/run-queue"),
                 &put_body,
             ))
             .await

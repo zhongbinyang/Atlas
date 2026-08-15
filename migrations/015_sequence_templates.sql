@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS sequence_templates (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
-  created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_by_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS sequence_template_steps (
   general_template_id BIGINT,
   inputs_json TEXT NOT NULL DEFAULT '[]',
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  breakpoint BOOLEAN NOT NULL DEFAULT FALSE,
   fail_policy TEXT NOT NULL DEFAULT 'stop',
   limits_json TEXT NOT NULL DEFAULT '[]',
   note TEXT NOT NULL DEFAULT '',
@@ -24,8 +23,8 @@ CREATE TABLE IF NOT EXISTS sequence_template_steps (
     (vi_template_id IS NOT NULL AND general_template_id IS NULL) OR
     (vi_template_id IS NULL AND general_template_id IS NOT NULL)
   ),
-  FOREIGN KEY (vi_template_id) REFERENCES vi_templates(id),
-  FOREIGN KEY (general_template_id) REFERENCES general_templates(id)
+  FOREIGN KEY (vi_template_id) REFERENCES vi_templates(id) ON DELETE CASCADE,
+  FOREIGN KEY (general_template_id) REFERENCES general_templates(id) ON DELETE CASCADE
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sequence_template_steps_pos

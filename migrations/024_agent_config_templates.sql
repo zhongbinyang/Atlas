@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS agent_config_templates (
   name TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
   source_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
-  created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_by_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
   config_json JSONB NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

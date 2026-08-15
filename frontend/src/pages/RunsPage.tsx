@@ -15,8 +15,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
 import type { Agent, TestRunDetail, TestRunListItem, TestRunStep } from '../api/types';
+import { PageHeader } from '../components/PageHeader';
 import { describeApiError } from '../lib/formatError';
-import { DEFAULT_TABLE_PAGINATION, formatTimestamp } from '../utils/tableHelpers';
+import { DEFAULT_TABLE_PAGINATION, EDITOR_TABLE_PAGINATION, formatTimestamp } from '../utils/tableHelpers';
 import { agentLabel, displayOptional } from './runs/runDisplay';
 
 const OVERALL_OPTIONS = [
@@ -110,69 +111,75 @@ function RunList() {
         dataIndex: 'elapsed_ms',
         render: (value) => formatElapsed(Number(value || 0)),
       },
+      {
+        title: '操作',
+        width: 80,
+        fixed: 'right',
+        render: (_, record) => (
+          <Button size="small" type="link" onClick={() => navigate(`/runs/${record.id}`)}>
+            查看
+          </Button>
+        ),
+      },
     ],
-    [agents],
+    [agents, navigate],
   );
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          运行
-        </Typography.Title>
-        <Button onClick={() => setReloadToken((token) => token + 1)} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title="运行"
+        description="各机台已完成的测试运行记录。"
+        extra={
+          <Button onClick={() => setReloadToken((token) => token + 1)} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
-        <Space wrap>
-          <Typography.Text>机台</Typography.Text>
-          <Select
-            allowClear
-            placeholder="全部"
-            value={agentId}
-            onChange={(value) => setAgentId(value || undefined)}
-            options={agents.map((agent) => ({
-              label: agent.name || agent.id,
-              value: agent.id,
-            }))}
-            style={{ width: 220 }}
-          />
-          <Typography.Text>总结果</Typography.Text>
-          <Select
-            allowClear
-            placeholder="全部"
-            value={overall}
-            onChange={(value) => setOverall(value || undefined)}
-            options={OVERALL_OPTIONS}
-            style={{ width: 140 }}
-          />
-          <Typography.Text>SN</Typography.Text>
-          <Input
-            allowClear
-            placeholder="SN"
-            value={sn}
-            onChange={(event) => setSn(event.target.value)}
-            style={{ width: 180 }}
+        <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+          <Space wrap>
+            <Typography.Text>机台</Typography.Text>
+            <Select
+              allowClear
+              placeholder="全部"
+              value={agentId}
+              onChange={(value) => setAgentId(value || undefined)}
+              options={agents.map((agent) => ({
+                label: agent.name || agent.id,
+                value: agent.id,
+              }))}
+              style={{ width: 220 }}
+            />
+            <Typography.Text>总结果</Typography.Text>
+            <Select
+              allowClear
+              placeholder="全部"
+              value={overall}
+              onChange={(value) => setOverall(value || undefined)}
+              options={OVERALL_OPTIONS}
+              style={{ width: 140 }}
+            />
+            <Typography.Text>SN</Typography.Text>
+            <Input
+              allowClear
+              placeholder="SN"
+              value={sn}
+              onChange={(event) => setSn(event.target.value)}
+              style={{ width: 180 }}
+            />
+          </Space>
+          <Table
+            rowKey={(record) => record.id}
+            columns={columns}
+            dataSource={items}
+            loading={loading}
+            locale={{ emptyText: '暂无运行记录' }}
+            pagination={DEFAULT_TABLE_PAGINATION}
+            scroll={{ x: true }}
           />
         </Space>
-      </Card>
-
-      <Card>
-        <Table
-          rowKey={(record) => record.id}
-          columns={columns}
-          dataSource={items}
-          loading={loading}
-          locale={{ emptyText: '暂无运行记录' }}
-          pagination={DEFAULT_TABLE_PAGINATION}
-          scroll={{ x: true }}
-          onRow={(record) => ({
-            onClick: () => navigate(`/runs/${record.id}`),
-            style: { cursor: 'pointer' },
-          })}
-        />
       </Card>
     </Space>
   );
@@ -236,14 +243,7 @@ function RunDetail({ id }: { id: string }) {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Space>
-          <Button onClick={() => navigate('/runs')}>返回运行</Button>
-          <Typography.Title level={3} style={{ margin: 0 }}>
-            运行详情
-          </Typography.Title>
-        </Space>
-      </Space>
+      <PageHeader title="运行详情" onBack={() => navigate('/runs')} />
 
       <Card>
         {loading && !detail ? (
@@ -269,7 +269,7 @@ function RunDetail({ id }: { id: string }) {
           dataSource={detail?.steps ?? []}
           loading={loading}
           locale={{ emptyText: '暂无步骤' }}
-          pagination={DEFAULT_TABLE_PAGINATION}
+          pagination={EDITOR_TABLE_PAGINATION}
           scroll={{ x: true }}
         />
       </Card>

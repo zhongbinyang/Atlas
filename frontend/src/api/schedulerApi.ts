@@ -6,6 +6,7 @@ import type {
   AgentConfigTemplate,
   CreateProfileBody,
   CreateSpecTemplateRequest,
+  UpdateSpecTemplateRequest,
   GeneralTemplate,
   SequenceTemplate,
   SpecTemplateDetail,
@@ -14,6 +15,7 @@ import type {
   TestRunListPage,
   TestRunListParams,
   UnitRow,
+  UpdateProfileBody,
   ViTemplate,
 } from './types';
 
@@ -39,7 +41,7 @@ const withAgentFilter = (path: string, agentId?: string): string =>
   path + (agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '');
 
 export const schedulerApi = {
-  listAgents: () => apiRequest<Agent[]>('/api/agents'),
+  listAgents: () => apiRequest<Agent[]>('/api/stations'),
   listViTemplates: (agentId?: string) =>
     apiRequest<ViTemplate[]>(withAgentFilter('/api/vi-templates', agentId)),
   listGeneralTemplates: (agentId?: string) =>
@@ -65,27 +67,37 @@ export const schedulerApi = {
       body: JSON.stringify({ units }),
     }),
   listAgentConfigSummaries: async () => {
-    const data = await apiRequest<{ items?: AgentConfigSummary[] }>('/api/agent-configs');
+    const data = await apiRequest<{ items?: AgentConfigSummary[] }>('/api/station-configs');
     return Array.isArray(data.items) ? data.items : [];
   },
   getAgentSettings: (agentId: string) =>
-    apiRequest<unknown>(`/api/agents/${encodeURIComponent(agentId)}/settings`),
+    apiRequest<unknown>(`/api/stations/${encodeURIComponent(agentId)}/settings`),
+  putAgentSettings: (agentId: string, body: unknown) =>
+    apiRequest<unknown>(`/api/stations/${encodeURIComponent(agentId)}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   getAgentChannels: async (agentId: string) => {
     const data = await apiRequest<{ channels?: unknown[] }>(
-      `/api/agents/${encodeURIComponent(agentId)}/channels`,
+      `/api/stations/${encodeURIComponent(agentId)}/channels`,
     );
     return Array.isArray(data.channels) ? data.channels : [];
   },
+  putAgentChannels: (agentId: string, body: unknown) =>
+    apiRequest<unknown>(`/api/stations/${encodeURIComponent(agentId)}/channels`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   listAgentConfigTemplates: async () => {
-    const data = await apiRequest<{ items?: AgentConfigTemplate[] }>('/api/agent-config-templates');
+    const data = await apiRequest<{ items?: AgentConfigTemplate[] }>('/api/station-config-templates');
     return Array.isArray(data.items) ? data.items : [];
   },
   getAgentConfigTemplate: (id: string | number) =>
     apiRequest<Record<string, unknown>>(
-      `/api/agent-config-templates/${encodeURIComponent(String(id))}`,
+      `/api/station-config-templates/${encodeURIComponent(String(id))}`,
     ),
   deleteAgentConfigTemplate: (id: string | number) =>
-    apiRequest<void>(`/api/agent-config-templates/${encodeURIComponent(String(id))}`, {
+    apiRequest<void>(`/api/station-config-templates/${encodeURIComponent(String(id))}`, {
       method: 'DELETE',
     }),
   listSpecTemplates: async () => {
@@ -99,37 +111,62 @@ export const schedulerApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  updateSpecTemplate: (id: string | number, body: UpdateSpecTemplateRequest) =>
+    apiRequest<SpecTemplateDetail>(`/api/spec-templates/${encodeURIComponent(String(id))}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   deleteSpecTemplate: (id: string | number) =>
     apiRequest<void>(`/api/spec-templates/${encodeURIComponent(String(id))}`, {
       method: 'DELETE',
     }),
   listDeviceProfiles: (agentId: string) =>
     apiRequest<AgentConfigProfile[]>(
-      `/api/agents/${encodeURIComponent(agentId)}/device-profiles`,
+      `/api/stations/${encodeURIComponent(agentId)}/device-profiles`,
     ),
   createDeviceProfile: (agentId: string, body: CreateProfileBody) =>
     apiRequest<AgentConfigProfile>(
-      `/api/agents/${encodeURIComponent(agentId)}/device-profiles`,
+      `/api/stations/${encodeURIComponent(agentId)}/device-profiles`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
   activateDeviceProfile: (agentId: string, profileId: string) =>
     apiRequest<unknown>(
-      `/api/agents/${encodeURIComponent(agentId)}/device-profiles/${encodeURIComponent(profileId)}/activate`,
+      `/api/stations/${encodeURIComponent(agentId)}/device-profiles/${encodeURIComponent(profileId)}/activate`,
       { method: 'POST' },
+    ),
+  updateDeviceProfile: (agentId: string, profileId: string, body: UpdateProfileBody) =>
+    apiRequest<AgentConfigProfile>(
+      `/api/stations/${encodeURIComponent(agentId)}/device-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  deleteDeviceProfile: (agentId: string, profileId: string) =>
+    apiRequest<void>(
+      `/api/stations/${encodeURIComponent(agentId)}/device-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'DELETE' },
     ),
   listCalibrationProfiles: (agentId: string) =>
     apiRequest<AgentConfigProfile[]>(
-      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles`,
+      `/api/stations/${encodeURIComponent(agentId)}/calibration-profiles`,
     ),
   createCalibrationProfile: (agentId: string, body: CreateProfileBody) =>
     apiRequest<AgentConfigProfile>(
-      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles`,
+      `/api/stations/${encodeURIComponent(agentId)}/calibration-profiles`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
   activateCalibrationProfile: (agentId: string, profileId: string) =>
     apiRequest<unknown>(
-      `/api/agents/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}/activate`,
+      `/api/stations/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}/activate`,
       { method: 'POST' },
+    ),
+  updateCalibrationProfile: (agentId: string, profileId: string, body: UpdateProfileBody) =>
+    apiRequest<AgentConfigProfile>(
+      `/api/stations/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  deleteCalibrationProfile: (agentId: string, profileId: string) =>
+    apiRequest<void>(
+      `/api/stations/${encodeURIComponent(agentId)}/calibration-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'DELETE' },
     ),
   listTestRuns: (params: TestRunListParams = {}) =>
     apiRequest<TestRunListPage>(withTestRunListQuery(params)),

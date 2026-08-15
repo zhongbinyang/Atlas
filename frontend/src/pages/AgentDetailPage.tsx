@@ -2,6 +2,7 @@ import { Alert, App, Button, Card, Descriptions, Space, Tag, Typography } from '
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
+import { PageHeader } from '../components/PageHeader';
 import { agentStatus, formatAgentHeartbeat, type Agent } from '../lib/agentTelemetry';
 import { formatPercent, statusLabel } from './MachinesPage';
 
@@ -83,17 +84,15 @@ export function AgentDetailPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Space>
-          <Button onClick={() => navigate('/machines')}>返回机台</Button>
-          <Typography.Title level={3} style={{ margin: 0 }}>
-            {agent?.name ?? '机台详情'}
-          </Typography.Title>
-        </Space>
-        <Button onClick={() => void load(true)} loading={loading}>
-          刷新
-        </Button>
-      </Space>
+      <PageHeader
+        title={agent?.name ?? '机台详情'}
+        onBack={() => navigate('/machines')}
+        extra={
+          <Button onClick={() => void load(true)} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       {loadError ? (
         <Alert

@@ -5,6 +5,14 @@ export const DEFAULT_TABLE_PAGINATION: TablePaginationConfig = {
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '50', '100'],
   hideOnSinglePage: true,
+  showTotal: (total) => `共 ${total} 条`,
+};
+
+export const EDITOR_TABLE_PAGINATION: TablePaginationConfig = {
+  pageSize: 10,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '50', '100'],
+  showTotal: (total) => `共 ${total} 条`,
 };
 
 export function formatTimestamp(value: unknown): string {

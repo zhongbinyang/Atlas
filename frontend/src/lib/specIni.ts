@@ -167,3 +167,96 @@ export function specDocumentToJson(doc: SpecDocument): {
     sections,
   };
 }
+
+export type EditableSpecRow = {
+  _key: string;
+  section: string;
+  metric: string;
+  min: string;
+  max: string;
+};
+
+export type PrepareSpecResult =
+  | {
+      ok: true;
+      spec: {
+        version: 1;
+        sections: Record<string, Record<string, { min: number | null; max: number | null }>>;
+      };
+    }
+  | { ok: false; error: string };
+
+let nextSpecRow = 0;
+
+export function specRowKey(): string {
+  nextSpecRow += 1;
+  return `spec-${nextSpecRow}`;
+}
+
+function formatBoundEdit(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '';
+  return String(value);
+}
+
+export function parseBoundEdit(raw: string): { ok: true; value: number | null } | { ok: false } {
+  const t = raw.trim();
+  if (!t || t === '∞') return { ok: true, value: null };
+  const lower = t.toLowerCase();
+  if (
+    lower === 'inf' ||
+    lower === '+inf' ||
+    lower === 'infinity' ||
+    lower === '-inf' ||
+    lower === '-infinity'
+  ) {
+    return { ok: true, value: null };
+  }
+  const n = Number(t);
+  if (Number.isNaN(n) || !Number.isFinite(n)) return { ok: false };
+  return { ok: true, value: n };
+}
+
+export function specToEditableRows(spec: {
+  sections?: Record<string, Record<string, { min: number | null; max: number | null }>>;
+}): EditableSpecRow[] {
+  const rows: EditableSpecRow[] = [];
+  const sections = spec.sections ?? {};
+  for (const section of Object.keys(sections).sort((a, b) => a.localeCompare(b))) {
+    const metrics = sections[section] ?? {};
+    for (const metric of Object.keys(metrics).sort((a, b) => a.localeCompare(b))) {
+      const bound = metrics[metric];
+      rows.push({
+        _key: specRowKey(),
+        section,
+        metric,
+        min: formatBoundEdit(bound?.min),
+        max: formatBoundEdit(bound?.max),
+      });
+    }
+  }
+  return rows;
+}
+
+export function prepareSpecFromRows(rows: EditableSpecRow[]): PrepareSpecResult {
+  const sections: Record<string, Record<string, { min: number | null; max: number | null }>> = {};
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const section = row.section.trim();
+    const metric = row.metric.trim();
+    if (!section && !metric && !row.min.trim() && !row.max.trim()) continue;
+    if (!section || !metric) return { ok: false, error: 'Section 和指标必须同时填写' };
+    const id = `${section}\0${metric}`;
+    if (seen.has(id)) return { ok: false, error: `重复项：[${section}] ${metric}` };
+    seen.add(id);
+    const min = parseBoundEdit(row.min);
+    const max = parseBoundEdit(row.max);
+    if (!min.ok) return { ok: false, error: `无效下限：[${section}] ${metric}` };
+    if (!max.ok) return { ok: false, error: `无效上限：[${section}] ${metric}` };
+    if (min.value != null && max.value != null && min.value > max.value) {
+      return { ok: false, error: `下限大于上限：[${section}] ${metric}` };
+    }
+    if (!sections[section]) sections[section] = {};
+    sections[section][metric] = { min: min.value, max: max.value };
+  }
+  return { ok: true, spec: { version: 1, sections } };
+}

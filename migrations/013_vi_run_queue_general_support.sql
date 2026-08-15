@@ -15,7 +15,7 @@ BEGIN
   ) THEN
     ALTER TABLE vi_run_queue_items
       ADD CONSTRAINT vi_run_queue_items_general_template_id_fkey
-      FOREIGN KEY (general_template_id) REFERENCES general_templates(id);
+      FOREIGN KEY (general_template_id) REFERENCES general_templates(id) ON DELETE CASCADE;
   END IF;
 END $$;
 

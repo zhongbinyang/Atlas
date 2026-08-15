@@ -95,7 +95,7 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
     apply_migration(
         pool,
-        include_str!("../migrations/018_queue_group_rows.sql"),
+        include_str!("../migrations/018_queue_section_rows.sql"),
     )
     .await?;
     apply_migration(
@@ -146,6 +146,36 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     apply_migration(
         pool,
         include_str!("../migrations/028_test_runs.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/029_queue_section_name.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/030_drop_dead_tables_and_agent_fks.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/031_shared_template_origins.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/032_drop_breakpoint_and_cascade_sequence_steps.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/033_split_config_profiles.sql"),
+    )
+    .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/034_rename_agents_to_stations.sql"),
     )
     .await?;
     Ok(())
@@ -302,5 +332,32 @@ impl std::ops::Deref for GuardedStore {
 
     fn deref(&self) -> &Self::Target {
         &self.store
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migrate_twice_leaves_stations_not_agents() {
+        let db = TestDb::create().await;
+        migrate(&db.pool)
+            .await
+            .expect("second migrate after agents→stations rename");
+        let stations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'stations'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let agents: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'agents'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(stations, 1);
+        assert_eq!(agents, 0);
     }
 }

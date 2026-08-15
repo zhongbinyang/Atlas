@@ -23,6 +23,14 @@ vi.mock('./api/schedulerApi', () => ({
     saveUnits: vi.fn(),
     listTestRuns: vi.fn(),
     getTestRun: vi.fn(),
+    listAgentConfigSummaries: vi.fn(),
+    listAgentConfigTemplates: vi.fn(),
+    getAgentSettings: vi.fn(),
+    getAgentChannels: vi.fn(),
+    listDeviceProfiles: vi.fn(),
+    listCalibrationProfiles: vi.fn(),
+    listSpecTemplates: vi.fn(),
+    getSpecTemplate: vi.fn(),
   },
 }));
 
@@ -169,6 +177,25 @@ function buttonText(button: HTMLButtonElement): string {
   return (button.textContent || '').replace(/\s+/g, '');
 }
 
+function findTab(label: string): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).find((tab) =>
+    (tab.textContent || '').includes(label),
+  );
+}
+
+async function confirmDeleteModal(expectedText: string) {
+  await waitFor(() => {
+    expect(document.body.textContent).toContain(expectedText);
+  });
+  const confirmOk = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('.ant-modal-confirm button'),
+  ).find((button) => buttonText(button) === '删除');
+  expect(confirmOk).toBeTruthy();
+  await act(async () => {
+    confirmOk?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
 describe('Scheduler App routes', () => {
   let rendered: { host: HTMLDivElement; root: Root } | undefined;
 
@@ -200,6 +227,44 @@ describe('Scheduler App routes', () => {
         hostname: 'ATE01',
       }],
       total: 1,
+    });
+    vi.mocked(schedulerApi.listAgentConfigSummaries).mockResolvedValue([
+      {
+        agent_id: 'agent-1',
+        agent_name: 'Alpha',
+        agent_status: 'online',
+        agent_ip: '10.0.0.1',
+        variable_count: 1,
+        device_profile_count: 0,
+        calibration_profile_count: 0,
+        channel_count: 1,
+      },
+    ]);
+    vi.mocked(schedulerApi.listAgentConfigTemplates).mockResolvedValue([]);
+    vi.mocked(schedulerApi.getAgentSettings).mockResolvedValue({ variables: [], array_expand_mode: 'semicolon' });
+    vi.mocked(schedulerApi.getAgentChannels).mockResolvedValue([]);
+    vi.mocked(schedulerApi.listDeviceProfiles).mockResolvedValue([]);
+    vi.mocked(schedulerApi.listCalibrationProfiles).mockResolvedValue([]);
+    vi.mocked(schedulerApi.listSpecTemplates).mockResolvedValue([
+      {
+        id: 7,
+        name: 'FMT',
+        product_pn: 'PN1',
+        source_filename: 'fmt.ini',
+        section_count: 2,
+        updated_at: '2026-08-16T00:00:00Z',
+      },
+    ]);
+    vi.mocked(schedulerApi.getSpecTemplate).mockResolvedValue({
+      id: 7,
+      name: 'FMT',
+      product_pn: 'PN1',
+      note: '',
+      source_filename: 'fmt.ini',
+      section_count: 2,
+      spec: { sections: {} },
+      created_at: '2026-08-16T00:00:00Z',
+      updated_at: '2026-08-16T00:00:00Z',
     });
     vi.mocked(schedulerApi.getTestRun).mockResolvedValue({
       id: 'run-1',
@@ -272,7 +337,7 @@ describe('Scheduler App routes', () => {
     });
 
     const backButton = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === '返回机台',
+      (button) => button.textContent === '返回列表',
     );
     expect(backButton).toBeTruthy();
 
@@ -284,11 +349,6 @@ describe('Scheduler App routes', () => {
   });
 
   it('renders functions tables and confirms VI template deletion', async () => {
-    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
-      void config.onOk?.();
-      return { destroy: vi.fn(), update: vi.fn() } as ReturnType<typeof Modal.confirm>;
-    });
-
     rendered = await renderAt('#/functions');
 
     await waitFor(() => {
@@ -296,8 +356,21 @@ describe('Scheduler App routes', () => {
       expect(document.body.textContent).toContain('中心VI功能');
       expect(document.body.textContent).toContain('VoltageSweep');
       expect(document.body.textContent).toContain('中心通用功能');
+    });
+
+    await act(async () => {
+      findTab('中心通用功能')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
       expect(document.body.textContent).toContain('Delay');
       expect(document.body.textContent).toContain('delay_ms=1000');
+    });
+
+    await act(async () => {
+      findTab('中心VI功能')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('VoltageSweep');
     });
 
     const deleteButton = Array.from(document.querySelectorAll('button')).find(
@@ -307,24 +380,13 @@ describe('Scheduler App routes', () => {
       deleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
+    await confirmDeleteModal('相关序列队列中的引用也会清除。');
     await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('相关序列队列中的引用也会清除。'),
-          okText: '删除',
-          title: '确认删除',
-        }),
-      );
       expect(schedulerApi.deleteViTemplate).toHaveBeenCalledWith(10);
     });
   });
 
   it('renders sequence templates and confirms deletion', async () => {
-    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation((config) => {
-      void config.onOk?.();
-      return { destroy: vi.fn(), update: vi.fn() } as ReturnType<typeof Modal.confirm>;
-    });
-
     rendered = await renderAt('#/sequences');
 
     await waitFor(() => {
@@ -341,14 +403,8 @@ describe('Scheduler App routes', () => {
       deleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
+    await confirmDeleteModal('确定删除「序列模板「PowerCycle」」？');
     await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: '确定删除「序列模板「PowerCycle」」？',
-          okText: '删除',
-          title: '确认删除',
-        }),
-      );
       expect(schedulerApi.deleteSequenceTemplate).toHaveBeenCalledWith('seq-1');
     });
   });
@@ -391,16 +447,55 @@ describe('Scheduler App routes', () => {
       expect(document.body.textContent).toContain('SN001');
       expect(document.body.textContent).toContain('CH0');
     });
-    const row = Array.from(document.querySelectorAll('tr')).find((el) =>
-      (el.textContent || '').includes('SN001'),
+    const viewButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '查看',
     );
     await act(async () => {
-      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      viewButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await waitFor(() => {
       expect(schedulerApi.getTestRun).toHaveBeenCalledWith('run-1');
       expect(document.body.textContent).toContain('TX_AP');
       expect(document.body.textContent).toContain('—');
+    });
+  });
+
+  it('opens station config as a page instead of a modal', async () => {
+    rendered = await renderAt('#/configs');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('各机台当前配置');
+      expect(document.body.textContent).toContain('Alpha');
+    });
+    const editButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '编辑',
+    );
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/configs/agent-1');
+      expect(document.body.textContent).toContain('编辑配置 · Alpha');
+      expect(document.body.textContent).toContain('返回列表');
+      expect(document.body.textContent).toContain('设备配置档');
+    });
+  });
+
+  it('opens spec editor as a page instead of a modal', async () => {
+    rendered = await renderAt('#/specs');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Spec 模板');
+      expect(document.body.textContent).toContain('FMT');
+    });
+    const editButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => buttonText(button) === '编辑',
+    );
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/specs/7');
+      expect(document.body.textContent).toContain('编辑 Spec · FMT');
+      expect(document.body.textContent).toContain('返回列表');
     });
   });
 });

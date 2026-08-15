@@ -264,7 +264,7 @@ impl TestRunListItemRow {
 const LIST_FILTER_SQL: &str = r#"
 FROM test_runs r
 INNER JOIN test_run_context c ON c.test_run_id = r.id
-WHERE ($1::text IS NULL OR r.agent_id = $1)
+WHERE ($1::text IS NULL OR r.station_id = $1)
   AND ($2::text IS NULL OR r.overall = $2)
   AND ($3::text IS NULL OR c.sn = $3)
   AND ($4::text IS NULL OR r.finished_at >= $4)
@@ -331,7 +331,7 @@ impl Store {
         let insert_run = sqlx::query(
             r#"
             INSERT INTO test_runs (
-              id, agent_id, channel_index, channel_name, sequence_template_id,
+              id, station_id, channel_index, channel_name, sequence_template_id,
               run_generation, overall, stopped, failed_at, elapsed_ms,
               started_at, finished_at, created_at
             )
@@ -444,7 +444,7 @@ impl Store {
         let row = sqlx::query_as::<_, TestRunRow>(
             r#"
             SELECT
-              id, agent_id, channel_index, channel_name, sequence_template_id,
+              id, station_id AS agent_id, channel_index, channel_name, sequence_template_id,
               run_generation, overall, stopped, failed_at, elapsed_ms,
               started_at, finished_at, created_at
             FROM test_runs
@@ -551,7 +551,7 @@ impl Store {
         let list_sql = format!(
             r#"
             SELECT
-              r.id, r.agent_id, r.channel_index, r.channel_name, r.sequence_template_id,
+              r.id, r.station_id AS agent_id, r.channel_index, r.channel_name, r.sequence_template_id,
               r.overall, r.elapsed_ms, r.started_at, r.finished_at,
               c.sn, c.work_order, c.hostname
             {LIST_FILTER_SQL}
@@ -577,7 +577,7 @@ impl Store {
     }
 
     pub async fn agent_exists(&self, id: &str) -> Result<bool, sqlx::Error> {
-        let found: Option<String> = sqlx::query_scalar("SELECT id FROM agents WHERE id = $1")
+        let found: Option<String> = sqlx::query_scalar("SELECT id FROM stations WHERE id = $1")
             .bind(id)
             .fetch_optional(self.pool())
             .await?;

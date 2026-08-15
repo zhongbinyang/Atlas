@@ -15,7 +15,7 @@ describe('schedulerApi', () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(agents), { status: 200 }));
 
     await expect(schedulerApi.listAgents()).resolves.toEqual(agents);
-    expect(fetch).toHaveBeenCalledWith('/api/agents', expect.objectContaining({ headers: expect.any(Object) }));
+    expect(fetch).toHaveBeenCalledWith('/api/stations', expect.objectContaining({ headers: expect.any(Object) }));
   });
 
   it('encodes optional template agent filters', async () => {
@@ -59,8 +59,103 @@ describe('schedulerApi', () => {
       activate: true,
     });
     expect(fetch).toHaveBeenCalledWith(
-      '/api/agents/agent%201/device-profiles',
+      '/api/stations/agent%201/device-profiles',
       expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('writes settings, channels, and deletes config profiles', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      clone() {
+        return this;
+      },
+      text: async () => '{}',
+    } as Response);
+
+    await schedulerApi.putAgentSettings('agent 1', {
+      variables: [{ name: 'A', value: '1', description: '' }],
+      array_expand_mode: 'semicolon',
+    });
+    await schedulerApi.putAgentChannels('agent 1', {
+      channels: [{ channel_index: 0, name: 'CH0', enabled: true, overlay: {} }],
+    });
+    await schedulerApi.deleteDeviceProfile('agent 1', 'p 2');
+    await schedulerApi.deleteCalibrationProfile('agent 1', 'c 3');
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      '/api/stations/agent%201/settings',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      '/api/stations/agent%201/channels',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      '/api/stations/agent%201/device-profiles/p%202',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      '/api/stations/agent%201/calibration-profiles/c%203',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('updates device and calibration profiles', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      clone() {
+        return this;
+      },
+      text: async () => '{}',
+    } as Response);
+    await schedulerApi.updateDeviceProfile('agent 1', 'p 2', {
+      name: 'Device',
+      setting: { A: { B: 1 } },
+      source_filename: 'Device_CFG.ini',
+    });
+    await schedulerApi.updateCalibrationProfile('agent 1', 'c 3', {
+      name: 'Cal',
+      setting: {},
+      source_filename: '',
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      '/api/stations/agent%201/device-profiles/p%202',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      '/api/stations/agent%201/calibration-profiles/c%203',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+  });
+
+  it('updates a spec template', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      clone() {
+        return this;
+      },
+      text: async () => '{}',
+    } as Response);
+    await schedulerApi.updateSpecTemplate(12, {
+      name: 'Spec',
+      spec: { version: 1, sections: {} },
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/spec-templates/12',
+      expect.objectContaining({ method: 'PUT' }),
     );
   });
 

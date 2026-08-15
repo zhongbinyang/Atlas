@@ -8,7 +8,9 @@ import { FunctionsPage } from './pages/FunctionsPage';
 import { MachinesPage } from './pages/MachinesPage';
 import { RunsPage } from './pages/RunsPage';
 import { SequencesPage } from './pages/SequencesPage';
+import { SpecEditorPage } from './pages/SpecEditorPage';
 import { SpecsPage } from './pages/SpecsPage';
+import { StationConfigPage } from './pages/StationConfigPage';
 import { UnitsPage } from './pages/UnitsPage';
 
 export function App() {
@@ -25,7 +27,10 @@ export function App() {
               <Route path="/runs" element={<RunsPage />} />
               <Route path="/runs/:id" element={<RunsPage />} />
               <Route path="/configs" element={<ConfigsPage />} />
+              <Route path="/configs/:agentId" element={<StationConfigPage />} />
               <Route path="/specs" element={<SpecsPage />} />
+              <Route path="/specs/new" element={<SpecEditorPage />} />
+              <Route path="/specs/:id" element={<SpecEditorPage />} />
               <Route path="/units" element={<UnitsPage />} />
               <Route path="*" element={<Navigate to="/machines" replace />} />
             </Route>

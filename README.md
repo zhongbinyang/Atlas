@@ -116,7 +116,7 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 
 1. **Agent「序列」页**：左「**中心全部功能**」（可搜索名称/ID/机台，按 LabVIEW/通用筛选）→ 右「**执行顺序**」（同一模板可重复加入；支持拖拽与上下移动排序）。
 2. **队列存中心**：每机台一份有序队列（`vi_run_queue_items`）；步骤可引用 `vi_template_id` 或 `general_template_id`；每步可覆盖 **入参**（`inputs_json`）；增删改序 / 改元数据后自动 `PUT` 保存。
-3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec；支持 range / eq / ne / in）、`inputs`（步骤级入参覆盖）。历史字段 `breakpoint` 仍可出现在 PUT 中，但会被忽略并落库为 `false`。
+3. **步骤元数据**（随队列持久化）：`enabled`（未勾选则跳过）、`fail_policy`（`stop` 遇 Fail/Error 即停 / `continue` 继续后续步）、`limits`（JSON 数组，每步 Spec；支持 range / eq / ne / in）、`inputs`（步骤级入参覆盖）。历史字段 `breakpoint` 仍可出现在 PUT 中，但会被忽略且不再落库。
 4. **主表与详情**：主表列含 `# / 启用 / 名称 / 类型 / 结果 / 值 / 下限 / 上限 / 单位 / 操作`；点「**详情**」展开编辑入参 / Spec / Fail 策略，并查看实测与原始返回 JSON。
 5. **按序执行**：`POST /api/sequence/run` 可选 body `{ "sn", "work_order", "sequence_template_id", "channel_indexes" }`；开始时清空结果，执行中可轮询 `GET /api/sequence/run/progress` 按步刷新。遇 Fail/Error 且 `fail_policy=stop` 或 CLI 失败即停；与 Delay/REST 试跑共用 busy 槽，忙碌时返回 409。序列一次性跑完，不再支持断点暂停。
 6. **中止**：保留 `POST /api/sequence/run/abort`；`POST /api/sequence/run/continue` 已移除（410 Gone）。WebUI 顶部状态区集中提供通道选择、开始/中止与总体结果；SN/工单当前不在 WebUI 展示或提交，API 字段仍保留兼容性。
@@ -142,7 +142,7 @@ VI 路径请 **手填或粘贴绝对路径**（不使用浏览器文件选择器
 ### 相关 API（摘要）
 
 - Agent：`GET /api/labview/config`，`POST /api/labview/inspect|run`，`POST /api/labview/register-template`（必填 `name`；服务端代写中心 `POST /api/vi-templates`），`PATCH /api/labview/templates/{id}`，`GET /api/labview/all-templates`，`GET /api/general/all-templates`，`GET/PUT /api/sequence/run-queue`，`POST /api/sequence/run`（可选 `sn`/`work_order`/`sequence_template_id`），`GET /api/sequence/run/progress`，`POST /api/sequence/run/abort`，`GET/POST /api/sequence-templates`，`POST /api/sequence-templates/{id}/load`，`GET/PUT /api/settings`，`POST /api/slot/force-release`。
-- 中心：`GET/POST/PATCH/DELETE /api/vi-templates`，`GET/POST/DELETE /api/general-templates`，`GET/POST /api/sequence-templates`，`GET/DELETE /api/sequence-templates/{id}`，`POST /api/sequence-templates/{id}/load-to-agent`（供 Agent 代理加载；中心 WebUI 不再暴露），`GET/PUT /api/agents/{id}/run-queue`，`GET/PUT /api/agents/{id}/settings`。
+- 中心：`GET/POST/PATCH/DELETE /api/vi-templates`，`GET/POST/DELETE /api/general-templates`，`GET/POST /api/sequence-templates`，`GET/DELETE /api/sequence-templates/{id}`，`POST /api/sequence-templates/{id}/load-to-station`（供机台代理加载；中心 WebUI 不再暴露），`GET/PUT /api/stations/{id}/run-queue`，`GET/PUT /api/stations/{id}/settings`。
 
 CLI / getinfo / VI 文件不存在或 Agent 离线时，API 返回明确 4xx/5xx 错误（见设计规格 `docs/superpowers/specs/2026-07-16-labview-vi-templates-design.md`）。
 
@@ -175,7 +175,7 @@ cargo run --release
 ## 手工联调清单
 
 1. **调度中心启动**：监听 `:9080`；`GET http://127.0.0.1:9080/` 返回 WebUI（200）；默认 `#/machines` 显示机台卡片。
-2. **Agent 注册**：约 5 秒内，`GET http://127.0.0.1:9080/api/agents` 可见该 Agent 为 `online`，并带有 CPU、内存占用百分比；卡片与详情页状态一致。
+2. **机台注册**：约 5 秒内，`GET http://127.0.0.1:9080/api/stations` 可见该机台为 `online`，并带有 CPU、内存占用百分比；卡片与详情页状态一致。
 3. **机台卡片 → 详情**：点击卡片进入 `#/agents/{id}`；仅状态概览；**返回机台** 回到卡片网格。
 4. **已注册功能页**：打开 `#/functions`；按机台筛选；查看 VI / 通用分栏、名称/**来源机台**/路径/入参；可 **删除** 模板（无修改）。
 5. **序列模板页**：打开 `#/sequences`；可见已保存序列模板；可 **删除**。

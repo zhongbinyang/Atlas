@@ -20,7 +20,6 @@ pub use crate::agent_settings::{AgentUnit, AgentVariable};
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentSettings {
-    pub units: Vec<AgentUnit>,
     pub variables: Vec<AgentVariable>,
     pub array_expand_mode: crate::agent_settings::ArrayExpandMode,
     pub updated_at: Option<String>,
@@ -159,7 +158,6 @@ fn profile_to_snapshot(profile: AgentConfigProfile) -> AgentConfigSnapshotProfil
 struct AgentSettingsRow {
     #[allow(dead_code)]
     agent_id: String,
-    units_json: String,
     variables_json: String,
     #[sqlx(default)]
     array_expand_mode: String,
@@ -168,78 +166,14 @@ struct AgentSettingsRow {
 
 impl AgentSettingsRow {
     fn into_settings(self) -> AgentSettings {
-        let units = crate::agent_settings::parse_units_json(&self.units_json);
         let variables: Vec<AgentVariable> =
             serde_json::from_str(&self.variables_json).unwrap_or_default();
         AgentSettings {
-            units,
             variables,
             array_expand_mode: crate::agent_settings::ArrayExpandMode::parse(&self.array_expand_mode),
             updated_at: Some(self.updated_at),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskTemplate {
-    pub id: String,
-    pub name: String,
-    pub shell: String,
-    pub command: String,
-    pub workdir: Option<String>,
-    pub timeout_secs: i64,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Task {
-    pub id: String,
-    pub agent_id: String,
-    pub source: String,
-    pub template_id: Option<String>,
-    pub shell: String,
-    pub command: String,
-    pub workdir: Option<String>,
-    pub timeout_secs: i64,
-    pub status: String,
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub agent_task_id: Option<String>,
-    pub created_at: String,
-    pub started_at: Option<String>,
-    pub finished_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CreateTaskParams {
-    pub agent_id: String,
-    pub source: String,
-    pub template_id: Option<String>,
-    pub shell: String,
-    pub command: String,
-    pub workdir: Option<String>,
-    pub timeout_secs: i64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct UpdateTemplateParams {
-    pub name: Option<String>,
-    pub shell: Option<String>,
-    pub command: Option<String>,
-    pub workdir: Option<Option<String>>,
-    pub timeout_secs: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TaskUpdate {
-    pub status: Option<String>,
-    pub exit_code: Option<Option<i32>>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
-    pub agent_task_id: Option<Option<String>>,
-    pub started_at: Option<Option<String>>,
-    pub finished_at: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -289,11 +223,10 @@ pub struct SequenceTemplateStep {
     pub general_template_id: Option<i64>,
     pub inputs_json: String,
     pub enabled: bool,
-    pub breakpoint: bool,
     pub fail_policy: String,
     pub limits_json: String,
     pub note: String,
-    pub title: String,
+    pub section_name: String,
     pub collapsed: bool,
     pub resources_json: String,
 }
@@ -391,21 +324,29 @@ pub struct SpecTemplateSummary {
 
 #[derive(Debug, Clone)]
 pub struct ViRunQueueReplaceItem {
-    pub template_source: String, // "labview" | "general" | "group"
+    pub template_source: String, // "labview" | "general" | "section"
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
     pub inputs_json: Option<String>,
     pub enabled: bool,
+    #[allow(dead_code)]
     pub breakpoint: bool,
     pub fail_policy: String, // "stop" | "continue"
     pub limits_json: String,   // JSON array text
     pub note: String,
-    pub title: String,
+    pub section_name: String,
     pub collapsed: bool,
     pub resources_json: String, // JSON string array text
     pub spec_template_id: Option<i64>,
     pub spec_section: String,
     pub spec_metrics_json: String, // JSON string array text
+}
+
+pub const QUEUE_SECTION_SOURCE: &str = "section";
+pub const DEFAULT_QUEUE_SECTION_TITLE: &str = "Default";
+
+pub fn is_queue_section_marker(source: &str) -> bool {
+    source.trim() == QUEUE_SECTION_SOURCE
 }
 
 #[derive(Debug, Clone)]
@@ -425,11 +366,10 @@ pub struct ViRunQueueItem {
     pub show_front_panel: bool,
     pub timeout_secs: Option<i64>,
     pub enabled: bool,
-    pub breakpoint: bool,
     pub fail_policy: String,
     pub limits_json: String,
     pub note: String,
-    pub title: String,
+    pub section_name: String,
     pub collapsed: bool,
     pub resources_json: String,
     pub spec_template_id: Option<i64>,
@@ -564,22 +504,22 @@ pub struct GeneralTemplateEnriched {
     pub origin_agent_name: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Screenshot {
-    pub id: String,
-    pub agent_id: String,
-    pub file_path: String,
-    pub content_type: String,
-    pub byte_size: i64,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
-    pub created_at: String,
-}
-
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
 }
+
+fn optional_agent_ref(id: &str) -> Option<&str> {
+    let id = id.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+const DEVICE_PROFILE_TABLE: &str = "station_device_profiles";
+const CALIBRATION_PROFILE_TABLE: &str = "station_calibration_profiles";
 
 impl Store {
     pub fn new(pool: PgPool) -> Self {
@@ -600,8 +540,8 @@ impl Store {
         let now = Utc::now().to_rfc3339();
         let row = sqlx::query_as::<_, AgentRow>(
             r#"
-            INSERT INTO agents (id, name, ip, port, status, cpu_percent, memory_percent, busy, created_at)
-            VALUES ($1, $2, $3, $4, 'offline', 0, 0, 0, $5)
+            INSERT INTO stations (id, name, ip, port, status, cpu_percent, memory_percent, busy, created_at)
+            VALUES ($1, $2, $3, $4, 'offline', 0, 0, FALSE, $5)
             ON CONFLICT (name, ip, port) DO UPDATE SET name = EXCLUDED.name
             RETURNING id, name, ip, port, status, cpu_percent, memory_percent, busy, last_seen_at, created_at
             "#,
@@ -620,7 +560,7 @@ impl Store {
         let rows = sqlx::query_as::<_, AgentRow>(
             r#"
             SELECT id, name, ip, port, status, cpu_percent, memory_percent, busy, last_seen_at, created_at
-            FROM agents
+            FROM stations
             ORDER BY created_at ASC
             "#,
         )
@@ -633,7 +573,7 @@ impl Store {
         let row = sqlx::query_as::<_, AgentRow>(
             r#"
             SELECT id, name, ip, port, status, cpu_percent, memory_percent, busy, last_seen_at, created_at
-            FROM agents
+            FROM stations
             WHERE id = $1
             "#,
         )
@@ -644,7 +584,7 @@ impl Store {
     }
 
     pub async fn update_agent_status(&self, id: &str, status: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE agents SET status = $1 WHERE id = $2")
+        sqlx::query("UPDATE stations SET status = $1 WHERE id = $2")
             .bind(status)
             .bind(id)
             .execute(&self.pool)
@@ -663,7 +603,7 @@ impl Store {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             r#"
-            UPDATE agents
+            UPDATE stations
             SET status = $1, cpu_percent = $2, memory_percent = $3, busy = $4, last_seen_at = $5
             WHERE id = $6
             "#,
@@ -671,7 +611,7 @@ impl Store {
         .bind(status)
         .bind(cpu_percent)
         .bind(memory_percent)
-        .bind(i64::from(busy))
+        .bind(busy)
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
@@ -686,11 +626,11 @@ impl Store {
     pub async fn get_agent_settings(&self, agent_id: &str) -> Result<AgentSettings, sqlx::Error> {
         let row = sqlx::query_as::<_, AgentSettingsRow>(
             r#"
-            SELECT agent_id, units_json, variables_json,
+            SELECT station_id AS agent_id, variables_json,
                    COALESCE(array_expand_mode, 'semicolon') AS array_expand_mode,
                    updated_at
-            FROM agent_settings
-            WHERE agent_id = $1
+            FROM station_settings
+            WHERE station_id = $1
             "#,
         )
         .bind(agent_id)
@@ -699,14 +639,13 @@ impl Store {
         Ok(row
             .map(|r| r.into_settings())
             .unwrap_or_else(|| AgentSettings {
-                units: Vec::new(),
                 variables: crate::agent_settings::default_agent_variables(),
                 array_expand_mode: crate::agent_settings::ArrayExpandMode::Semicolon,
                 updated_at: None,
             }))
     }
 
-    /// Persist variables + array expand mode; leave legacy `units_json` unchanged.
+    /// Persist variables + array expand mode.
     pub async fn upsert_agent_settings(
         &self,
         agent_id: &str,
@@ -718,9 +657,9 @@ impl Store {
         let mode = array_expand_mode.as_str();
         sqlx::query(
             r#"
-            INSERT INTO agent_settings (agent_id, units_json, variables_json, array_expand_mode, updated_at)
-            VALUES ($1, '[]', $2, $3, $4)
-            ON CONFLICT (agent_id) DO UPDATE SET
+            INSERT INTO station_settings (station_id, variables_json, array_expand_mode, updated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (station_id) DO UPDATE SET
               variables_json = EXCLUDED.variables_json,
               array_expand_mode = EXCLUDED.array_expand_mode,
               updated_at = EXCLUDED.updated_at
@@ -752,29 +691,8 @@ impl Store {
     }
 
     async fn seed_center_units(&self) -> Result<CenterUnits, sqlx::Error> {
-        // Prefer first non-empty historical per-agent units list; else optical defaults.
-        let legacy_rows: Vec<(String,)> = sqlx::query_as(
-            r#"
-            SELECT units_json
-            FROM agent_settings
-            WHERE units_json IS NOT NULL AND units_json <> '' AND units_json <> '[]'
-            ORDER BY updated_at DESC
-            LIMIT 20
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
-
-        let mut units = crate::agent_settings::default_agent_units();
-        for (raw,) in legacy_rows {
-            let parsed = crate::agent_settings::parse_units_json(&raw);
-            if !parsed.is_empty() {
-                units = parsed;
-                break;
-            }
-        }
-        self.upsert_center_units(&units).await
+        self.upsert_center_units(&crate::agent_settings::default_agent_units())
+            .await
     }
 
     pub async fn upsert_center_units(
@@ -806,7 +724,7 @@ impl Store {
         &self,
         agent_id: &str,
     ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
-        self.list_config_profiles("agent_device_profiles", agent_id)
+        self.list_config_profiles(DEVICE_PROFILE_TABLE, agent_id)
             .await
     }
 
@@ -814,7 +732,7 @@ impl Store {
         &self,
         agent_id: &str,
     ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
-        self.list_config_profiles("agent_calibration_profiles", agent_id)
+        self.list_config_profiles(CALIBRATION_PROFILE_TABLE, agent_id)
             .await
     }
 
@@ -823,12 +741,12 @@ impl Store {
         table: &str,
         agent_id: &str,
     ) -> Result<Vec<AgentConfigProfile>, sqlx::Error> {
-        // table is an internal constant only
         let sql = format!(
             r#"
-            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            SELECT id, station_id AS agent_id, name, setting_json::text AS setting_json,
+                   is_active, source_filename, updated_at
             FROM {table}
-            WHERE agent_id = $1
+            WHERE station_id = $1
             ORDER BY name ASC, updated_at DESC
             "#
         );
@@ -848,7 +766,7 @@ impl Store {
         activate: bool,
     ) -> Result<AgentConfigProfile, sqlx::Error> {
         self.create_config_profile(
-            "agent_device_profiles",
+            DEVICE_PROFILE_TABLE,
             agent_id,
             name,
             setting_json,
@@ -867,7 +785,7 @@ impl Store {
         activate: bool,
     ) -> Result<AgentConfigProfile, sqlx::Error> {
         self.create_config_profile(
-            "agent_calibration_profiles",
+            CALIBRATION_PROFILE_TABLE,
             agent_id,
             name,
             setting_json,
@@ -890,13 +808,14 @@ impl Store {
         let now = Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await?;
         if activate {
-            let clear = format!("UPDATE {table} SET is_active = FALSE WHERE agent_id = $1");
+            let clear = format!("UPDATE {table} SET is_active = FALSE WHERE station_id = $1");
             sqlx::query(&clear).bind(agent_id).execute(&mut *tx).await?;
         }
         let insert = format!(
             r#"
-            INSERT INTO {table} (id, agent_id, name, setting_json, is_active, source_filename, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO {table}
+              (id, station_id, name, setting_json, is_active, source_filename, updated_at)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             "#
         );
         sqlx::query(&insert)
@@ -922,7 +841,8 @@ impl Store {
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
         let sql = format!(
             r#"
-            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            SELECT id, station_id AS agent_id, name, setting_json::text AS setting_json,
+                   is_active, source_filename, updated_at
             FROM {table}
             WHERE id = $1
             "#
@@ -938,14 +858,14 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.get_config_profile("agent_device_profiles", id).await
+        self.get_config_profile(DEVICE_PROFILE_TABLE, id).await
     }
 
     pub async fn get_calibration_profile(
         &self,
         id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.get_config_profile("agent_calibration_profiles", id)
+        self.get_config_profile(CALIBRATION_PROFILE_TABLE, id)
             .await
     }
 
@@ -957,7 +877,7 @@ impl Store {
         source_filename: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
         self.update_config_profile(
-            "agent_device_profiles",
+            DEVICE_PROFILE_TABLE,
             id,
             name,
             setting_json,
@@ -974,7 +894,7 @@ impl Store {
         source_filename: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
         self.update_config_profile(
-            "agent_calibration_profiles",
+            CALIBRATION_PROFILE_TABLE,
             id,
             name,
             setting_json,
@@ -995,7 +915,7 @@ impl Store {
         let sql = format!(
             r#"
             UPDATE {table}
-            SET name = $2, setting_json = $3, source_filename = $4, updated_at = $5
+            SET name = $2, setting_json = $3::jsonb, source_filename = $4, updated_at = $5
             WHERE id = $1
             "#
         );
@@ -1014,11 +934,11 @@ impl Store {
     }
 
     pub async fn delete_device_profile(&self, id: &str) -> Result<bool, sqlx::Error> {
-        self.delete_config_profile("agent_device_profiles", id).await
+        self.delete_config_profile(DEVICE_PROFILE_TABLE, id).await
     }
 
     pub async fn delete_calibration_profile(&self, id: &str) -> Result<bool, sqlx::Error> {
-        self.delete_config_profile("agent_calibration_profiles", id)
+        self.delete_config_profile(CALIBRATION_PROFILE_TABLE, id)
             .await
     }
 
@@ -1033,7 +953,7 @@ impl Store {
         agent_id: &str,
         id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.activate_config_profile("agent_device_profiles", agent_id, id)
+        self.activate_config_profile(DEVICE_PROFILE_TABLE, agent_id, id)
             .await
     }
 
@@ -1042,7 +962,7 @@ impl Store {
         agent_id: &str,
         id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.activate_config_profile("agent_calibration_profiles", agent_id, id)
+        self.activate_config_profile(CALIBRATION_PROFILE_TABLE, agent_id, id)
             .await
     }
 
@@ -1060,14 +980,14 @@ impl Store {
             return Ok(None);
         }
         let mut tx = self.pool.begin().await?;
-        let clear = format!("UPDATE {table} SET is_active = FALSE WHERE agent_id = $1");
+        let clear = format!("UPDATE {table} SET is_active = FALSE WHERE station_id = $1");
         sqlx::query(&clear)
             .bind(agent_id)
             .execute(&mut *tx)
             .await?;
         let now = Utc::now().to_rfc3339();
         let set = format!(
-            "UPDATE {table} SET is_active = TRUE, updated_at = $2 WHERE id = $1 AND agent_id = $3"
+            "UPDATE {table} SET is_active = TRUE, updated_at = $2 WHERE id = $1 AND station_id = $3"
         );
         sqlx::query(&set)
             .bind(id)
@@ -1083,7 +1003,7 @@ impl Store {
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.get_active_config_profile("agent_device_profiles", agent_id)
+        self.get_active_config_profile(DEVICE_PROFILE_TABLE, agent_id)
             .await
     }
 
@@ -1091,7 +1011,7 @@ impl Store {
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
-        self.get_active_config_profile("agent_calibration_profiles", agent_id)
+        self.get_active_config_profile(CALIBRATION_PROFILE_TABLE, agent_id)
             .await
     }
 
@@ -1102,9 +1022,10 @@ impl Store {
     ) -> Result<Option<AgentConfigProfile>, sqlx::Error> {
         let sql = format!(
             r#"
-            SELECT id, agent_id, name, setting_json, is_active, source_filename, updated_at
+            SELECT id, station_id AS agent_id, name, setting_json::text AS setting_json,
+                   is_active, source_filename, updated_at
             FROM {table}
-            WHERE agent_id = $1 AND is_active = TRUE
+            WHERE station_id = $1 AND is_active = TRUE
             LIMIT 1
             "#
         );
@@ -1121,9 +1042,9 @@ impl Store {
     ) -> Result<Vec<AgentChannel>, sqlx::Error> {
         let rows = sqlx::query_as::<_, AgentChannelRow>(
             r#"
-            SELECT id, agent_id, channel_index, name, enabled, overlay_json, updated_at
-            FROM agent_channels
-            WHERE agent_id = $1
+            SELECT id, station_id AS agent_id, channel_index, name, enabled, overlay_json, updated_at
+            FROM station_channels
+            WHERE station_id = $1
             ORDER BY channel_index ASC
             "#,
         )
@@ -1146,7 +1067,7 @@ impl Store {
         }
 
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM agent_channels WHERE agent_id = $1")
+        sqlx::query("DELETE FROM station_channels WHERE station_id = $1")
             .bind(agent_id)
             .execute(&mut *tx)
             .await?;
@@ -1156,8 +1077,8 @@ impl Store {
             let id = Uuid::new_v4().to_string();
             sqlx::query(
                 r#"
-                INSERT INTO agent_channels
-                  (id, agent_id, channel_index, name, enabled, overlay_json, updated_at)
+                INSERT INTO station_channels
+                  (id, station_id, channel_index, name, enabled, overlay_json, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 "#,
             )
@@ -1176,315 +1097,6 @@ impl Store {
         self.list_agent_channels(agent_id).await
     }
 
-    pub async fn create_template(
-        &self,
-        name: &str,
-        shell: &str,
-        command: &str,
-        workdir: Option<&str>,
-        timeout_secs: i64,
-    ) -> Result<TaskTemplate, sqlx::Error> {
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        let row = sqlx::query_as::<_, TemplateRow>(
-            r#"
-            INSERT INTO task_templates (id, name, shell, command, workdir, timeout_secs, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, name, shell, command, workdir, timeout_secs, created_at
-            "#,
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(shell)
-        .bind(command)
-        .bind(workdir)
-        .bind(timeout_secs)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.into_template())
-    }
-
-    pub async fn list_templates(&self) -> Result<Vec<TaskTemplate>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, TemplateRow>(
-            r#"
-            SELECT id, name, shell, command, workdir, timeout_secs, created_at
-            FROM task_templates
-            ORDER BY created_at ASC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| r.into_template()).collect())
-    }
-
-    pub async fn get_template(&self, id: &str) -> Result<Option<TaskTemplate>, sqlx::Error> {
-        let row = sqlx::query_as::<_, TemplateRow>(
-            r#"
-            SELECT id, name, shell, command, workdir, timeout_secs, created_at
-            FROM task_templates
-            WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| r.into_template()))
-    }
-
-    pub async fn update_template(
-        &self,
-        id: &str,
-        update: UpdateTemplateParams,
-    ) -> Result<Option<TaskTemplate>, sqlx::Error> {
-        let current = match self.get_template(id).await? {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-        let name = update.name.unwrap_or(current.name);
-        let shell = update.shell.unwrap_or(current.shell);
-        let command = update.command.unwrap_or(current.command);
-        let workdir = match update.workdir {
-            Some(w) => w,
-            None => current.workdir,
-        };
-        let timeout_secs = update.timeout_secs.unwrap_or(current.timeout_secs);
-        sqlx::query(
-            r#"
-            UPDATE task_templates
-            SET name = $1, shell = $2, command = $3, workdir = $4, timeout_secs = $5
-            WHERE id = $6
-            "#,
-        )
-        .bind(&name)
-        .bind(&shell)
-        .bind(&command)
-        .bind(&workdir)
-        .bind(timeout_secs)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        self.get_template(id).await
-    }
-
-    pub async fn delete_template(&self, id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM task_templates WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn create_task(&self, params: CreateTaskParams) -> Result<Task, sqlx::Error> {
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        let row = sqlx::query_as::<_, TaskRow>(
-            r#"
-            INSERT INTO tasks (
-                id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
-                status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued', NULL, '', '', NULL, $9, NULL, NULL)
-            RETURNING
-                id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
-                status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
-            "#,
-        )
-        .bind(&id)
-        .bind(&params.agent_id)
-        .bind(&params.source)
-        .bind(&params.template_id)
-        .bind(&params.shell)
-        .bind(&params.command)
-        .bind(&params.workdir)
-        .bind(params.timeout_secs)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.into_task())
-    }
-
-    pub async fn list_tasks(&self) -> Result<Vec<Task>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, TaskRow>(
-            r#"
-            SELECT
-                id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
-                status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
-            FROM tasks
-            ORDER BY created_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| r.into_task()).collect())
-    }
-
-    pub async fn get_task(&self, id: &str) -> Result<Option<Task>, sqlx::Error> {
-        let row = sqlx::query_as::<_, TaskRow>(
-            r#"
-            SELECT
-                id, agent_id, source, template_id, shell, command, workdir, timeout_secs,
-                status, exit_code, stdout, stderr, agent_task_id, created_at, started_at, finished_at
-            FROM tasks
-            WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| r.into_task()))
-    }
-
-    pub async fn update_task(
-        &self,
-        id: &str,
-        update: TaskUpdate,
-    ) -> Result<Option<Task>, sqlx::Error> {
-        let current = match self.get_task(id).await? {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-        let status = update.status.unwrap_or(current.status);
-        let exit_code = match update.exit_code {
-            Some(v) => v,
-            None => current.exit_code,
-        };
-        let stdout = update.stdout.unwrap_or(current.stdout);
-        let stderr = update.stderr.unwrap_or(current.stderr);
-        let agent_task_id = match update.agent_task_id {
-            Some(v) => v,
-            None => current.agent_task_id,
-        };
-        let started_at = match update.started_at {
-            Some(v) => v,
-            None => current.started_at,
-        };
-        let finished_at = match update.finished_at {
-            Some(v) => v,
-            None => current.finished_at,
-        };
-        sqlx::query(
-            r#"
-            UPDATE tasks
-            SET status = $1, exit_code = $2, stdout = $3, stderr = $4, agent_task_id = $5,
-                started_at = $6, finished_at = $7
-            WHERE id = $8
-            "#,
-        )
-        .bind(&status)
-        .bind(exit_code)
-        .bind(&stdout)
-        .bind(&stderr)
-        .bind(&agent_task_id)
-        .bind(&started_at)
-        .bind(&finished_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        self.get_task(id).await
-    }
-
-    pub async fn insert_screenshot_with_id(
-        &self,
-        id: &str,
-        agent_id: &str,
-        file_path: &str,
-        content_type: &str,
-        byte_size: i64,
-        width: Option<i32>,
-        height: Option<i32>,
-    ) -> Result<Screenshot, sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
-        let row = sqlx::query_as::<_, ScreenshotRow>(
-            r#"
-            INSERT INTO screenshots (
-                id, agent_id, file_path, content_type, byte_size, width, height, created_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, agent_id, file_path, content_type, byte_size, width, height, created_at
-            "#,
-        )
-        .bind(id)
-        .bind(agent_id)
-        .bind(file_path)
-        .bind(content_type)
-        .bind(byte_size)
-        .bind(width)
-        .bind(height)
-        .bind(&now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.into_screenshot())
-    }
-
-    pub async fn insert_screenshot(
-        &self,
-        agent_id: &str,
-        file_path: &str,
-        content_type: &str,
-        byte_size: i64,
-        width: Option<i32>,
-        height: Option<i32>,
-    ) -> Result<Screenshot, sqlx::Error> {
-        let id = Uuid::new_v4().to_string();
-        self.insert_screenshot_with_id(
-            &id,
-            agent_id,
-            file_path,
-            content_type,
-            byte_size,
-            width,
-            height,
-        )
-        .await
-    }
-
-    pub async fn count_screenshots(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM screenshots WHERE agent_id = $1")
-                .bind(agent_id)
-                .fetch_one(&self.pool)
-                .await?;
-        Ok(row.0)
-    }
-
-    pub async fn list_screenshots(
-        &self,
-        agent_id: &str,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<Screenshot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, ScreenshotRow>(
-            r#"
-            SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
-            FROM screenshots
-            WHERE agent_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2 OFFSET $3
-            "#,
-        )
-        .bind(agent_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| r.into_screenshot()).collect())
-    }
-
-    pub async fn get_screenshot(&self, id: &str) -> Result<Option<Screenshot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, ScreenshotRow>(
-            r#"
-            SELECT id, agent_id, file_path, content_type, byte_size, width, height, created_at
-            FROM screenshots
-            WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| r.into_screenshot()))
-    }
-
     pub async fn insert_general_template(
         &self,
         name: &str,
@@ -1501,15 +1113,15 @@ impl Store {
         let row = sqlx::query_as::<_, GeneralTemplateRow>(
             r#"
             INSERT INTO general_templates (
-                name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+                name, origin_station_id, kind, inputs_json, outputs_json, created_at
             )
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING
-                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
             "#,
         )
         .bind(name)
-        .bind(origin_agent_id)
+        .bind(optional_agent_ref(origin_agent_id))
         .bind(kind)
         .bind(&inputs_json)
         .bind(&outputs_json)
@@ -1527,7 +1139,7 @@ impl Store {
         let rows = sqlx::query_as::<_, GeneralTemplateRow>(
             r#"
             SELECT
-                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
             FROM general_templates
             WHERE name = $1
             "#,
@@ -1554,7 +1166,7 @@ impl Store {
         let row = sqlx::query_as::<_, GeneralTemplateRow>(
             r#"
             SELECT
-                id, name, origin_agent_id, kind, inputs_json, outputs_json, created_at
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
             FROM general_templates
             WHERE id = $1
             "#,
@@ -1573,11 +1185,11 @@ impl Store {
         let rows = sqlx::query_as::<_, GeneralTemplateEnrichedRow>(
             r#"
             SELECT
-                t.id, t.name, t.origin_agent_id, t.kind, t.inputs_json, t.outputs_json,
+                t.id, t.name, COALESCE(t.origin_station_id, '') AS origin_agent_id, t.kind, t.inputs_json, t.outputs_json,
                 t.created_at, o.name AS origin_agent_name
             FROM general_templates t
-            LEFT JOIN agents o ON o.id = t.origin_agent_id
-            WHERE ($1::text IS NULL OR t.origin_agent_id = $1)
+            LEFT JOIN stations o ON o.id = t.origin_station_id
+            WHERE ($1::text IS NULL OR t.origin_station_id = $1)
               AND ($2::text IS NULL OR t.kind = $2)
             ORDER BY t.created_at ASC
             "#,
@@ -1617,10 +1229,10 @@ impl Store {
         let tpl: SequenceTemplateRow = sqlx::query_as(
             r#"
             INSERT INTO sequence_templates
-              (name, note, created_by_agent_id, created_at, updated_at)
+              (name, note, created_by_station_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING
-              id, name, note, created_by_agent_id, created_at, updated_at
+              id, name, note, COALESCE(created_by_station_id, '') AS created_by_agent_id, created_at, updated_at
             "#,
         )
         .bind(name)
@@ -1636,9 +1248,9 @@ impl Store {
                 r#"
                 INSERT INTO sequence_template_steps
                   (sequence_template_id, position, template_source, vi_template_id, general_template_id,
-                   inputs_json, enabled, breakpoint, fail_policy, limits_json, note, title, collapsed,
+                   inputs_json, enabled, fail_policy, limits_json, note, section_name, collapsed,
                    resources_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 "#,
             )
             .bind(tpl.id)
@@ -1648,11 +1260,10 @@ impl Store {
             .bind(item.general_template_id)
             .bind(&item.inputs_json)
             .bind(item.enabled)
-            .bind(false) // breakpoints removed; column kept for migration
             .bind(&item.fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
-            .bind(&item.title)
+            .bind(&item.section_name)
             .bind(item.collapsed)
             .bind(&item.resources_json)
             .execute(&mut *tx)
@@ -1666,11 +1277,11 @@ impl Store {
         let rows = sqlx::query_as::<_, SequenceTemplateEnrichedRow>(
             r#"
             SELECT
-              t.id, t.name, t.note, t.created_by_agent_id, t.created_at, t.updated_at,
+              t.id, t.name, t.note, COALESCE(t.created_by_station_id, '') AS created_by_agent_id, t.created_at, t.updated_at,
               a.name AS created_by_agent_name,
               COUNT(s.id) AS step_count
             FROM sequence_templates t
-            LEFT JOIN agents a ON a.id = t.created_by_agent_id
+            LEFT JOIN stations a ON a.id = t.created_by_station_id
             LEFT JOIN sequence_template_steps s ON s.sequence_template_id = t.id
             GROUP BY t.id, a.name
             ORDER BY t.updated_at DESC, t.id DESC
@@ -1685,7 +1296,7 @@ impl Store {
         let row = sqlx::query_as::<_, SequenceTemplateRow>(
             r#"
             SELECT
-              id, name, note, created_by_agent_id, created_at, updated_at
+              id, name, note, COALESCE(created_by_station_id, '') AS created_by_agent_id, created_at, updated_at
             FROM sequence_templates
             WHERE id = $1
             "#,
@@ -1704,8 +1315,8 @@ impl Store {
             r#"
             SELECT
               id, sequence_template_id, position, template_source, vi_template_id,
-              general_template_id, inputs_json, enabled, breakpoint, fail_policy,
-              limits_json, note, title, collapsed, resources_json
+              general_template_id, inputs_json, enabled, fail_policy,
+              limits_json, note, section_name, collapsed, resources_json
             FROM sequence_template_steps
             WHERE sequence_template_id = $1
             ORDER BY position ASC, id ASC
@@ -1746,7 +1357,7 @@ impl Store {
                 fail_policy: step.fail_policy,
                 limits_json: step.limits_json,
                 note: step.note,
-                title: step.title,
+                section_name: step.section_name,
                 collapsed: step.collapsed,
                 resources_json: step.resources_json,
                 spec_template_id: None,
@@ -1839,9 +1450,9 @@ impl Store {
         self.upsert_agent_settings(agent_id, &variables, snapshot.array_expand_mode)
             .await?;
 
-        self.delete_all_config_profiles("agent_device_profiles", agent_id)
+        self.delete_all_config_profiles(DEVICE_PROFILE_TABLE, agent_id)
             .await?;
-        self.delete_all_config_profiles("agent_calibration_profiles", agent_id)
+        self.delete_all_config_profiles(CALIBRATION_PROFILE_TABLE, agent_id)
             .await?;
 
         let mut active_device: Option<String> = None;
@@ -1850,7 +1461,7 @@ impl Store {
                 .map_err(|e| sqlx::Error::Protocol(format!("device setting json: {e}")))?;
             let created = self
                 .create_config_profile(
-                    "agent_device_profiles",
+                    DEVICE_PROFILE_TABLE,
                     agent_id,
                     &profile.name,
                     &setting_json,
@@ -1863,7 +1474,7 @@ impl Store {
             }
         }
         if let Some(id) = active_device {
-            self.activate_config_profile("agent_device_profiles", agent_id, &id)
+            self.activate_config_profile(DEVICE_PROFILE_TABLE, agent_id, &id)
                 .await?;
         }
 
@@ -1873,7 +1484,7 @@ impl Store {
                 .map_err(|e| sqlx::Error::Protocol(format!("calibration setting json: {e}")))?;
             let created = self
                 .create_config_profile(
-                    "agent_calibration_profiles",
+                    CALIBRATION_PROFILE_TABLE,
                     agent_id,
                     &profile.name,
                     &setting_json,
@@ -1886,7 +1497,7 @@ impl Store {
             }
         }
         if let Some(id) = active_calibration {
-            self.activate_config_profile("agent_calibration_profiles", agent_id, &id)
+            self.activate_config_profile(CALIBRATION_PROFILE_TABLE, agent_id, &id)
                 .await?;
         }
 
@@ -1926,11 +1537,13 @@ impl Store {
         let now = Utc::now().to_rfc3339();
         let row = sqlx::query_as::<_, AgentConfigTemplateRow>(
             r#"
-            INSERT INTO agent_config_templates
-              (name, note, source_agent_id, created_by_agent_id, config_json, created_at, updated_at)
+            INSERT INTO station_config_templates
+              (name, note, source_station_id, created_by_station_id, config_json, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
             RETURNING
-              id, name, note, source_agent_id, created_by_agent_id, config_json::text, created_at, updated_at
+              id, name, note, source_station_id AS source_agent_id,
+              COALESCE(created_by_station_id, '') AS created_by_agent_id,
+              config_json::text, created_at, updated_at
             "#,
         )
         .bind(name)
@@ -1951,13 +1564,14 @@ impl Store {
         let rows = sqlx::query_as::<_, AgentConfigTemplateEnrichedRow>(
             r#"
             SELECT
-              t.id, t.name, t.note, t.source_agent_id, t.created_by_agent_id,
+              t.id, t.name, t.note, t.source_station_id AS source_agent_id,
+              COALESCE(t.created_by_station_id, '') AS created_by_agent_id,
               t.config_json::text AS config_json, t.created_at, t.updated_at,
               ca.name AS created_by_agent_name,
               sa.name AS source_agent_name
-            FROM agent_config_templates t
-            LEFT JOIN agents ca ON ca.id = t.created_by_agent_id
-            LEFT JOIN agents sa ON sa.id = t.source_agent_id
+            FROM station_config_templates t
+            LEFT JOIN stations ca ON ca.id = t.created_by_station_id
+            LEFT JOIN stations sa ON sa.id = t.source_station_id
             ORDER BY t.updated_at DESC, t.id DESC
             "#,
         )
@@ -1973,9 +1587,10 @@ impl Store {
         let row = sqlx::query_as::<_, AgentConfigTemplateRow>(
             r#"
             SELECT
-              id, name, note, source_agent_id, created_by_agent_id,
+              id, name, note, source_station_id AS source_agent_id,
+              COALESCE(created_by_station_id, '') AS created_by_agent_id,
               config_json::text AS config_json, created_at, updated_at
-            FROM agent_config_templates
+            FROM station_config_templates
             WHERE id = $1
             "#,
         )
@@ -1986,7 +1601,7 @@ impl Store {
     }
 
     pub async fn delete_agent_config_template(&self, id: i64) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM agent_config_templates WHERE id = $1")
+        let result = sqlx::query("DELETE FROM station_config_templates WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -2006,10 +1621,10 @@ impl Store {
         let row = sqlx::query_as::<_, SpecTemplateRow>(
             r#"
             INSERT INTO spec_templates
-              (name, product_pn, note, source_filename, spec_json, created_by_agent_id, created_at, updated_at)
+              (name, product_pn, note, source_filename, spec_json, created_by_station_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
             RETURNING
-              id, name, product_pn, note, source_filename, spec_json::text, created_by_agent_id, created_at, updated_at
+              id, name, product_pn, note, source_filename, spec_json::text, created_by_station_id AS created_by_agent_id, created_at, updated_at
             "#,
         )
         .bind(name)
@@ -2036,7 +1651,7 @@ impl Store {
                 FROM jsonb_object_keys(COALESCE(t.spec_json->'sections', '{}'::jsonb))
               ) AS section_count
             FROM spec_templates t
-            LEFT JOIN agents a ON a.id = t.created_by_agent_id
+            LEFT JOIN stations a ON a.id = t.created_by_station_id
             ORDER BY t.updated_at DESC, t.id DESC
             "#,
         )
@@ -2049,12 +1664,48 @@ impl Store {
         let row = sqlx::query_as::<_, SpecTemplateRow>(
             r#"
             SELECT
-              id, name, product_pn, note, source_filename, spec_json::text, created_by_agent_id, created_at, updated_at
+              id, name, product_pn, note, source_filename, spec_json::text, created_by_station_id AS created_by_agent_id, created_at, updated_at
             FROM spec_templates
             WHERE id = $1
             "#,
         )
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_template()))
+    }
+
+    pub async fn update_spec_template(
+        &self,
+        id: i64,
+        name: &str,
+        product_pn: &str,
+        note: &str,
+        source_filename: &str,
+        spec_json: &str,
+    ) -> Result<Option<SpecTemplate>, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, SpecTemplateRow>(
+            r#"
+            UPDATE spec_templates
+            SET name = $2,
+                product_pn = $3,
+                note = $4,
+                source_filename = $5,
+                spec_json = $6::jsonb,
+                updated_at = $7
+            WHERE id = $1
+            RETURNING
+              id, name, product_pn, note, source_filename, spec_json::text, created_by_station_id AS created_by_agent_id, created_at, updated_at
+            "#,
+        )
+        .bind(id)
+        .bind(name)
+        .bind(product_pn)
+        .bind(note)
+        .bind(source_filename)
+        .bind(spec_json)
+        .bind(&now)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|r| r.into_template()))
@@ -2082,8 +1733,12 @@ impl Store {
         self.apply_agent_config_snapshot(agent_id, &snapshot).await
     }
 
-    async fn delete_all_config_profiles(&self, table: &str, agent_id: &str) -> Result<(), sqlx::Error> {
-        let sql = format!("DELETE FROM {table} WHERE agent_id = $1");
+    async fn delete_all_config_profiles(
+        &self,
+        table: &str,
+        agent_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let sql = format!("DELETE FROM {table} WHERE station_id = $1");
         sqlx::query(&sql).bind(agent_id).execute(&self.pool).await?;
         Ok(())
     }
@@ -2109,24 +1764,24 @@ impl Store {
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             INSERT INTO vi_templates (
-                name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                name, origin_station_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING
-                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             "#,
         )
         .bind(name)
-        .bind(origin_agent_id)
+        .bind(optional_agent_ref(origin_agent_id))
         .bind(kind)
         .bind(vi_path)
         .bind(cli_path)
         .bind(getinfo_path)
         .bind(&inputs_json)
         .bind(&outputs_json)
-        .bind(i64::from(show_front_panel))
+        .bind(show_front_panel)
         .bind(timeout_secs)
         .bind(&now)
         .fetch_one(&self.pool)
@@ -2145,7 +1800,7 @@ impl Store {
         let rows = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             SELECT
-                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE name = $1
@@ -2198,7 +1853,7 @@ impl Store {
         )
         .bind(&name)
         .bind(&inputs_json)
-        .bind(i64::from(show_front_panel))
+        .bind(show_front_panel)
         .bind(timeout_secs)
         .bind(id)
         .execute(&self.pool)
@@ -2344,10 +1999,10 @@ impl Store {
         let rows = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             SELECT
-                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
-            WHERE ($1::text IS NULL OR origin_agent_id = $1)
+            WHERE ($1::text IS NULL OR origin_station_id = $1)
               AND ($2::text IS NULL OR kind = $2)
             ORDER BY created_at ASC
             "#,
@@ -2367,12 +2022,12 @@ impl Store {
         let rows = sqlx::query_as::<_, ViTemplateEnrichedRow>(
             r#"
             SELECT
-                t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
+                t.id, t.name, COALESCE(t.origin_station_id, '') AS origin_agent_id, t.kind, t.vi_path, t.cli_path,
                 t.getinfo_path, t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
                 t.created_at, o.name AS origin_agent_name
             FROM vi_templates t
-            LEFT JOIN agents o ON o.id = t.origin_agent_id
-            WHERE ($1::text IS NULL OR t.origin_agent_id = $1)
+            LEFT JOIN stations o ON o.id = t.origin_station_id
+            WHERE ($1::text IS NULL OR t.origin_station_id = $1)
               AND ($2::text IS NULL OR t.kind = $2)
             ORDER BY t.created_at ASC
             "#,
@@ -2391,11 +2046,11 @@ impl Store {
         let row = sqlx::query_as::<_, ViTemplateEnrichedRow>(
             r#"
             SELECT
-                t.id, t.name, t.origin_agent_id, t.kind, t.vi_path, t.cli_path,
+                t.id, t.name, COALESCE(t.origin_station_id, '') AS origin_agent_id, t.kind, t.vi_path, t.cli_path,
                 t.getinfo_path, t.inputs_json, t.outputs_json, t.show_front_panel, t.timeout_secs,
                 t.created_at, o.name AS origin_agent_name
             FROM vi_templates t
-            LEFT JOIN agents o ON o.id = t.origin_agent_id
+            LEFT JOIN stations o ON o.id = t.origin_station_id
             WHERE t.id = $1
             "#,
         )
@@ -2409,7 +2064,7 @@ impl Store {
         let row = sqlx::query_as::<_, ViTemplateRow>(
             r#"
             SELECT
-                id, name, origin_agent_id, kind, vi_path, cli_path, getinfo_path,
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, vi_path, cli_path, getinfo_path,
                 inputs_json, outputs_json, show_front_panel, timeout_secs, created_at
             FROM vi_templates
             WHERE id = $1
@@ -2424,29 +2079,29 @@ impl Store {
     pub async fn list_vi_run_queue(&self, agent_id: &str) -> Result<Vec<ViRunQueueItem>, sqlx::Error> {
         let rows = sqlx::query_as::<_, ViRunQueueItemRow>(
             r#"
-            SELECT q.id, q.agent_id,
+            SELECT q.id, q.station_id AS agent_id,
                    q.template_source,
                    q.vi_template_id, q.general_template_id, q.position, q.created_at,
                    CASE
-                     WHEN q.template_source = 'group' THEN COALESCE(NULLIF(q.title, ''), '分组')
+                     WHEN q.template_source = 'section' THEN COALESCE(NULLIF(q.section_name, ''), 'Default')
                      ELSE COALESCE(v.name, g.name, '')
                    END AS template_name,
                    CASE
-                     WHEN q.template_source = 'group' THEN 'group'
+                     WHEN q.template_source = 'section' THEN 'section'
                      ELSE COALESCE(v.kind, g.kind, 'labview')
                    END AS kind,
                    COALESCE(v.vi_path, '') AS vi_path,
                    COALESCE(q.inputs_json, v.inputs_json, g.inputs_json, '[]') AS inputs_json,
                    COALESCE(v.outputs_json, g.outputs_json, '[]') AS outputs_json,
-                   COALESCE(v.show_front_panel, 0) AS show_front_panel,
+                   COALESCE(v.show_front_panel, false) AS show_front_panel,
                    v.timeout_secs AS timeout_secs,
-                   q.enabled, q.breakpoint, q.fail_policy, q.limits_json, q.note,
-                   q.title, q.collapsed, q.resources_json,
+                   q.enabled, q.fail_policy, q.limits_json, q.note,
+                   q.section_name, q.collapsed, q.resources_json,
                    q.spec_template_id, q.spec_section, q.spec_metrics_json
             FROM vi_run_queue_items q
             LEFT JOIN vi_templates v ON v.id = q.vi_template_id
             LEFT JOIN general_templates g ON g.id = q.general_template_id
-            WHERE q.agent_id = $1
+            WHERE q.station_id = $1
             ORDER BY q.position ASC
             "#,
         )
@@ -2528,16 +2183,16 @@ impl Store {
                 .await?;
             let source = item.template_source.as_str();
             match source {
-                "group" => {
-                    let title = item.title.trim();
-                    let title = if title.is_empty() {
-                        "分组".to_string()
+                "section" => {
+                    let section_name = item.section_name.trim();
+                    let section_name = if section_name.is_empty() {
+                        DEFAULT_QUEUE_SECTION_TITLE.to_string()
                     } else {
-                        title.to_string()
+                        section_name.to_string()
                     };
                     let spec_section = item.spec_section.trim().to_string();
                     normalized_items.push(ViRunQueueReplaceItem {
-                        template_source: "group".into(),
+                        template_source: QUEUE_SECTION_SOURCE.into(),
                         vi_template_id: None,
                         general_template_id: None,
                         inputs_json: Some("[]".into()),
@@ -2546,7 +2201,7 @@ impl Store {
                         fail_policy: "stop".into(),
                         limits_json: "[]".into(),
                         note: item.note.clone(),
-                        title,
+                        section_name,
                         collapsed: item.collapsed,
                         resources_json: "[]".into(),
                         spec_template_id: item.spec_template_id,
@@ -2578,7 +2233,7 @@ impl Store {
                                 .clone()
                                 .unwrap_or_else(|| template.inputs_json.clone()),
                         ),
-                        title: String::new(),
+                        section_name: String::new(),
                         collapsed: false,
                         ..item.clone()
                     });
@@ -2607,7 +2262,7 @@ impl Store {
                                 .clone()
                                 .unwrap_or_else(|| template.inputs_json.clone()),
                         ),
-                        title: String::new(),
+                        section_name: String::new(),
                         collapsed: false,
                         ..item.clone()
                     });
@@ -2617,7 +2272,7 @@ impl Store {
 
         let mut tx = self.pool.begin().await.map_err(QueueReplaceError::Db)?;
 
-        sqlx::query("DELETE FROM vi_run_queue_items WHERE agent_id = $1")
+        sqlx::query("DELETE FROM vi_run_queue_items WHERE station_id = $1")
             .bind(agent_id)
             .execute(&mut *tx)
             .await
@@ -2630,10 +2285,10 @@ impl Store {
             sqlx::query(
                 r#"
                 INSERT INTO vi_run_queue_items
-                  (id, agent_id, vi_template_id, general_template_id, inputs_json, position, created_at,
-                   enabled, breakpoint, fail_policy, limits_json, note, title, collapsed, template_source,
+                  (id, station_id, vi_template_id, general_template_id, inputs_json, position, created_at,
+                   enabled, fail_policy, limits_json, note, section_name, collapsed, template_source,
                    resources_json, spec_template_id, spec_section, spec_metrics_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 "#,
             )
             .bind(&id)
@@ -2644,11 +2299,10 @@ impl Store {
             .bind(position as i64)
             .bind(&now)
             .bind(item.enabled)
-            .bind(false) // breakpoints removed; column kept for migration
             .bind(fail_policy)
             .bind(&item.limits_json)
             .bind(&item.note)
-            .bind(&item.title)
+            .bind(&item.section_name)
             .bind(item.collapsed)
             .bind(&item.template_source)
             .bind(&item.resources_json)
@@ -2689,7 +2343,7 @@ struct AgentRow {
     status: String,
     cpu_percent: f32,
     memory_percent: f32,
-    busy: i64,
+    busy: bool,
     last_seen_at: Option<String>,
     created_at: String,
 }
@@ -2704,91 +2358,11 @@ impl AgentRow {
             status: self.status,
             cpu_percent: self.cpu_percent,
             memory_percent: self.memory_percent,
-            busy: self.busy != 0,
+            busy: self.busy,
             last_seen_at: self.last_seen_at,
             created_at: self.created_at,
         }
     }
-}
-
-#[derive(sqlx::FromRow)]
-struct TemplateRow {
-    id: String,
-    name: String,
-    shell: String,
-    command: String,
-    workdir: Option<String>,
-    timeout_secs: i64,
-    created_at: String,
-}
-
-impl TemplateRow {
-    fn into_template(self) -> TaskTemplate {
-        TaskTemplate {
-            id: self.id,
-            name: self.name,
-            shell: self.shell,
-            command: self.command,
-            workdir: self.workdir,
-            timeout_secs: self.timeout_secs,
-            created_at: self.created_at,
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct TaskRow {
-    id: String,
-    agent_id: String,
-    source: String,
-    template_id: Option<String>,
-    shell: String,
-    command: String,
-    workdir: Option<String>,
-    timeout_secs: i64,
-    status: String,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    agent_task_id: Option<String>,
-    created_at: String,
-    started_at: Option<String>,
-    finished_at: Option<String>,
-}
-
-impl TaskRow {
-    fn into_task(self) -> Task {
-        Task {
-            id: self.id,
-            agent_id: self.agent_id,
-            source: self.source,
-            template_id: self.template_id,
-            shell: self.shell,
-            command: self.command,
-            workdir: self.workdir,
-            timeout_secs: self.timeout_secs,
-            status: self.status,
-            exit_code: self.exit_code,
-            stdout: self.stdout,
-            stderr: self.stderr,
-            agent_task_id: self.agent_task_id,
-            created_at: self.created_at,
-            started_at: self.started_at,
-            finished_at: self.finished_at,
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct ScreenshotRow {
-    id: String,
-    agent_id: String,
-    file_path: String,
-    content_type: String,
-    byte_size: i64,
-    width: Option<i32>,
-    height: Option<i32>,
-    created_at: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2802,7 +2376,7 @@ struct ViTemplateRow {
     getinfo_path: String,
     inputs_json: String,
     outputs_json: String,
-    show_front_panel: i64,
+    show_front_panel: bool,
     timeout_secs: Option<i64>,
     created_at: String,
 }
@@ -2832,14 +2406,13 @@ struct ViRunQueueItemRow {
     vi_path: String,
     inputs_json: String,
     outputs_json: String,
-    show_front_panel: i64,
+    show_front_panel: bool,
     timeout_secs: Option<i64>,
     enabled: bool,
-    breakpoint: bool,
     fail_policy: String,
     limits_json: String,
     note: String,
-    title: String,
+    section_name: String,
     collapsed: bool,
     resources_json: String,
     spec_template_id: Option<i64>,
@@ -2862,14 +2435,13 @@ impl ViRunQueueItemRow {
             vi_path: self.vi_path,
             inputs_json: self.inputs_json,
             outputs_json: self.outputs_json,
-            show_front_panel: self.show_front_panel != 0,
+            show_front_panel: self.show_front_panel,
             timeout_secs: self.timeout_secs,
             enabled: self.enabled,
-            breakpoint: self.breakpoint,
             fail_policy: self.fail_policy,
             limits_json: self.limits_json,
             note: self.note,
-            title: self.title,
+            section_name: self.section_name,
             collapsed: self.collapsed,
             resources_json: self.resources_json,
             spec_template_id: self.spec_template_id,
@@ -2912,11 +2484,10 @@ struct SequenceTemplateStepRow {
     general_template_id: Option<i64>,
     inputs_json: String,
     enabled: bool,
-    breakpoint: bool,
     fail_policy: String,
     limits_json: String,
     note: String,
-    title: String,
+    section_name: String,
     collapsed: bool,
     resources_json: String,
 }
@@ -2932,11 +2503,10 @@ impl SequenceTemplateStepRow {
             general_template_id: self.general_template_id,
             inputs_json: self.inputs_json,
             enabled: self.enabled,
-            breakpoint: self.breakpoint,
             fail_policy: self.fail_policy,
             limits_json: self.limits_json,
             note: self.note,
-            title: self.title,
+            section_name: self.section_name,
             collapsed: self.collapsed,
             resources_json: self.resources_json,
         }
@@ -3097,7 +2667,7 @@ struct ViTemplateEnrichedRow {
     getinfo_path: String,
     inputs_json: String,
     outputs_json: String,
-    show_front_panel: i64,
+    show_front_panel: bool,
     timeout_secs: Option<i64>,
     created_at: String,
     origin_agent_name: Option<String>,
@@ -3127,7 +2697,7 @@ impl ViTemplateRow {
             getinfo_path: self.getinfo_path,
             inputs_json: self.inputs_json,
             outputs_json: self.outputs_json,
-            show_front_panel: self.show_front_panel != 0,
+            show_front_panel: self.show_front_panel,
             timeout_secs: self.timeout_secs,
             created_at: self.created_at,
         }
@@ -3161,7 +2731,7 @@ impl ViTemplateEnrichedRow {
                 getinfo_path: self.getinfo_path,
                 inputs_json: self.inputs_json,
                 outputs_json: self.outputs_json,
-                show_front_panel: self.show_front_panel != 0,
+                show_front_panel: self.show_front_panel,
                 timeout_secs: self.timeout_secs,
                 created_at: self.created_at,
             },
@@ -3187,25 +2757,17 @@ impl GeneralTemplateEnrichedRow {
     }
 }
 
-impl ScreenshotRow {
-    fn into_screenshot(self) -> Screenshot {
-        Screenshot {
-            id: self.id,
-            agent_id: self.agent_id,
-            file_path: self.file_path,
-            content_type: self.content_type,
-            byte_size: self.byte_size,
-            width: self.width,
-            height: self.height,
-            created_at: self.created_at,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn is_queue_section_marker_only_accepts_section() {
+        assert!(is_queue_section_marker("section"));
+        assert!(!is_queue_section_marker("group"));
+        assert!(!is_queue_section_marker("labview"));
+    }
 
     async fn test_store() -> crate::db::GuardedStore {
         crate::db::GuardedStore::new().await
@@ -3220,82 +2782,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_task_starts_as_queued() {
+    async fn config_profiles_are_isolated_by_kind() {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
-        let task = store
-            .create_task(CreateTaskParams {
-                agent_id: agent.id,
-                source: "ad_hoc".into(),
-                template_id: None,
-                shell: "cmd".into(),
-                command: "echo hi".into(),
-                workdir: None,
-                timeout_secs: 300,
-            })
+        let device = store
+            .create_device_profile(&agent.id, "D1", r#"{"A":1}"#, "d.ini", true)
             .await
             .unwrap();
-        assert_eq!(task.status, "queued");
-    }
-
-    #[tokio::test]
-    async fn update_task_can_set_succeeded() {
-        let store = test_store().await;
-        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
-        let task = store
-            .create_task(CreateTaskParams {
-                agent_id: agent.id,
-                source: "ad_hoc".into(),
-                template_id: None,
-                shell: "cmd".into(),
-                command: "echo hi".into(),
-                workdir: None,
-                timeout_secs: 300,
-            })
+        let cal = store
+            .create_calibration_profile(&agent.id, "C1", r#"{"B":2}"#, "c.ini", true)
             .await
             .unwrap();
-        let finished_at = Utc::now().to_rfc3339();
-        store
-            .update_task(
-                &task.id,
-                TaskUpdate {
-                    status: Some("succeeded".into()),
-                    exit_code: Some(Some(0)),
-                    stdout: Some("hi".into()),
-                    finished_at: Some(Some(finished_at.clone())),
-                    ..TaskUpdate::default()
-                },
-            )
-            .await
-            .unwrap();
-        let got = store.get_task(&task.id).await.unwrap().unwrap();
-        assert_eq!(got.status, "succeeded");
-        assert_eq!(got.exit_code, Some(0));
-        assert_eq!(got.stdout, "hi");
-        assert_eq!(got.finished_at, Some(finished_at));
-    }
-
-    #[tokio::test]
-    async fn insert_and_list_screenshots() {
-        let store = test_store().await;
-        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
-        let meta = store
-            .insert_screenshot(
-                &agent.id,
-                "data/screenshots/x/y.png",
-                "image/png",
-                12,
-                Some(1),
-                Some(1),
-            )
-            .await
-            .unwrap();
-        let total = store.count_screenshots(&agent.id).await.unwrap();
-        assert_eq!(total, 1);
-        let page = store.list_screenshots(&agent.id, 50, 0).await.unwrap();
-        assert_eq!(page.len(), 1);
-        assert_eq!(page[0].id, meta.id);
-        assert!(store.get_screenshot(&meta.id).await.unwrap().is_some());
+        assert!(device.is_active);
+        assert!(cal.is_active);
+        assert_eq!(store.list_device_profiles(&agent.id).await.unwrap().len(), 1);
+        assert_eq!(
+            store.list_calibration_profiles(&agent.id).await.unwrap().len(),
+            1
+        );
+        assert!(store.get_device_profile(&cal.id).await.unwrap().is_none());
+        assert!(store.get_calibration_profile(&device.id).await.unwrap().is_none());
+        assert_eq!(
+            store
+                .get_active_device_profile(&agent.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            device.id
+        );
+        assert_eq!(
+            store
+                .get_active_calibration_profile(&agent.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            cal.id
+        );
     }
 
     #[tokio::test]
@@ -3648,26 +3172,6 @@ mod tests {
         assert_eq!(all.len(), 2);
     }
 
-    #[tokio::test]
-    async fn insert_screenshot_with_id_uses_given_id() {
-        let store = test_store().await;
-        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
-        let id = Uuid::new_v4().to_string();
-        let meta = store
-            .insert_screenshot_with_id(
-                &id,
-                &agent.id,
-                "data/screenshots/x/y.png",
-                "image/png",
-                12,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(meta.id, id);
-    }
-
     async fn vi_template_for_agent(store: &Store, agent_id: &str, name: &str, vi_path: &str) -> ViTemplate {
         let inputs = serde_json::json!([]);
         store
@@ -3699,7 +3203,7 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
-                title: "".into(),
+                section_name: "".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
                 spec_template_id: None,
@@ -3793,6 +3297,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_agent_keeps_shared_templates() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let vi = vi_template_for_agent(&store, &agent.id, "T", r"C:\t.vi").await;
+        let general = store
+            .insert_general_template(
+                "Delay",
+                &agent.id,
+                "delay",
+                &serde_json::json!([{"name": "ms", "value": 10}]),
+                &serde_json::json!([]),
+            )
+            .await
+            .unwrap();
+
+        store
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[vi.id]))
+            .await
+            .unwrap();
+
+        sqlx::query("DELETE FROM stations WHERE id = $1")
+            .bind(&agent.id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+
+        let kept_vi = store.get_vi_template(vi.id).await.unwrap().unwrap();
+        assert_eq!(kept_vi.id, vi.id);
+        assert!(kept_vi.origin_agent_id.is_empty());
+
+        let kept_general = store.get_general_template(general.id).await.unwrap().unwrap();
+        assert_eq!(kept_general.id, general.id);
+        assert!(kept_general.origin_agent_id.is_empty());
+        assert!(store.get_agent(&agent.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_vi_template_cascades_sequence_steps() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let keep = vi_template_for_agent(&store, &agent.id, "Keep", r"C:\keep.vi").await;
+        let drop = vi_template_for_agent(&store, &agent.id, "Drop", r"C:\drop.vi").await;
+
+        let listed = store
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[keep.id, drop.id]))
+            .await
+            .unwrap();
+        let seq = store
+            .create_sequence_template_from_queue(&agent.id, "seq", "", &listed)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_sequence_template_steps(seq.id).await.unwrap().len(),
+            2
+        );
+
+        assert!(store.delete_vi_template(drop.id).await.unwrap());
+        let steps = store.get_sequence_template_steps(seq.id).await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].vi_template_id, Some(keep.id));
+        assert!(store.get_sequence_template(seq.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn vi_run_queue_persists_step_meta() {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
@@ -3808,7 +3376,7 @@ mod tests {
             fail_policy: "continue".into(),
             limits_json: r#"[{"output":"Power_dBm","min":-5.0,"max":3.0,"unit":"dBm"}]"#.into(),
             note: "ch1".into(),
-            title: "".into(),
+            section_name: "".into(),
             collapsed: false,
             resources_json: "[]".into(),
             spec_template_id: None,
@@ -3818,7 +3386,6 @@ mod tests {
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].enabled);
-        assert!(!listed[0].breakpoint);
         assert_eq!(listed[0].fail_policy, "continue");
         assert!(listed[0].inputs_json.contains("\"Channel\""));
         assert!(listed[0].limits_json.contains("Power_dBm"));
@@ -3826,14 +3393,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vi_run_queue_accepts_group_headers() {
+    async fn vi_run_queue_accepts_section_headers() {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let tpl = vi_template_for_agent(&store, &agent.id, "A", r"C:\a.vi").await;
 
         let items = vec![
             ViRunQueueReplaceItem {
-                template_source: "group".into(),
+                template_source: "section".into(),
                 vi_template_id: None,
                 general_template_id: None,
                 inputs_json: None,
@@ -3842,7 +3409,7 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
-                title: "预处理".into(),
+                section_name: "预处理".into(),
                 collapsed: true,
                 resources_json: "[]".into(),
                 spec_template_id: None,
@@ -3859,7 +3426,7 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
-                title: "".into(),
+                section_name: "".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
                 spec_template_id: None,
@@ -3869,7 +3436,7 @@ mod tests {
         ];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].template_source, "group");
+        assert_eq!(listed[0].template_source, "section");
         assert_eq!(listed[0].template_name, "预处理");
         assert!(listed[0].collapsed);
         assert!(listed[0].vi_template_id.is_none());
@@ -3885,8 +3452,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0].template_source, "group");
-        assert_eq!(steps[0].title, "预处理");
+        assert_eq!(steps[0].template_source, "section");
+        assert_eq!(steps[0].section_name, "预处理");
         assert!(steps[0].collapsed);
 
         store
@@ -3898,12 +3465,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reloaded.len(), 2);
-        assert_eq!(reloaded[0].template_source, "group");
+        assert_eq!(reloaded[0].template_source, "section");
         assert_eq!(reloaded[0].template_name, "预处理");
     }
 
     #[tokio::test]
-    async fn vi_run_queue_group_spec_roundtrip() {
+    async fn vi_run_queue_section_spec_roundtrip() {
         let store = test_store().await;
         let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
         let spec_json = r#"{"version":1,"sections":{"FMT_HT":{"TX_AP":{"min":-2,"max":4}}}}"#;
@@ -3922,7 +3489,7 @@ mod tests {
 
         let items = vec![
             ViRunQueueReplaceItem {
-                template_source: "group".into(),
+                template_source: "section".into(),
                 vi_template_id: None,
                 general_template_id: None,
                 inputs_json: None,
@@ -3931,7 +3498,7 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
-                title: "光模块".into(),
+                section_name: "光模块".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
                 spec_template_id: Some(spec_tpl.id),
@@ -3948,7 +3515,7 @@ mod tests {
                 fail_policy: "stop".into(),
                 limits_json: "[]".into(),
                 note: "".into(),
-                title: "".into(),
+                section_name: "".into(),
                 collapsed: false,
                 resources_json: "[]".into(),
                 spec_template_id: Some(spec_tpl.id),
@@ -3958,7 +3525,7 @@ mod tests {
         ];
         let listed = store.replace_vi_run_queue(&agent.id, &items).await.unwrap();
         assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].template_source, "group");
+        assert_eq!(listed[0].template_source, "section");
         assert_eq!(listed[0].template_name, "光模块");
         assert_eq!(listed[0].spec_template_id, Some(spec_tpl.id));
         assert_eq!(listed[0].spec_section, "FMT_HT");
@@ -3966,6 +3533,38 @@ mod tests {
         let reloaded = store.list_vi_run_queue(&agent.id).await.unwrap();
         assert_eq!(reloaded[0].spec_template_id, Some(spec_tpl.id));
         assert_eq!(reloaded[0].spec_section, "FMT_HT");
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_empty_section_name_becomes_default() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let listed = store
+            .replace_vi_run_queue(
+                &agent.id,
+                &[ViRunQueueReplaceItem {
+                    template_source: "section".into(),
+                    vi_template_id: None,
+                    general_template_id: None,
+                    inputs_json: None,
+                    enabled: true,
+                    breakpoint: false,
+                    fail_policy: "stop".into(),
+                    limits_json: "[]".into(),
+                    note: "".into(),
+                    section_name: "".into(),
+                    collapsed: false,
+                    resources_json: "[]".into(),
+                    spec_template_id: None,
+                    spec_section: String::new(),
+                    spec_metrics_json: "[]".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed[0].template_source, "section");
+        assert_eq!(listed[0].section_name, "Default");
+        assert_eq!(listed[0].template_name, "Default");
     }
 
     #[tokio::test]
@@ -3999,7 +3598,7 @@ mod tests {
             fail_policy: "stop".into(),
             limits_json: "[]".into(),
             note: "".into(),
-            title: "".into(),
+            section_name: "".into(),
             collapsed: false,
             resources_json: "[]".into(),
             spec_template_id: Some(spec_tpl.id),

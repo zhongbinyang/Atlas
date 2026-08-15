@@ -10,6 +10,3 @@ CREATE TABLE IF NOT EXISTS agent_channels (
 
 CREATE UNIQUE INDEX IF NOT EXISTS agent_channels_agent_index_uidx
   ON agent_channels (agent_id, channel_index);
-
-CREATE INDEX IF NOT EXISTS agent_channels_agent_id_idx
-  ON agent_channels (agent_id);

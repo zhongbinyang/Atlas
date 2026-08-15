@@ -1,25 +1,12 @@
-import { App as AntApp, Button, Card, Input, Space, Table, Typography } from 'antd';
+import { App as AntApp, Button, Card, Input, Space, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { UnitRow } from '../api/types';
+import { PageHeader } from '../components/PageHeader';
+import { EDITOR_TABLE_PAGINATION } from '../utils/tableHelpers';
 
 type EditableUnitRow = UnitRow & { _key: string };
-
-const DEFAULT_CENTER_UNITS: UnitRow[] = [
-  { symbol: 'dBm', description: '光功率，相对 1 mW' },
-  { symbol: 'dB', description: '相对量（消光比、回损、增益等）' },
-  { symbol: 'nm', description: '波长' },
-  { symbol: '°C', description: '温度（壳体/环境）' },
-  { symbol: 'V', description: '电压（供电/监测）' },
-  { symbol: 'mA', description: '电流（偏置、功耗）' },
-  { symbol: 'mW', description: '光功率（毫瓦）' },
-  { symbol: 'µW', description: '光功率（微瓦）' },
-  { symbol: 'Gbps', description: '线速率 / 比特率' },
-  { symbol: 'ps', description: '时间或抖动（皮秒）' },
-  { symbol: 'UI', description: 'Unit Interval（归一化抖动）' },
-  { symbol: '%', description: '百分比' },
-];
 
 let nextUnitKey = 0;
 
@@ -47,7 +34,6 @@ export function UnitsPage() {
     try {
       const nextUnits = await schedulerApi.listUnits();
       setUnits(normalizeUnits(Array.isArray(nextUnits) ? nextUnits : []));
-      message.success('已加载 ' + nextUnits.length + ' 个单位');
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       setUnits([]);
@@ -61,24 +47,19 @@ export function UnitsPage() {
     void load();
   }, [load]);
 
-  const updateUnit = useCallback((index: number, patch: Partial<UnitRow>) => {
+  const updateUnit = useCallback((key: string, patch: Partial<UnitRow>) => {
     setUnits((current) =>
-      current.map((unit, unitIndex) => (unitIndex === index ? { ...unit, ...patch } : unit)),
+      current.map((unit) => (unit._key === key ? { ...unit, ...patch } : unit)),
     );
   }, []);
 
-  const removeUnit = useCallback((index: number) => {
-    setUnits((current) => current.filter((_, unitIndex) => unitIndex !== index));
+  const removeUnit = useCallback((key: string) => {
+    setUnits((current) => current.filter((unit) => unit._key !== key));
   }, []);
 
   const addUnit = useCallback(() => {
     setUnits((current) => [...current, { _key: unitKey(), symbol: '', description: '' }]);
   }, []);
-
-  const restoreDefaults = useCallback(() => {
-    setUnits(normalizeUnits(DEFAULT_CENTER_UNITS));
-    message.success('已恢复默认单位（未保存）');
-  }, [message]);
 
   const save = useCallback(async () => {
     const unitsToSave = units
@@ -124,29 +105,31 @@ export function UnitsPage() {
       {
         title: '单位',
         dataIndex: 'symbol',
-        render: (value, _record, index) => (
+        render: (value, record) => (
           <Input
             maxLength={32}
             value={String(value || '')}
-            onChange={(event) => updateUnit(index, { symbol: event.target.value })}
+            onChange={(event) => updateUnit(record._key, { symbol: event.target.value })}
           />
         ),
       },
       {
         title: '说明',
         dataIndex: 'description',
-        render: (value, _record, index) => (
+        render: (value, record) => (
           <Input
             maxLength={200}
             value={String(value || '')}
-            onChange={(event) => updateUnit(index, { description: event.target.value })}
+            onChange={(event) => updateUnit(record._key, { description: event.target.value })}
           />
         ),
       },
       {
-        title: '',
-        render: (_, _record, index) => (
-          <Button danger size="small" onClick={() => removeUnit(index)}>
+        title: '操作',
+        width: 80,
+        fixed: 'right',
+        render: (_, record) => (
+          <Button danger size="small" onClick={() => removeUnit(record._key)}>
             删除
           </Button>
         ),
@@ -157,20 +140,21 @@ export function UnitsPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          单位
-        </Typography.Title>
-        <Space>
-          <Button onClick={restoreDefaults}>恢复默认</Button>
-          <Button onClick={addUnit}>+ 添加</Button>
-          <Button type="primary" onClick={() => void save()} loading={saving}>
-            保存
-          </Button>
-        </Space>
-      </Space>
-
-      <Typography.Text type="secondary">全局共享；所有机台 Spec 单位下拉共用此表。</Typography.Text>
+      <PageHeader
+        title="单位"
+        description="全局共享；所有机台 Spec 单位下拉共用此表。"
+        extra={
+          <Space>
+            <Button onClick={() => void load()} loading={loading}>
+              刷新
+            </Button>
+            <Button onClick={addUnit}>+ 添加</Button>
+            <Button type="primary" onClick={() => void save()} loading={saving}>
+              保存
+            </Button>
+          </Space>
+        }
+      />
 
       <Card>
         <Table
@@ -178,8 +162,8 @@ export function UnitsPage() {
           columns={columns}
           dataSource={units}
           loading={loading}
-          locale={{ emptyText: '暂无单位，可添加或恢复默认' }}
-          pagination={false}
+          locale={{ emptyText: '暂无单位，可添加' }}
+          pagination={EDITOR_TABLE_PAGINATION}
         />
       </Card>
     </Space>

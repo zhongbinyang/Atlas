@@ -209,3 +209,54 @@ export function textToSettingJson(
   }
   return iniToSettingJson(text);
 }
+
+export type EditableSettingRow = {
+  _key: string;
+  section: string;
+  key: string;
+  value: string;
+};
+
+export type PrepareSettingResult =
+  | {
+      ok: true;
+      setting: Record<string, Record<string, string | number | Array<string | number>>>;
+    }
+  | { ok: false; error: string };
+
+let nextSettingRow = 0;
+
+export function settingRowKey(): string {
+  nextSettingRow += 1;
+  return `set-${nextSettingRow}`;
+}
+
+export function settingToEditableRows(setting: unknown): EditableSettingRow[] {
+  return settingToFlatPreviewRows(setting).map((row) => ({
+    _key: settingRowKey(),
+    section: row.section,
+    key: row.key,
+    value: row.value,
+  }));
+}
+
+export function prepareSettingFromRows(rows: EditableSettingRow[]): PrepareSettingResult {
+  const setting: Record<string, Record<string, string | number | Array<string | number>>> = {};
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const section = row.section.trim();
+    const key = row.key.trim();
+    const rawValue = row.value.trim();
+    if (!section && !key && !rawValue) continue;
+    if (!section || !key) return { ok: false, error: '段和键必须同时填写' };
+    const id = `${section}\0${key}`;
+    if (seen.has(id)) return { ok: false, error: `重复项：[${section}] ${key}` };
+    seen.add(id);
+    const value = coerceIniScalarOrArray(row.value);
+    if (value === '' || value == null) continue;
+    if (Array.isArray(value) && !value.length) continue;
+    if (!setting[section]) setting[section] = {};
+    setting[section][key] = value;
+  }
+  return { ok: true, setting };
+}
