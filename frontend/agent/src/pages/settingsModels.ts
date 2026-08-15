@@ -263,6 +263,10 @@ export function flatRowsToSetting(
   return setting;
 }
 
+export function activeProfileName(profiles: ConfigProfile[]): string {
+  return profiles.find((p) => p.is_active)?.name ?? '';
+}
+
 export function overlayObjectFromUnknown(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeProfileName,
   flatRowsToSetting,
   isSystemVarName,
   normalizeArrayExpandMode,
@@ -44,5 +45,27 @@ describe('settingsModels', () => {
       Port: '7',
       skip: '',
     });
+  });
+
+  it('picks the active profile name', () => {
+    expect(
+      activeProfileName([
+        {
+          id: '1',
+          name: 'Old',
+          setting: {},
+          is_active: false,
+          source_filename: 'a.ini',
+        },
+        {
+          id: '2',
+          name: 'Live',
+          setting: {},
+          is_active: true,
+          source_filename: 'b.ini',
+        },
+      ]),
+    ).toBe('Live');
+    expect(activeProfileName([])).toBe('');
   });
 });

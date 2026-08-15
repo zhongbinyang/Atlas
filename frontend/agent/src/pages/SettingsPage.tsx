@@ -11,7 +11,6 @@ import {
   Table,
   Tag,
   Typography,
-  Upload,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { REFRESH_LABEL } from '../lib/uiCopy';
@@ -19,16 +18,14 @@ import { agentApi } from '../api/agentApi';
 import { ApiError } from '../api/client';
 import { CollapsibleCard } from '../components/CollapsibleCard';
 import { PageHeader } from '../components/PageHeader';
+import { centerConfigsPageUrl } from '../utils/centerUrl';
 import {
   type ConfigProfile,
-  type FlatPreviewRow,
-  flatRowsToSetting,
+  activeProfileName,
   isSystemVarName,
   normalizeArrayExpandMode,
   normalizeConfigProfile,
   overlayObjectFromUnknown,
-  settingToFlatPreviewRows,
-  textToSettingJson,
 } from './settingsModels';
 
 type VariableRow = {
@@ -61,8 +58,6 @@ type ConfigTemplateRow = {
   created_by_agent_name?: string;
   updated_at?: string;
 };
-
-type ProfileKind = 'device' | 'calibration';
 
 const formatTemplateTime = (value?: string) => {
   if (!value) return '—';
@@ -99,301 +94,33 @@ const overlayFromPairs = (pairs: OverlayPair[]): Record<string, string> => {
   return out;
 };
 
-function ProfileSection({
-  kind,
+function ReadOnlyProfileTable({
   title,
   profiles,
-  busy,
-  onRefresh,
-  onDirtyChange,
 }: {
-  kind: ProfileKind;
   title: string;
   profiles: ConfigProfile[];
-  busy: boolean;
-  onRefresh: () => Promise<void>;
-  onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const { message, modal } = App.useApp();
-  const [flatRows, setFlatRows] = useState<FlatPreviewRow[]>([]);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importName, setImportName] = useState('');
-  const [importFilename, setImportFilename] = useState('');
-  const [importSetting, setImportSetting] = useState<Record<string, unknown>>({});
-  const [importPreviewRows, setImportPreviewRows] = useState<FlatPreviewRow[]>([]);
-  const [importActivate, setImportActivate] = useState(true);
-  const [viewOpen, setViewOpen] = useState(false);
-  const [viewProfile, setViewProfile] = useState<ConfigProfile | null>(null);
-  const [savingFlat, setSavingFlat] = useState(false);
-
-  const active = useMemo(() => profiles.find((p) => p.is_active) || null, [profiles]);
-
-  useEffect(() => {
-    setFlatRows(active ? settingToFlatPreviewRows(active.setting) : []);
-  }, [active]);
-
-  const flatRowsDirty = useMemo(() => {
-    if (!active) return false;
-    const original = settingToFlatPreviewRows(active.setting);
-    return JSON.stringify(flatRows) !== JSON.stringify(original);
-  }, [active, flatRows]);
-
-  useEffect(() => {
-    onDirtyChange?.(flatRowsDirty);
-  }, [flatRowsDirty, onDirtyChange]);
-
-  const createProfile = kind === 'device' ? agentApi.createDeviceProfile : agentApi.createCalibrationProfile;
-  const updateProfile = kind === 'device' ? agentApi.updateDeviceProfile : agentApi.updateCalibrationProfile;
-  const deleteProfile = kind === 'device' ? agentApi.deleteDeviceProfile : agentApi.deleteCalibrationProfile;
-  const activateProfile =
-    kind === 'device' ? agentApi.activateDeviceProfile : agentApi.activateCalibrationProfile;
-
-  const openImportFromText = (text: string, filename: string) => {
-    const parsed = textToSettingJson(text, filename);
-    const base = filename.replace(/\.[^.]+$/, '') || (kind === 'calibration' ? 'Calibration' : 'Device');
-    setImportFilename(filename);
-    setImportName(base);
-    setImportSetting(parsed.setting);
-    setImportPreviewRows(parsed.rows);
-    setImportActivate(true);
-    setImportOpen(true);
-  };
-
-  const confirmImport = async () => {
-    const name = importName.trim();
-    if (!name) {
-      message.error('请填写配置档名称');
-      return;
-    }
-    try {
-      await createProfile({
-        name,
-        setting: importSetting,
-        source_filename: importFilename,
-        activate: importActivate,
-      });
-      message.success(`已导入${kind === 'calibration' ? '校准' : '设备'}配置档`);
-      setImportOpen(false);
-      await onRefresh();
-    } catch (error) {
-      message.error(`导入失败: ${getErrorMessage(error)}`);
-    }
-  };
-
-  const saveFlat = async () => {
-    if (!active?.id) {
-      message.warning(`没有当前启用的${kind === 'calibration' ? '校准' : '设备'}配置档`);
-      return;
-    }
-    setSavingFlat(true);
-    try {
-      await updateProfile(active.id, {
-        name: active.name,
-        setting: flatRowsToSetting(flatRows, active.setting),
-        source_filename: active.source_filename || '',
-      });
-      message.success('已保存当前配置档扁平值');
-      await onRefresh();
-    } catch (error) {
-      message.error(`保存失败: ${getErrorMessage(error)}`);
-    } finally {
-      setSavingFlat(false);
-    }
-  };
-
+  const current = activeProfileName(profiles);
   return (
-    <CollapsibleCard
-      title={title}
-      extra={
-        <Space wrap>
-          <Upload
-            accept=".ini,.toml,text/plain"
-            showUploadList={false}
-            beforeUpload={(file) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                openImportFromText(String(reader.result || ''), file.name);
-              };
-              reader.readAsText(file);
-              return false;
-            }}
-          >
-            <Button disabled={busy}>导入 INI/TOML</Button>
-          </Upload>
-          <Button disabled={busy || !active} loading={savingFlat} type="primary" onClick={() => void saveFlat()}>
-            保存当前扁平值
-          </Button>
-        </Space>
-      }
-    >
-      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-        运行时展开为 <Typography.Text code>${'{Section_Key}'}</Typography.Text>
-        ；手工变量与通道 overlay 优先级更高。
-      </Typography.Paragraph>
-
+    <CollapsibleCard title={title} extra={current ? <Tag color="success">{current}</Tag> : null}>
       <Table
         size="small"
         pagination={false}
-        locale={{ emptyText: '暂无配置档，请导入' }}
+        locale={{ emptyText: '暂无配置档' }}
         rowKey={(row) => row.id || row.name}
         dataSource={profiles}
         columns={[
           { title: '名称', dataIndex: 'name', ellipsis: true },
           {
             title: '状态',
+            dataIndex: 'is_active',
             width: 90,
-            render: (_, row) => (row.is_active ? <Tag color="success">当前</Tag> : <Tag>备用</Tag>),
+            render: (active: boolean) => (active ? <Tag color="success">当前</Tag> : <Tag>备用</Tag>),
           },
           { title: '来源文件', dataIndex: 'source_filename', ellipsis: true },
-          {
-            title: '操作',
-            width: 220,
-            render: (_, row) => (
-              <Space wrap size={0}>
-                {!row.is_active ? (
-                  <Button
-                    size="small"
-                    type="link"
-                    disabled={busy || !row.id}
-                    onClick={() => {
-                      void (async () => {
-                        try {
-                          await activateProfile(row.id);
-                          message.success(`已启用：${row.name}`);
-                          await onRefresh();
-                        } catch (error) {
-                          message.error(`启用失败: ${getErrorMessage(error)}`);
-                        }
-                      })();
-                    }}
-                  >
-                    启用
-                  </Button>
-                ) : null}
-                <Button
-                  size="small"
-                  type="link"
-                  onClick={() => {
-                    setViewProfile(row);
-                    setViewOpen(true);
-                  }}
-                >
-                  查看
-                </Button>
-                <Button
-                  size="small"
-                  type="link"
-                  danger
-                  disabled={busy || !row.id}
-                  onClick={() => {
-                    modal.confirm({
-                      title: `删除配置档「${row.name}」？`,
-                      okText: '删除',
-                      okButtonProps: { danger: true },
-                      async onOk() {
-                        await deleteProfile(row.id);
-                        message.success('已删除');
-                        await onRefresh();
-                      },
-                    });
-                  }}
-                >
-                  删除
-                </Button>
-              </Space>
-            ),
-          },
         ]}
       />
-
-      <Typography.Title level={5} style={{ marginTop: 16 }}>
-        当前启用扁平预览{active ? ` · ${active.name}` : ''}
-      </Typography.Title>
-      {!active ? (
-        <Typography.Text type="secondary">尚未启用配置档</Typography.Text>
-      ) : (
-        <Table
-          size="small"
-          pagination={false}
-          rowKey={(row) => row.flatName}
-          dataSource={flatRows}
-          locale={{ emptyText: '当前配置档无有效键' }}
-          columns={[
-            {
-              title: '变量',
-              width: 220,
-              render: (_, row) => <Typography.Text code>{`\${${row.flatName}}`}</Typography.Text>,
-            },
-            {
-              title: '值',
-              render: (_, row, index) => (
-                <Input
-                  className="atlas-mono-textarea"
-                  value={row.value}
-                  onChange={(e) => {
-                    const next = flatRows.slice();
-                    next[index] = { ...next[index], value: e.target.value };
-                    setFlatRows(next);
-                  }}
-                />
-              ),
-            },
-            {
-              title: '说明',
-              width: 220,
-              render: (_, row, index) => (
-                <Input
-                  value={row.description}
-                  onChange={(e) => {
-                    const next = flatRows.slice();
-                    next[index] = { ...next[index], description: e.target.value };
-                    setFlatRows(next);
-                  }}
-                />
-              ),
-            },
-          ]}
-        />
-      )}
-
-      <Modal
-        title={`导入为${kind === 'calibration' ? '校准' : '设备'}配置档`}
-        open={importOpen}
-        onCancel={() => setImportOpen(false)}
-        onOk={() => void confirmImport()}
-        okText="导入"
-        destroyOnClose
-      >
-        <Form layout="vertical">
-          <Form.Item label="名称" required>
-            <Input value={importName} onChange={(e) => setImportName(e.target.value)} />
-          </Form.Item>
-          <Form.Item label="来源文件">
-            <Typography.Text type="secondary">{importFilename || '—'}</Typography.Text>
-          </Form.Item>
-          <Form.Item label="预览">
-            <Typography.Text type="secondary">
-              共 {importPreviewRows.length} 个扁平键；导入后可按需启用。
-            </Typography.Text>
-          </Form.Item>
-          <Form.Item label="导入后启用">
-            <Switch checked={importActivate} onChange={setImportActivate} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title={viewProfile ? `配置档 · ${viewProfile.name}` : '配置档'}
-        open={viewOpen}
-        onCancel={() => setViewOpen(false)}
-        footer={<Button onClick={() => setViewOpen(false)}>关闭</Button>}
-        width={720}
-        destroyOnClose
-      >
-        <pre className="atlas-json" style={{ maxHeight: 480 }}>
-          {JSON.stringify(viewProfile?.setting ?? {}, null, 2)}
-        </pre>
-      </Modal>
     </CollapsibleCard>
   );
 }
@@ -412,12 +139,11 @@ export function SettingsPage() {
   const [saveTemplateName, setSaveTemplateName] = useState('');
   const [saveTemplateNote, setSaveTemplateNote] = useState('');
   const [agentHostname, setAgentHostname] = useState('');
+  const [centerUrl, setCenterUrl] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dirtyBlocks, setDirtyBlocks] = useState({
     variables: false,
     channels: false,
-    deviceProfile: false,
-    calibrationProfile: false,
   });
 
   const hasUnsavedEdits = useMemo(
@@ -429,8 +155,6 @@ export function SettingsPage() {
     setDirtyBlocks({
       variables: false,
       channels: false,
-      deviceProfile: false,
-      calibrationProfile: false,
     });
   };
 
@@ -445,13 +169,15 @@ export function SettingsPage() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [settings, channelsResp, unitsResp, deviceList, calibrationList] = await Promise.all([
+      const [settings, channelsResp, unitsResp, deviceList, calibrationList, status] = await Promise.all([
         agentApi.getSettings(),
         agentApi.getChannels(),
         agentApi.getUnits().catch(() => ({ units: [] })),
         agentApi.listDeviceProfiles().catch(() => []),
         agentApi.listCalibrationProfiles().catch(() => []),
+        agentApi.status().catch(() => null),
       ]);
+      setCenterUrl(status?.center_url ?? '');
       const settingsData = asRecord(settings);
       const vars = Array.isArray(settingsData.variables)
         ? settingsData.variables.map((item) => {
@@ -559,6 +285,8 @@ export function SettingsPage() {
       .catch(() => {});
   }, []);
 
+  const configsUrl = centerConfigsPageUrl(centerUrl);
+
   const configSnapshotSummary = useMemo(() => {
     const enabledChannels = channels.filter((ch) => ch.enabled).length;
     return `变量 ${variables.length} · 设备档 ${deviceProfiles.length} · 校准档 ${calibrationProfiles.length} · 通道 ${channels.length}（启用 ${enabledChannels}）· 单位 ${units.length}`;
@@ -571,7 +299,7 @@ export function SettingsPage() {
     }
     modal.confirm({
       title: '放弃未保存的更改？',
-      content: '刷新将丢弃变量、通道与配置档扁平值等未保存的编辑。',
+      content: '刷新将丢弃变量与通道等未保存的编辑。',
       okText: REFRESH_LABEL,
       okType: 'danger',
       cancelText: '取消',
@@ -729,6 +457,21 @@ export function SettingsPage() {
           <Button onClick={requestReload} loading={busy}>
             {REFRESH_LABEL}
           </Button>
+        }
+      />
+
+      <Alert
+        type="info"
+        showIcon
+        message="设备与校验配置在中心维护"
+        description={
+          configsUrl ? (
+            <a href={configsUrl} target="_blank" rel="noreferrer">
+              打开中心机台配置
+            </a>
+          ) : (
+            '未配置 AGENT_CENTER_URL，无法打开中心。'
+          )
         }
       />
 
@@ -965,31 +708,9 @@ export function SettingsPage() {
         />
       </CollapsibleCard>
 
-      <ProfileSection
-        kind="device"
-        title="设备配置档"
-        profiles={deviceProfiles}
-        busy={busy}
-        onRefresh={load}
-        onDirtyChange={(dirty) =>
-          setDirtyBlocks((prev) =>
-            prev.deviceProfile === dirty ? prev : { ...prev, deviceProfile: dirty },
-          )
-        }
-      />
+      <ReadOnlyProfileTable title="设备配置档" profiles={deviceProfiles} />
 
-      <ProfileSection
-        kind="calibration"
-        title="校准配置档"
-        profiles={calibrationProfiles}
-        busy={busy}
-        onRefresh={load}
-        onDirtyChange={(dirty) =>
-          setDirtyBlocks((prev) =>
-            prev.calibrationProfile === dirty ? prev : { ...prev, calibrationProfile: dirty },
-          )
-        }
-      />
+      <ReadOnlyProfileTable title="校准配置档" profiles={calibrationProfiles} />
 
       <CollapsibleCard
         title="通道"
