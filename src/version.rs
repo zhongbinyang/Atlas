@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub fn format_build_version(date: &str, sha: &str, dirty: bool) -> String {
     if dirty {
         format!("{date}.{sha}-dirty")

@@ -7,6 +7,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ATLAS_GIT_DIRTY");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
 
     let date = env::var("ATLAS_BUILD_DATE").unwrap_or_else(|_| {
         chrono::Local::now().format("%Y-%m-%d").to_string()
@@ -15,7 +17,7 @@ fn main() {
         .unwrap_or_else(|_| git_short_sha().unwrap_or_else(|| "unknown".into()));
     let dirty = match env::var("ATLAS_GIT_DIRTY") {
         Ok(value) => value == "1",
-        Err(_) => git_is_dirty(),
+        Err(_) => sha != "unknown" && git_is_dirty(),
     };
     let git = if dirty {
         format!("{sha}-dirty")
