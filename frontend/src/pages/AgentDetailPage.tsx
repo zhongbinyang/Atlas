@@ -4,16 +4,14 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
 import { PageHeader } from '../components/PageHeader';
 import { agentStatus, formatAgentHeartbeat, type Agent } from '../lib/agentTelemetry';
+import { STATUS_LED } from '../theme';
 import { formatPercent, statusLabel } from './MachinesPage';
 
 const POLL_MS = 2000;
 const MAX_POLL_MS = 30000;
 
 function statusColor(agent: Agent): string {
-  const status = agentStatus(agent);
-  if (status === 'offline') return 'red';
-  if (status === 'busy') return 'gold';
-  return 'green';
+  return STATUS_LED[agentStatus(agent)];
 }
 
 export function AgentDetailPage() {
@@ -117,7 +115,10 @@ export function AgentDetailPage() {
         </Typography.Text>
       </Space>
 
-      <Card loading={loading && !agent}>
+      <Card
+        className={agent ? 'atlas-station-card atlas-station-card--' + agentStatus(agent) : undefined}
+        loading={loading && !agent}
+      >
         {agent ? (
           <Descriptions bordered column={1}>
             <Descriptions.Item label="状态">

@@ -1,10 +1,11 @@
-import { App as AntApp, Button, Card, Input, Space, Table } from 'antd';
+import { App as AntApp, Button, Card, Input, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { schedulerApi } from '../api/schedulerApi';
 import type { UnitRow } from '../api/types';
 import { PageHeader } from '../components/PageHeader';
-import { EDITOR_TABLE_PAGINATION } from '../utils/tableHelpers';
+import { insertAtPageStart, matchesTableQuery } from '../utils/tableHelpers';
+import { useTablePagination } from '../utils/useTablePagination';
 
 type EditableUnitRow = UnitRow & { _key: string };
 
@@ -26,8 +27,10 @@ function normalizeUnits(units: UnitRow[]): EditableUnitRow[] {
 export function UnitsPage() {
   const { message } = AntApp.useApp();
   const [units, setUnits] = useState<EditableUnitRow[]>([]);
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const { current, pageSize, pagination, showFirstPage } = useTablePagination();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,8 +61,21 @@ export function UnitsPage() {
   }, []);
 
   const addUnit = useCallback(() => {
-    setUnits((current) => [...current, { _key: unitKey(), symbol: '', description: '' }]);
-  }, []);
+    setQuery('');
+    setUnits((currentUnits) =>
+      insertAtPageStart(
+        currentUnits,
+        { _key: unitKey(), symbol: '', description: '' },
+        current,
+        pageSize,
+      ),
+    );
+  }, [current, pageSize]);
+
+  const visibleUnits = useMemo(
+    () => units.filter((unit) => matchesTableQuery(query, [unit.symbol, unit.description])),
+    [query, units],
+  );
 
   const save = useCallback(async () => {
     const unitsToSave = units
@@ -107,6 +123,8 @@ export function UnitsPage() {
         dataIndex: 'symbol',
         render: (value, record) => (
           <Input
+            variant="borderless"
+            size="small"
             maxLength={32}
             value={String(value || '')}
             onChange={(event) => updateUnit(record._key, { symbol: event.target.value })}
@@ -118,6 +136,8 @@ export function UnitsPage() {
         dataIndex: 'description',
         render: (value, record) => (
           <Input
+            variant="borderless"
+            size="small"
             maxLength={200}
             value={String(value || '')}
             onChange={(event) => updateUnit(record._key, { description: event.target.value })}
@@ -145,26 +165,42 @@ export function UnitsPage() {
         description="全局共享；所有机台 Spec 单位下拉共用此表。"
         extra={
           <Space>
-            <Button onClick={() => void load()} loading={loading}>
-              刷新
-            </Button>
-            <Button onClick={addUnit}>+ 添加</Button>
+            <Button onClick={addUnit}>新建</Button>
             <Button type="primary" onClick={() => void save()} loading={saving}>
               保存
+            </Button>
+            <Button onClick={() => void load()} loading={loading}>
+              刷新
             </Button>
           </Space>
         }
       />
 
       <Card>
-        <Table
-          rowKey={(record) => record._key}
-          columns={columns}
-          dataSource={units}
-          loading={loading}
-          locale={{ emptyText: '暂无单位，可添加' }}
-          pagination={EDITOR_TABLE_PAGINATION}
-        />
+        <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+          <Space wrap align="center">
+            <Typography.Text>筛选</Typography.Text>
+            <Input
+              allowClear
+              placeholder="单位或说明"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                showFirstPage();
+              }}
+              style={{ width: 240 }}
+            />
+          </Space>
+          <Table
+            rowKey={(record) => record._key}
+            columns={columns}
+            dataSource={visibleUnits}
+            loading={loading}
+            locale={{ emptyText: query.trim() ? '无匹配单位' : '暂无单位，可新建' }}
+            pagination={pagination}
+            scroll={{ x: true }}
+          />
+        </Space>
       </Card>
     </Space>
   );

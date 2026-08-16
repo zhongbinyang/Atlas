@@ -358,6 +358,7 @@ sequenceDiagram
 | GET | `/api/sequence-templates` | **中心 WebUI** · **Agent 进程** | |
 | POST | `/api/sequence-templates` | **Agent 进程** | 自该机 run-queue 快照建模板 |
 | GET | `/api/sequence-templates/{id}` | **未使用** | |
+| PUT | `/api/sequence-templates/{id}` | **Agent 进程** | 用该机当前 run-queue 覆盖模板步骤 |
 | DELETE | `/api/sequence-templates/{id}` | **中心 WebUI** | |
 | POST | `/api/sequence-templates/{id}/load-to-station` | **Agent 进程** | 覆盖 DB 中该机队列（非 HTTP 推 Agent） |
 | GET | `/api/spec-templates` | **中心 WebUI** · **Agent 进程** | 产品 Spec 模板列表 |
@@ -434,6 +435,7 @@ Query：`agent_id?` · `kind?`
 **GET** `/api/sequence-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
 **POST** `/api/sequence-templates` · 使用方：**Agent 进程** — `{ "agent_id", "name", "note?" }`（服务端用该机当前 run-queue 生成 steps）  
 **GET** `/api/sequence-templates/{id}` · 使用方：**未使用**  
+**PUT** `/api/sequence-templates/{id}` · 使用方：**Agent 进程** — `{ "agent_id", "name?", "note?" }`（用该机当前 run-queue 覆盖步骤；名称/备注省略则保留）  
 **DELETE** `/api/sequence-templates/{id}` · 使用方：**中心 WebUI** → `204`  
 **POST** `/api/sequence-templates/{id}/load-to-station` · 使用方：**Agent 进程** — `{ "agent_id" }` → 覆盖 `vi_run_queue_items`
 
@@ -741,6 +743,7 @@ Query：`agent_id` `overall` `sn` `from` `to` `limit` `offset`
 | POST | `/api/sequence/run/abort` | **Agent WebUI** | 置 cancel，各通道在步间/等锁时停止 |
 | GET | `/api/sequence-templates` | **Agent WebUI** | → 中心列表 |
 | POST | `/api/sequence-templates` | **Agent WebUI** | → 中心创建（带 agent_id） |
+| PUT | `/api/sequence-templates/{id}` | **Agent WebUI** | → 中心覆盖当前模板 |
 | POST | `/api/sequence-templates/{id}/load` | **Agent WebUI** | → 中心 load-to-station |
 | GET | `/api/settings` | **Agent WebUI** | → 中心 settings GET（含 profiles；units 只读） |
 | PUT | `/api/settings` | **Agent WebUI** | → 中心 settings PUT（仅 variables） |

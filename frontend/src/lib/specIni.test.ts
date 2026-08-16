@@ -5,6 +5,7 @@ import {
   prepareSpecFromRows,
   specDocumentToJson,
   specToEditableRows,
+  suggestSaveAsName,
 } from './specIni';
 
 describe('parseSpecIni', () => {
@@ -105,6 +106,14 @@ describe('spec editable rows', () => {
     expect(
       prepareSpecFromRows([{ _key: '1', section: 'A', metric: '', min: '0', max: '1' }]),
     ).toEqual({ ok: false, error: 'Section 和指标必须同时填写' });
+  });
+});
+
+describe('suggestSaveAsName', () => {
+  it('appends 副本 and keeps an existing suffix', () => {
+    expect(suggestSaveAsName('FMT HT')).toBe('FMT HT 副本');
+    expect(suggestSaveAsName('FMT HT 副本')).toBe('FMT HT 副本');
+    expect(suggestSaveAsName('   ')).toBe('Spec 模板 副本');
   });
 });
 

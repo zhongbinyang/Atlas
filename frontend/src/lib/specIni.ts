@@ -260,3 +260,10 @@ export function prepareSpecFromRows(rows: EditableSpecRow[]): PrepareSpecResult 
   }
   return { ok: true, spec: { version: 1, sections } };
 }
+
+export function suggestSaveAsName(name: string): string {
+  const suffix = ' 副本';
+  const trimmed = name.trim() || 'Spec 模板';
+  const next = trimmed.endsWith(suffix) ? trimmed : `${trimmed}${suffix}`;
+  return next.slice(0, 128);
+}

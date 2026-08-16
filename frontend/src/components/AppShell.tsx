@@ -1,4 +1,4 @@
-import { Layout, Menu, Typography } from 'antd';
+import { Layout, Menu } from 'antd';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 const { Header, Content } = Layout;
@@ -21,26 +21,24 @@ export function AppShell() {
     : items.find((i) => location.pathname.startsWith(i.key))?.key ?? '/machines';
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-        <div
-          style={{ color: '#fff', cursor: 'pointer', lineHeight: 1.2 }}
-          onClick={() => navigate('/machines')}
-        >
-          <Typography.Text strong style={{ color: '#fff', fontSize: 18 }}>
-            ATLAS
-          </Typography.Text>
-          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>测试机台编排</div>
-        </div>
+    <Layout className="atlas-shell">
+      <Header className="atlas-header">
+        <button type="button" className="atlas-brand" onClick={() => navigate('/machines')}>
+          <span className="atlas-led" aria-hidden="true" />
+          <span className="atlas-brand-text">
+            <span className="atlas-wordmark">ATLAS</span>
+            <span className="atlas-tagline">测试机台编排</span>
+          </span>
+        </button>
         <Menu
+          className="atlas-nav"
           theme="dark"
           mode="horizontal"
           selectedKeys={[selected]}
           items={items}
-          style={{ flex: 1, minWidth: 0 }}
         />
       </Header>
-      <Content style={{ padding: 24 }}>
+      <Content className="atlas-content">
         <Outlet />
       </Content>
     </Layout>

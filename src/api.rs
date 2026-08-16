@@ -250,6 +250,13 @@ pub struct CreateSequenceTemplateRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateSequenceTemplateRequest {
+    pub agent_id: String,
+    pub name: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LoadSequenceTemplateToAgentRequest {
     pub agent_id: String,
 }
@@ -629,7 +636,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/sequence-templates/{id}",
-            get(get_sequence_template).delete(delete_sequence_template),
+            get(get_sequence_template)
+                .put(update_sequence_template)
+                .delete(delete_sequence_template),
         )
         .route(
             "/api/sequence-templates/{id}/load-to-station",
@@ -2112,6 +2121,74 @@ async fn create_sequence_template(
         }
         Err(e) => {
             tracing::error!("create sequence template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn update_sequence_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateSequenceTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "agent_id is required".into(),
+            }),
+        )
+            .into_response();
+    }
+    let queue_items = match s.store.list_vi_run_queue(req.agent_id.trim()).await {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::error!("list vi run queue for sequence template update: {e}");
+            return db_error().into_response();
+        }
+    };
+    if queue_items.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "run queue is empty".into(),
+            }),
+        )
+            .into_response();
+    }
+    match s
+        .store
+        .replace_sequence_template_from_queue(
+            id,
+            req.name.as_deref(),
+            req.note.as_deref(),
+            &queue_items,
+        )
+        .await
+    {
+        Ok(Some(template)) => {
+            let enriched = SequenceTemplateEnriched {
+                template,
+                created_by_agent_name: s
+                    .store
+                    .get_agent(req.agent_id.trim())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name),
+                step_count: queue_items.len() as i64,
+            };
+            (StatusCode::OK, Json(sequence_template_list_item_view(enriched))).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "sequence template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("update sequence template: {e}");
             db_error().into_response()
         }
     }

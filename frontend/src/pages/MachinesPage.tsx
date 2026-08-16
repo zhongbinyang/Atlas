@@ -24,6 +24,7 @@ import {
   type Agent,
   type TelemetryFilters,
 } from '../lib/agentTelemetry';
+import { STATUS_LED } from '../theme';
 
 const POLL_MS = 2000;
 const MAX_POLL_MS = 30000;
@@ -52,10 +53,7 @@ export function formatPercent(value: number): string {
 }
 
 function statusColor(agent: Agent): string {
-  const status = agentStatus(agent);
-  if (status === 'offline') return 'red';
-  if (status === 'busy') return 'gold';
-  return 'green';
+  return STATUS_LED[agentStatus(agent)];
 }
 
 export function MachinesPage() {
@@ -225,6 +223,7 @@ export function MachinesPage() {
           {telemetry.visibleAgents.map((agent) => (
             <Col key={agent.id} xs={24} sm={12} lg={8} xl={6}>
               <Card
+                className={'atlas-station-card atlas-station-card--' + agentStatus(agent)}
                 hoverable
                 role="button"
                 tabIndex={0}

@@ -3,10 +3,10 @@ import { Tooltip } from 'antd';
 
 export function HelpTip({ text }: { text: string }) {
   return (
-    <Tooltip title={text} overlayInnerStyle={{ whiteSpace: 'pre-wrap', maxWidth: 360 }}>
+    <Tooltip title={text} styles={{ body: { whiteSpace: 'pre-wrap', maxWidth: 360 } }}>
       <QuestionCircleOutlined
         aria-label="帮助"
-        style={{ color: 'rgba(0, 0, 0, 0.45)', cursor: 'help', marginLeft: 4 }}
+        style={{ color: 'var(--atlas-mute)', cursor: 'help', marginLeft: 4 }}
       />
     </Tooltip>
   );

@@ -1273,6 +1273,73 @@ impl Store {
         Ok(tpl.into_sequence_template())
     }
 
+    pub async fn replace_sequence_template_from_queue(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        note: Option<&str>,
+        queue_items: &[ViRunQueueItem],
+    ) -> Result<Option<SequenceTemplate>, sqlx::Error> {
+        let Some(existing) = self.get_sequence_template(id).await? else {
+            return Ok(None);
+        };
+        let next_name = name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(existing.name.as_str())
+            .to_string();
+        let next_note = note.unwrap_or(existing.note.as_str()).to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let tpl: SequenceTemplateRow = sqlx::query_as(
+            r#"
+            UPDATE sequence_templates
+            SET name = $1, note = $2, updated_at = $3
+            WHERE id = $4
+            RETURNING
+              id, name, note, COALESCE(created_by_station_id, '') AS created_by_agent_id, created_at, updated_at
+            "#,
+        )
+        .bind(&next_name)
+        .bind(&next_note)
+        .bind(&now)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM sequence_template_steps WHERE sequence_template_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        for item in queue_items {
+            sqlx::query(
+                r#"
+                INSERT INTO sequence_template_steps
+                  (sequence_template_id, position, template_source, vi_template_id, general_template_id,
+                   inputs_json, enabled, fail_policy, limits_json, note, section_name, collapsed,
+                   resources_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                "#,
+            )
+            .bind(tpl.id)
+            .bind(item.position)
+            .bind(&item.template_source)
+            .bind(item.vi_template_id)
+            .bind(item.general_template_id)
+            .bind(&item.inputs_json)
+            .bind(item.enabled)
+            .bind(&item.fail_policy)
+            .bind(&item.limits_json)
+            .bind(&item.note)
+            .bind(&item.section_name)
+            .bind(item.collapsed)
+            .bind(&item.resources_json)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(Some(tpl.into_sequence_template()))
+    }
+
     pub async fn list_sequence_templates(&self) -> Result<Vec<SequenceTemplateEnriched>, sqlx::Error> {
         let rows = sqlx::query_as::<_, SequenceTemplateEnrichedRow>(
             r#"
@@ -3358,6 +3425,42 @@ mod tests {
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].vi_template_id, Some(keep.id));
         assert!(store.get_sequence_template(seq.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn replace_sequence_template_overwrites_steps_and_keeps_name() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let first = vi_template_for_agent(&store, &agent.id, "First", r"C:\first.vi").await;
+        let second = vi_template_for_agent(&store, &agent.id, "Second", r"C:\second.vi").await;
+        let listed = store
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[first.id]))
+            .await
+            .unwrap();
+        let seq = store
+            .create_sequence_template_from_queue(&agent.id, "test001", "old note", &listed)
+            .await
+            .unwrap();
+
+        let next_queue = store
+            .replace_vi_run_queue(&agent.id, &default_queue_items(&[first.id, second.id]))
+            .await
+            .unwrap();
+        let updated = store
+            .replace_sequence_template_from_queue(seq.id, None, None, &next_queue)
+            .await
+            .unwrap()
+            .expect("template exists");
+        assert_eq!(updated.name, "test001");
+        assert_eq!(updated.note, "old note");
+        let steps = store.get_sequence_template_steps(seq.id).await.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].vi_template_id, Some(second.id));
+        assert!(store
+            .replace_sequence_template_from_queue(999_999, None, None, &next_queue)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

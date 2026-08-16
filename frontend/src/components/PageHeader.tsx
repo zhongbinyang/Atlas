@@ -17,7 +17,7 @@ export function PageHeader({
   backLabel = '返回列表',
 }: PageHeaderProps) {
   return (
-    <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+    <Space className="atlas-page-header" direction="vertical" size={4} style={{ display: 'flex' }}>
       <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
         <Space>
           {onBack ? <Button onClick={onBack}>{backLabel}</Button> : null}

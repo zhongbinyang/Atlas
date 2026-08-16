@@ -15,7 +15,7 @@ import {
   Typography,
   Upload,
 } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
 import type { AgentConfigProfile, AgentConfigSummary } from '../api/types';
@@ -28,7 +28,7 @@ import {
   textToSettingJson,
   type EditableSettingRow,
 } from '../lib/deviceCfgIni';
-import { EDITOR_TABLE_PAGINATION } from '../utils/tableHelpers';
+import { DEFAULT_TABLE_PAGINATION } from '../utils/tableHelpers';
 import { CONFIG_HELP } from './configHelp';
 import {
   isSystemVarName,
@@ -49,6 +49,10 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     : {};
 
 type ConfigTab = 'device' | 'calibration' | 'variables' | 'channels';
+
+function CellInput(props: ComponentProps<typeof Input>) {
+  return <Input variant="borderless" size="small" {...props} />;
+}
 
 function parseTab(value: string | null): ConfigTab {
   if (value === 'calibration' || value === 'variables' || value === 'channels') {
@@ -452,6 +456,7 @@ export function StationConfigPage() {
     {
       title: '操作',
       width: 180,
+      fixed: 'right' as const,
       render: (_: unknown, row: AgentConfigProfile) => (
         <Space>
           <Button size="small" type="link" onClick={() => openProfileEditor(kind, row)}>
@@ -475,43 +480,46 @@ export function StationConfigPage() {
 
   const profileEditor = (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Space>
-        <Button onClick={closeProfileEditor}>返回档列表</Button>
-        <Button type="primary" loading={savingProfile} onClick={() => void saveProfile()}>
-          保存
-        </Button>
+      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }} wrap>
+        <Space>
+          <Button onClick={closeProfileEditor}>返回列表</Button>
+          <Input
+            placeholder="配置档名称"
+            maxLength={128}
+            value={profileName}
+            onChange={(event) => setProfileName(event.target.value)}
+            style={{ width: 240 }}
+          />
+        </Space>
+        <Space>
+          <Button
+            onClick={() =>
+              setProfileRows((current) => [
+                ...current,
+                { _key: settingRowKey(), section: '', key: '', value: '' },
+              ])
+            }
+          >
+            新建
+          </Button>
+          <Button type="primary" loading={savingProfile} onClick={() => void saveProfile()}>
+            保存
+          </Button>
+        </Space>
       </Space>
-      <Input
-        addonBefore="名称"
-        maxLength={128}
-        value={profileName}
-        onChange={(event) => setProfileName(event.target.value)}
-      />
-      <Space>
-        <Button
-          onClick={() =>
-            setProfileRows((current) => [
-              ...current,
-              { _key: settingRowKey(), section: '', key: '', value: '' },
-            ])
-          }
-        >
-          添加项
-        </Button>
-        <Typography.Text type="secondary">值里的数组用分号分隔，例如 1;2</Typography.Text>
-      </Space>
+      <Typography.Text type="secondary">值里的数组用分号分隔，例如 1;2</Typography.Text>
       <Table
-        size="small"
-        pagination={EDITOR_TABLE_PAGINATION}
+        pagination={DEFAULT_TABLE_PAGINATION}
         rowKey={(row) => row._key}
         dataSource={profileRows}
-        locale={{ emptyText: '暂无配置项，可添加或导入 INI' }}
+        locale={{ emptyText: '暂无配置项，可新建或导入 INI' }}
+        scroll={{ x: true }}
         columns={[
           {
             title: <HelpLabel label="段" text={CONFIG_HELP.profileSection} />,
             dataIndex: 'section',
             render: (value: string, row) => (
-              <Input
+              <CellInput
                 value={value}
                 onChange={(event) =>
                   setProfileRows((current) =>
@@ -527,7 +535,7 @@ export function StationConfigPage() {
             title: <HelpLabel label="键" text={CONFIG_HELP.profileKey} />,
             dataIndex: 'key',
             render: (value: string, row) => (
-              <Input
+              <CellInput
                 value={value}
                 onChange={(event) =>
                   setProfileRows((current) =>
@@ -543,7 +551,7 @@ export function StationConfigPage() {
             title: <HelpLabel label="值" text={CONFIG_HELP.profileValue} />,
             dataIndex: 'value',
             render: (value: string, row) => (
-              <Input
+              <CellInput
                 value={value}
                 onChange={(event) =>
                   setProfileRows((current) =>
@@ -556,8 +564,9 @@ export function StationConfigPage() {
             ),
           },
           {
-            title: '',
-            width: 72,
+            title: '操作',
+            width: 80,
+            fixed: 'right',
             render: (_, row) => (
               <Button
                 danger
@@ -577,24 +586,16 @@ export function StationConfigPage() {
 
   const profileList = (kind: 'device' | 'calibration') => (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          <HelpLabel
-            label={kind === 'device' ? '设备配置档' : '校验配置档'}
-            text={kind === 'device' ? CONFIG_HELP.deviceProfile : CONFIG_HELP.calibrationProfile}
-          />
-        </Typography.Title>
-        <Space>
-          <Button onClick={() => openProfileEditor(kind, null)}>新建</Button>
-          <ProfileImportBar agentId={agentId} kind={kind} onDone={load} />
-        </Space>
+      <Space align="center" style={{ justifyContent: 'flex-end', width: '100%' }} wrap>
+        <Button onClick={() => openProfileEditor(kind, null)}>新建</Button>
+        <ProfileImportBar agentId={agentId} kind={kind} onDone={load} />
       </Space>
       <Table
-        size="small"
-        pagination={EDITOR_TABLE_PAGINATION}
+        pagination={DEFAULT_TABLE_PAGINATION}
         rowKey={(row) => row.id}
         dataSource={kind === 'device' ? deviceProfiles : calibrationProfiles}
         locale={{ emptyText: kind === 'device' ? '暂无设备配置档' : '暂无校验配置档' }}
+        scroll={{ x: true }}
         columns={profileColumns(kind)}
       />
     </Space>
@@ -603,7 +604,7 @@ export function StationConfigPage() {
   const tabItems = [
       {
         key: 'device',
-        label: '设备配置档',
+        label: <HelpLabel label="设备配置档" text={CONFIG_HELP.deviceProfile} />,
         children:
           tab === 'device' && profileEditing
             ? profileReady
@@ -613,7 +614,7 @@ export function StationConfigPage() {
       },
       {
         key: 'calibration',
-        label: '校验配置档',
+        label: <HelpLabel label="校验配置档" text={CONFIG_HELP.calibrationProfile} />,
         children:
           tab === 'calibration' && profileEditing
             ? profileReady
@@ -623,51 +624,46 @@ export function StationConfigPage() {
       },
       {
         key: 'variables',
-        label: '变量',
+        label: <HelpLabel label="变量" text={CONFIG_HELP.variables} />,
         children: (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-              <Typography.Title level={5} style={{ margin: 0 }}>
-                <HelpLabel label="变量" text={CONFIG_HELP.variables} />
-              </Typography.Title>
-              <Space>
-                <HelpTip text={CONFIG_HELP.arrayExpand} />
-                <Select
-                  value={arrayExpandMode}
-                  style={{ width: 160 }}
-                  onChange={setArrayExpandMode}
-                  options={[
-                    { value: 'semicolon', label: '数组：分号' },
-                    { value: 'json', label: '数组：JSON' },
-                  ]}
-                />
-                <Button
-                  onClick={() =>
-                    setVariables((current) => [
-                      ...current,
-                      { _key: rowKey('var'), name: '', value: '', description: '' },
-                    ])
-                  }
-                >
-                  添加变量
-                </Button>
-                <Button type="primary" loading={savingSettings} onClick={() => void saveSettings()}>
-                  保存变量
-                </Button>
-              </Space>
+            <Space align="center" style={{ justifyContent: 'flex-end', width: '100%' }} wrap>
+              <HelpTip text={CONFIG_HELP.arrayExpand} />
+              <Select
+                value={arrayExpandMode}
+                style={{ width: 160 }}
+                onChange={setArrayExpandMode}
+                options={[
+                  { value: 'semicolon', label: '数组：分号' },
+                  { value: 'json', label: '数组：JSON' },
+                ]}
+              />
+              <Button
+                onClick={() =>
+                  setVariables((current) => [
+                    ...current,
+                    { _key: rowKey('var'), name: '', value: '', description: '' },
+                  ])
+                }
+              >
+                新建
+              </Button>
+              <Button type="primary" loading={savingSettings} onClick={() => void saveSettings()}>
+                保存
+              </Button>
             </Space>
             <Table
-              size="small"
-              pagination={EDITOR_TABLE_PAGINATION}
+              pagination={DEFAULT_TABLE_PAGINATION}
               rowKey={(row) => row._key}
               dataSource={variables}
-              locale={{ emptyText: '暂无变量' }}
+              locale={{ emptyText: '暂无变量，可新建' }}
+              scroll={{ x: true }}
               columns={[
                 {
                   title: '名称',
                   dataIndex: 'name',
                   render: (value: string, row) => (
-                    <Input
+                    <CellInput
                       maxLength={64}
                       disabled={isSystemVarName(row.name)}
                       value={value}
@@ -685,7 +681,7 @@ export function StationConfigPage() {
                   title: '值',
                   dataIndex: 'value',
                   render: (value: string, row) => (
-                    <Input
+                    <CellInput
                       disabled={isSystemVarName(row.name)}
                       value={value}
                       onChange={(event) =>
@@ -702,7 +698,7 @@ export function StationConfigPage() {
                   title: '说明',
                   dataIndex: 'description',
                   render: (value: string, row) => (
-                    <Input
+                    <CellInput
                       maxLength={200}
                       value={value}
                       onChange={(event) =>
@@ -718,8 +714,9 @@ export function StationConfigPage() {
                   ),
                 },
                 {
-                  title: '',
-                  width: 72,
+                  title: '操作',
+                  width: 80,
+                  fixed: 'right',
                   render: (_, row) => (
                     <Button
                       danger
@@ -740,45 +737,40 @@ export function StationConfigPage() {
       },
       {
         key: 'channels',
-        label: '通道',
+        label: <HelpLabel label="通道" text={CONFIG_HELP.channels} />,
         children: (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
-              <Typography.Title level={5} style={{ margin: 0 }}>
-                <HelpLabel label="通道" text={CONFIG_HELP.channels} />
-              </Typography.Title>
-              <Space>
-                <Button
-                  onClick={() =>
-                    setChannels((current) => {
-                      const nextIndex =
-                        current.reduce((max, item) => Math.max(max, item.channel_index), -1) + 1;
-                      return [
-                        ...current,
-                        {
-                          _key: rowKey('ch'),
-                          channel_index: nextIndex,
-                          name: `CH${nextIndex}`,
-                          enabled: true,
-                          overlayText: '{}',
-                        },
-                      ];
-                    })
-                  }
-                >
-                  添加通道
-                </Button>
-                <Button type="primary" loading={savingChannels} onClick={() => void saveChannels()}>
-                  保存通道
-                </Button>
-              </Space>
+            <Space align="center" style={{ justifyContent: 'flex-end', width: '100%' }} wrap>
+              <Button
+                onClick={() =>
+                  setChannels((current) => {
+                    const nextIndex =
+                      current.reduce((max, item) => Math.max(max, item.channel_index), -1) + 1;
+                    return [
+                      ...current,
+                      {
+                        _key: rowKey('ch'),
+                        channel_index: nextIndex,
+                        name: `CH${nextIndex}`,
+                        enabled: true,
+                        overlayText: '{}',
+                      },
+                    ];
+                  })
+                }
+              >
+                新建
+              </Button>
+              <Button type="primary" loading={savingChannels} onClick={() => void saveChannels()}>
+                保存
+              </Button>
             </Space>
             <Table
-              size="small"
-              pagination={EDITOR_TABLE_PAGINATION}
+              pagination={DEFAULT_TABLE_PAGINATION}
               rowKey={(row) => row._key}
               dataSource={channels}
-              locale={{ emptyText: '暂无通道' }}
+              locale={{ emptyText: '暂无通道，可新建' }}
+              scroll={{ x: true }}
               columns={[
                 {
                   title: '#',
@@ -786,6 +778,8 @@ export function StationConfigPage() {
                   width: 88,
                   render: (value: number, row) => (
                     <InputNumber
+                      variant="borderless"
+                      size="small"
                       min={0}
                       value={value}
                       onChange={(next) =>
@@ -804,7 +798,7 @@ export function StationConfigPage() {
                   title: '名称',
                   dataIndex: 'name',
                   render: (value: string, row) => (
-                    <Input
+                    <CellInput
                       value={value}
                       onChange={(event) =>
                         setChannels((current) =>
@@ -840,6 +834,8 @@ export function StationConfigPage() {
                   dataIndex: 'overlayText',
                   render: (value: string, row) => (
                     <Input.TextArea
+                      variant="borderless"
+                      size="small"
                       autoSize={{ minRows: 2, maxRows: 8 }}
                       value={value}
                       onChange={(event) =>
@@ -855,8 +851,9 @@ export function StationConfigPage() {
                   ),
                 },
                 {
-                  title: '',
-                  width: 72,
+                  title: '操作',
+                  width: 80,
+                  fixed: 'right',
                   render: (_, row) => (
                     <Button
                       danger
@@ -890,21 +887,21 @@ export function StationConfigPage() {
 
       <Spin spinning={loading}>
         {detail ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Descriptions size="small" column={2} bordered>
-              <Descriptions.Item label="机台 ID">{detail.agent_id}</Descriptions.Item>
-              <Descriptions.Item label="IP">{detail.agent_ip}</Descriptions.Item>
-              <Descriptions.Item label="当前设备档">
-                {detail.active_device_name || '—'}
-              </Descriptions.Item>
-              <Descriptions.Item label="当前校准档">
-                {detail.active_calibration_name || '—'}
-              </Descriptions.Item>
-            </Descriptions>
-            <Card>
+          <Card>
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Descriptions size="small" column={2}>
+                <Descriptions.Item label="机台 ID">{detail.agent_id}</Descriptions.Item>
+                <Descriptions.Item label="IP">{detail.agent_ip}</Descriptions.Item>
+                <Descriptions.Item label="当前设备档">
+                  {detail.active_device_name || '—'}
+                </Descriptions.Item>
+                <Descriptions.Item label="当前校准档">
+                  {detail.active_calibration_name || '—'}
+                </Descriptions.Item>
+              </Descriptions>
               <Tabs activeKey={tab} onChange={(key) => setTab(key as ConfigTab)} items={tabItems} />
-            </Card>
-          </Space>
+            </Space>
+          </Card>
         ) : null}
       </Spin>
     </Space>

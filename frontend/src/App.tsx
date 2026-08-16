@@ -12,10 +12,11 @@ import { SpecEditorPage } from './pages/SpecEditorPage';
 import { SpecsPage } from './pages/SpecsPage';
 import { StationConfigPage } from './pages/StationConfigPage';
 import { UnitsPage } from './pages/UnitsPage';
+import { atlasTheme } from './theme';
 
 export function App() {
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider locale={zhCN} theme={atlasTheme}>
       <AntApp>
         <HashRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
           <Routes>

@@ -16,12 +16,13 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { schedulerApi } from '../api/schedulerApi';
-import type { SpecTemplateSummary } from '../api/types';
+import type { SpecTemplateDetail, SpecTemplateSummary } from '../api/types';
 import { HelpLabel, HelpTip } from '../components/HelpTip';
 import { PageHeader } from '../components/PageHeader';
 import { describeApiError } from '../lib/formatError';
-import { formatSpecParseError, parseSpecIni } from '../lib/specIni';
+import { formatSpecParseError, parseSpecIni, suggestSaveAsName } from '../lib/specIni';
 import { DEFAULT_TABLE_PAGINATION, formatTimestamp, textSorter, timestampSorter } from '../utils/tableHelpers';
+import { SaveAsSpecModal, type SaveAsSpecValues } from './SaveAsSpecModal';
 import { SPEC_HELP } from './specHelp';
 
 type UploadPreview = {
@@ -60,6 +61,8 @@ export function SpecsPage() {
   const [uploading, setUploading] = useState(false);
   const [form] = Form.useForm<{ name: string; product_pn: string; note: string }>();
   const uploadName = Form.useWatch('name', form);
+  const [saveAsDetail, setSaveAsDetail] = useState<SpecTemplateDetail | null>(null);
+  const [savingAs, setSavingAs] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -139,6 +142,43 @@ export function SpecsPage() {
     }
   };
 
+  const openSaveAs = async (template: SpecTemplateSummary) => {
+    setSavingAs(true);
+    try {
+      const detail = await schedulerApi.getSpecTemplate(template.id);
+      setSaveAsDetail(detail);
+    } catch (error) {
+      message.error('加载详情失败：' + describeApiError(error));
+    } finally {
+      setSavingAs(false);
+    }
+  };
+
+  const confirmSaveAs = async (values: SaveAsSpecValues) => {
+    if (!saveAsDetail) return;
+    if (!values.name) {
+      message.error('名称不能为空');
+      return;
+    }
+    setSavingAs(true);
+    try {
+      const created = await schedulerApi.createSpecTemplate({
+        name: values.name,
+        product_pn: values.product_pn,
+        note: values.note,
+        spec: saveAsDetail.spec,
+        source_filename: saveAsDetail.source_filename,
+      });
+      message.success('已另存为 Spec 模板');
+      setSaveAsDetail(null);
+      navigate(`/specs/${created.id}`);
+    } catch (error) {
+      message.error('另存为失败：' + describeApiError(error));
+    } finally {
+      setSavingAs(false);
+    }
+  };
+
   const deleteTemplate = (template: SpecTemplateSummary) => {
     const label = template.name || String(template.id);
     modal.confirm({
@@ -177,12 +217,15 @@ export function SpecsPage() {
       },
       {
         title: '操作',
-        width: 160,
+        width: 220,
         fixed: 'right',
         render: (_, row) => (
           <Space>
             <Button size="small" type="link" onClick={() => navigate(`/specs/${row.id}`)}>
               编辑
+            </Button>
+            <Button size="small" type="link" onClick={() => void openSaveAs(row)}>
+              另存为
             </Button>
             <Button size="small" danger onClick={() => deleteTemplate(row)}>
               删除
@@ -308,6 +351,19 @@ export function SpecsPage() {
           </Space>
         ) : null}
       </Modal>
+
+      <SaveAsSpecModal
+        open={saveAsDetail != null}
+        confirmLoading={savingAs}
+        sourceName={saveAsDetail?.name}
+        initial={{
+          name: suggestSaveAsName(saveAsDetail?.name || ''),
+          product_pn: saveAsDetail?.product_pn || '',
+          note: saveAsDetail?.note || '',
+        }}
+        onCancel={() => setSaveAsDetail(null)}
+        onSubmit={(values) => void confirmSaveAs(values)}
+      />
     </Space>
   );
 }

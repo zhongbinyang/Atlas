@@ -5,4 +5,5 @@ export const SPEC_HELP = {
   metric: '指标名，对应 INI 里 TX_AP_UL / TX_AP_LL 的 TX_AP。须与 VI 输出字段同名才能判定。',
   min: '下限（LL）。留空或填 inf 表示不限制。',
   max: '上限（UL）。留空或填 inf 表示不限制。',
+  saveAs: '新建一份 Spec 模板，不会覆盖当前这份。要覆盖请用「保存」。',
 } as const;

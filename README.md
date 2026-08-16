@@ -84,10 +84,10 @@ Agent 日志布局（`AGENT_LOG_DIR`）：
 ```
 {AGENT_LOG_DIR}/
   agent-YYYY-MM-DD.log              # 通用 tracing（默认 info+；RUST_LOG 可过滤）
-  sequence_runs/YYYY-MM-DD/*.json    # 每次序列结束一份 JSON 结果
+  sequence_runs/YYYY-MM-DD/*.log     # 每次序列结束一份带时间戳的文本日志
 ```
 
-`finished_at` 字段为本地时间秒级（如 `2026-07-30 19:20:45`）。文件名仍用紧凑 UTC 时间戳。
+日志正文为本地时间毫秒级（如 `2026-08-16 16:49:01.890`）。文件名仍用紧凑 UTC 时间戳。
 可选：调度中心侧设置 `RUST_LOG=info`（或 `debug`）开启**中心**控制台日志。Agent 业务日志不写控制台。
 
 ## LabVIEW VI 模板

@@ -1,19 +1,30 @@
 import type { TablePaginationConfig } from 'antd';
 
 export const DEFAULT_TABLE_PAGINATION: TablePaginationConfig = {
-  pageSize: 20,
+  defaultPageSize: 10,
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '50', '100'],
-  hideOnSinglePage: true,
   showTotal: (total) => `共 ${total} 条`,
 };
 
 export const EDITOR_TABLE_PAGINATION: TablePaginationConfig = {
-  pageSize: 10,
-  showSizeChanger: true,
-  pageSizeOptions: ['10', '20', '50', '100'],
-  showTotal: (total) => `共 ${total} 条`,
+  ...DEFAULT_TABLE_PAGINATION,
 };
+
+export function insertAtPageStart<T>(items: T[], item: T, page: number, pageSize: number): T[] {
+  const start = Math.max(0, (Math.max(1, page) - 1) * Math.max(1, pageSize));
+  const index = Math.min(start, items.length);
+  return [...items.slice(0, index), item, ...items.slice(index)];
+}
+
+export function matchesTableQuery(
+  query: string,
+  values: Array<string | number | null | undefined>,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return values.some((value) => String(value ?? '').toLowerCase().includes(needle));
+}
 
 export function formatTimestamp(value: unknown): string {
   if (value == null || value === '') return '—';
