@@ -178,6 +178,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/034_rename_agents_to_stations.sql"),
     )
     .await?;
+    apply_migration(
+        pool,
+        include_str!("../migrations/035_split_rest_and_cmd_templates.sql"),
+    )
+    .await?;
     Ok(())
 }
 
