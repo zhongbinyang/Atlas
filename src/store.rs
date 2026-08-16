@@ -504,6 +504,11 @@ pub struct GeneralTemplateEnriched {
     pub origin_agent_name: Option<String>,
 }
 
+pub type RestTemplate = GeneralTemplate;
+pub type CmdTemplate = GeneralTemplate;
+pub type RestTemplateEnriched = GeneralTemplateEnriched;
+pub type CmdTemplateEnriched = GeneralTemplateEnriched;
+
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
@@ -1214,6 +1219,234 @@ impl Store {
             .rows_affected()
             > 0;
         tx.commit().await?;
+        Ok(affected)
+    }
+
+    pub async fn insert_rest_template(
+        &self,
+        name: &str,
+        origin_agent_id: &str,
+        kind: &str,
+        inputs: &serde_json::Value,
+        outputs: &serde_json::Value,
+    ) -> Result<RestTemplate, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let outputs_json = serde_json::to_string(outputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("outputs json: {e}")))?;
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            INSERT INTO rest_templates (
+                name, origin_station_id, kind, inputs_json, outputs_json, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            "#,
+        )
+        .bind(name)
+        .bind(optional_agent_ref(origin_agent_id))
+        .bind(kind)
+        .bind(&inputs_json)
+        .bind(&outputs_json)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_general_template())
+    }
+
+    pub async fn find_duplicate_rest_template(
+        &self,
+        name: &str,
+        inputs: &serde_json::Value,
+    ) -> Result<Option<RestTemplate>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM rest_templates
+            WHERE name = $1
+            "#,
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            let existing: serde_json::Value = match serde_json::from_str(&row.inputs_json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if &existing == inputs {
+                return Ok(Some(row.into_general_template()));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn get_rest_template(
+        &self,
+        id: i64,
+    ) -> Result<Option<RestTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM rest_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_general_template()))
+    }
+
+    pub async fn list_rest_templates_enriched(
+        &self,
+        agent_id: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<RestTemplateEnriched>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateEnrichedRow>(
+            r#"
+            SELECT
+                t.id, t.name, COALESCE(t.origin_station_id, '') AS origin_agent_id, t.kind, t.inputs_json, t.outputs_json,
+                t.created_at, o.name AS origin_agent_name
+            FROM rest_templates t
+            LEFT JOIN stations o ON o.id = t.origin_station_id
+            WHERE ($1::text IS NULL OR t.origin_station_id = $1)
+              AND ($2::text IS NULL OR t.kind = $2)
+            ORDER BY t.created_at ASC
+            "#,
+        )
+        .bind(agent_id)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn delete_rest_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let affected = sqlx::query("DELETE FROM rest_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0;
+        Ok(affected)
+    }
+
+    pub async fn insert_cmd_template(
+        &self,
+        name: &str,
+        origin_agent_id: &str,
+        kind: &str,
+        inputs: &serde_json::Value,
+        outputs: &serde_json::Value,
+    ) -> Result<CmdTemplate, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let inputs_json = serde_json::to_string(inputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("inputs json: {e}")))?;
+        let outputs_json = serde_json::to_string(outputs)
+            .map_err(|e| sqlx::Error::Protocol(format!("outputs json: {e}")))?;
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            INSERT INTO cmd_templates (
+                name, origin_station_id, kind, inputs_json, outputs_json, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            "#,
+        )
+        .bind(name)
+        .bind(optional_agent_ref(origin_agent_id))
+        .bind(kind)
+        .bind(&inputs_json)
+        .bind(&outputs_json)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.into_general_template())
+    }
+
+    pub async fn find_duplicate_cmd_template(
+        &self,
+        name: &str,
+        inputs: &serde_json::Value,
+    ) -> Result<Option<CmdTemplate>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM cmd_templates
+            WHERE name = $1
+            "#,
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            let existing: serde_json::Value = match serde_json::from_str(&row.inputs_json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if &existing == inputs {
+                return Ok(Some(row.into_general_template()));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn get_cmd_template(
+        &self,
+        id: i64,
+    ) -> Result<Option<CmdTemplate>, sqlx::Error> {
+        let row = sqlx::query_as::<_, GeneralTemplateRow>(
+            r#"
+            SELECT
+                id, name, COALESCE(origin_station_id, '') AS origin_agent_id, kind, inputs_json, outputs_json, created_at
+            FROM cmd_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_general_template()))
+    }
+
+    pub async fn list_cmd_templates_enriched(
+        &self,
+        agent_id: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<CmdTemplateEnriched>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, GeneralTemplateEnrichedRow>(
+            r#"
+            SELECT
+                t.id, t.name, COALESCE(t.origin_station_id, '') AS origin_agent_id, t.kind, t.inputs_json, t.outputs_json,
+                t.created_at, o.name AS origin_agent_name
+            FROM cmd_templates t
+            LEFT JOIN stations o ON o.id = t.origin_station_id
+            WHERE ($1::text IS NULL OR t.origin_station_id = $1)
+              AND ($2::text IS NULL OR t.kind = $2)
+            ORDER BY t.created_at ASC
+            "#,
+        )
+        .bind(agent_id)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_enriched()).collect())
+    }
+
+    pub async fn delete_cmd_template(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let affected = sqlx::query("DELETE FROM cmd_templates WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0;
         Ok(affected)
     }
 

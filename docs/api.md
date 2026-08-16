@@ -319,8 +319,12 @@ sequenceDiagram
 | 中心删 VI/通用/序列模板 | 中心 WebUI → 中心 `DELETE ...` → DB |
 | VI 试跑 | Agent WebUI → Agent `labview/run` →（读 settings）→ LabVIEW CLI |
 | VI 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/vi-templates` → DB |
-| Delay/Version/REST 试跑 | Agent WebUI → Agent `general/*/run` → Slot → 本机/外网 |
-| Delay/Version/REST 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/general-templates` → DB |
+| Delay/Version 试跑 | Agent WebUI → Agent `general/*/run` → Slot → 本机/外网 |
+| Delay/Version 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/general-templates` → DB |
+| REST 试跑 | Agent WebUI → Agent `general/rest/run` → Slot → 外网 |
+| REST 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/rest-templates` → DB |
+| CMD 试跑 | Agent WebUI → Agent `general/cmd/run` → Slot → 本机 |
+| CMD 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/cmd-templates` → DB |
 | 设置读写 | 中心 WebUI `#/configs` → `GET/PUT /api/stations/{id}/settings` → DB；Agent 进程 GET 展开变量 |
 | 序列队列编辑 | Agent WebUI → Agent `/api/sequence/run-queue` → 中心 `/api/stations/{id}/run-queue` → DB |
 | 序列存模板 | Agent WebUI → Agent `POST /api/sequence-templates` → 中心同名 → DB（自队列快照） |
@@ -355,9 +359,17 @@ sequenceDiagram
 | PATCH | `/api/vi-templates/{id}` | **Agent 进程** | Agent `PATCH /api/labview/templates/{id}` |
 | DELETE | `/api/vi-templates/{id}` | **中心 WebUI** | 已注册功能 · 删除 |
 | GET | `/api/general-templates` | **中心 WebUI** · **Agent 进程** | |
-| POST | `/api/general-templates` | **Agent 进程** | Delay/Version/REST 注册 |
+| POST | `/api/general-templates` | **Agent 进程** | Delay/Version 注册 |
 | GET | `/api/general-templates/{id}` | **未使用** | |
 | DELETE | `/api/general-templates/{id}` | **中心 WebUI** | |
+| GET | `/api/rest-templates` | **中心 WebUI** · **Agent 进程** | |
+| POST | `/api/rest-templates` | **Agent 进程** | REST 注册 |
+| GET | `/api/rest-templates/{id}` | **未使用** | |
+| DELETE | `/api/rest-templates/{id}` | **中心 WebUI** | |
+| GET | `/api/cmd-templates` | **中心 WebUI** · **Agent 进程** | |
+| POST | `/api/cmd-templates` | **Agent 进程** | CMD 注册 |
+| GET | `/api/cmd-templates/{id}` | **未使用** | |
+| DELETE | `/api/cmd-templates/{id}` | **中心 WebUI** | |
 | GET | `/api/sequence-templates` | **中心 WebUI** · **Agent 进程** | |
 | POST | `/api/sequence-templates` | **Agent 进程** | 自该机 run-queue 快照建模板 |
 | GET | `/api/sequence-templates/{id}` | **未使用** | |
@@ -455,9 +467,27 @@ Query：`agent_id?` · `kind?`
 **GET** `/api/general-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
 Query：`agent_id?` · `kind?`
 
-**POST** `/api/general-templates` · 使用方：**Agent 进程**  
+**POST** `/api/general-templates` · 使用方：**Agent 进程** — Delay/Version only；`kind=rest`/`cmd` → `400`  
 **GET** `/api/general-templates/{id}` · 使用方：**未使用**  
 **DELETE** `/api/general-templates/{id}` · 使用方：**中心 WebUI** → `204`
+
+## 1.5a REST 模板
+
+**GET** `/api/rest-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
+Query：`agent_id?` · `kind?`
+
+**POST** `/api/rest-templates` · 使用方：**Agent 进程** — 默认 `kind=rest`  
+**GET** `/api/rest-templates/{id}` · 使用方：**未使用**  
+**DELETE** `/api/rest-templates/{id}` · 使用方：**中心 WebUI** → `204`
+
+## 1.5b 命令行模板
+
+**GET** `/api/cmd-templates` · 使用方：**中心 WebUI** · **Agent 进程**  
+Query：`agent_id?` · `kind?`
+
+**POST** `/api/cmd-templates` · 使用方：**Agent 进程** — 默认 `kind=cmd`  
+**GET** `/api/cmd-templates/{id}` · 使用方：**未使用**  
+**DELETE** `/api/cmd-templates/{id}` · 使用方：**中心 WebUI** → `204`
 
 ## 1.6 序列模板
 

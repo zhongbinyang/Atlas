@@ -687,6 +687,22 @@ pub fn router(state: AppState) -> Router {
             get(get_general_template).delete(delete_general_template),
         )
         .route(
+            "/api/rest-templates",
+            get(list_rest_templates).post(create_rest_template),
+        )
+        .route(
+            "/api/rest-templates/{id}",
+            get(get_rest_template).delete(delete_rest_template),
+        )
+        .route(
+            "/api/cmd-templates",
+            get(list_cmd_templates).post(create_cmd_template),
+        )
+        .route(
+            "/api/cmd-templates/{id}",
+            get(get_cmd_template).delete(delete_cmd_template),
+        )
+        .route(
             "/api/sequence-templates",
             get(list_sequence_templates).post(create_sequence_template),
         )
@@ -3035,6 +3051,15 @@ async fn create_general_template(
     State(s): State<AppState>,
     Json(req): Json<CreateGeneralTemplateRequest>,
 ) -> impl IntoResponse {
+    if req.kind.trim() == "rest" || req.kind.trim() == "cmd" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "use /api/rest-templates or /api/cmd-templates".into(),
+            }),
+        )
+            .into_response();
+    }
     if req.agent_id.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "agent_id is required".into() })).into_response();
     }
@@ -3126,6 +3151,318 @@ async fn delete_general_template(
             .into_response(),
         Err(e) => {
             tracing::error!("delete general template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_rest_templates(
+    State(s): State<AppState>,
+    Query(q): Query<ListGeneralTemplatesQuery>,
+) -> impl IntoResponse {
+    let agent_filter = q.agent_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    let kind_filter = q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    match s.store.list_rest_templates_enriched(agent_filter, kind_filter).await {
+        Ok(templates) => {
+            let mut views = Vec::with_capacity(templates.len());
+            for t in templates {
+                match GeneralTemplateView::try_from(t) {
+                    Ok(v) => views.push(v),
+                    Err(e) => {
+                        tracing::error!("rest template view: {e}");
+                        return db_error().into_response();
+                    }
+                }
+            }
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list rest templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_rest_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.list_rest_templates_enriched(None, None).await {
+        Ok(templates) => {
+            let enriched = templates.into_iter().find(|t| t.template.id == id);
+            match enriched {
+                Some(t) => match GeneralTemplateView::try_from(t) {
+                    Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+                    Err(e) => {
+                        tracing::error!("rest template view: {e}");
+                        db_error().into_response()
+                    }
+                },
+                None => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorBody {
+                        error: "rest template not found".into(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => {
+            tracing::error!("get rest template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_rest_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateGeneralTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "agent_id is required".into() })).into_response();
+    }
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "name is required".into() })).into_response();
+    }
+    if !(req.inputs.is_array() || req.inputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "inputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
+    }
+    if !(req.outputs.is_array() || req.outputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "outputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    match s.store.get_agent(req.agent_id.trim()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(ErrorBody { error: "agent not found".into() })).into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for rest template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.find_duplicate_rest_template(req.name.trim(), &req.inputs).await {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody { error: "a template with the same name and inputs already exists".into() }),
+            ).into_response();
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("find duplicate rest template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.insert_rest_template(req.name.trim(), req.agent_id.trim(), "rest", &req.inputs, &req.outputs).await {
+        Ok(t) => {
+            match s.store.list_rest_templates_enriched(Some(req.agent_id.trim()), None).await {
+                Ok(all) => {
+                    if let Some(enriched) = all.into_iter().find(|e| e.template.id == t.id) {
+                        match GeneralTemplateView::try_from(enriched) {
+                            Ok(view) => return (StatusCode::CREATED, Json(view)).into_response(),
+                            Err(e) => {
+                                tracing::error!("rest template view: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("list rest templates after create: {e}"),
+            }
+            db_error().into_response()
+        }
+        Err(e) => {
+            tracing::error!("create rest template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_rest_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.delete_rest_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "rest template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete rest template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn list_cmd_templates(
+    State(s): State<AppState>,
+    Query(q): Query<ListGeneralTemplatesQuery>,
+) -> impl IntoResponse {
+    let agent_filter = q.agent_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    let kind_filter = q.kind.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    match s.store.list_cmd_templates_enriched(agent_filter, kind_filter).await {
+        Ok(templates) => {
+            let mut views = Vec::with_capacity(templates.len());
+            for t in templates {
+                match GeneralTemplateView::try_from(t) {
+                    Ok(v) => views.push(v),
+                    Err(e) => {
+                        tracing::error!("cmd template view: {e}");
+                        return db_error().into_response();
+                    }
+                }
+            }
+            (StatusCode::OK, Json(views)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("list cmd templates: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn get_cmd_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.list_cmd_templates_enriched(None, None).await {
+        Ok(templates) => {
+            let enriched = templates.into_iter().find(|t| t.template.id == id);
+            match enriched {
+                Some(t) => match GeneralTemplateView::try_from(t) {
+                    Ok(view) => (StatusCode::OK, Json(view)).into_response(),
+                    Err(e) => {
+                        tracing::error!("cmd template view: {e}");
+                        db_error().into_response()
+                    }
+                },
+                None => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorBody {
+                        error: "cmd template not found".into(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => {
+            tracing::error!("get cmd template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn create_cmd_template(
+    State(s): State<AppState>,
+    Json(req): Json<CreateGeneralTemplateRequest>,
+) -> impl IntoResponse {
+    if req.agent_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "agent_id is required".into() })).into_response();
+    }
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "name is required".into() })).into_response();
+    }
+    if !(req.inputs.is_array() || req.inputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "inputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
+    }
+    if !(req.outputs.is_array() || req.outputs.is_object()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "outputs must be a JSON array or object".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    match s.store.get_agent(req.agent_id.trim()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(ErrorBody { error: "agent not found".into() })).into_response();
+        }
+        Err(e) => {
+            tracing::error!("get agent for cmd template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.find_duplicate_cmd_template(req.name.trim(), &req.inputs).await {
+        Ok(Some(_)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody { error: "a template with the same name and inputs already exists".into() }),
+            ).into_response();
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("find duplicate cmd template: {e}");
+            return db_error().into_response();
+        }
+    }
+
+    match s.store.insert_cmd_template(req.name.trim(), req.agent_id.trim(), "cmd", &req.inputs, &req.outputs).await {
+        Ok(t) => {
+            match s.store.list_cmd_templates_enriched(Some(req.agent_id.trim()), None).await {
+                Ok(all) => {
+                    if let Some(enriched) = all.into_iter().find(|e| e.template.id == t.id) {
+                        match GeneralTemplateView::try_from(enriched) {
+                            Ok(view) => return (StatusCode::CREATED, Json(view)).into_response(),
+                            Err(e) => {
+                                tracing::error!("cmd template view: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("list cmd templates after create: {e}"),
+            }
+            db_error().into_response()
+        }
+        Err(e) => {
+            tracing::error!("create cmd template: {e}");
+            db_error().into_response()
+        }
+    }
+}
+
+async fn delete_cmd_template(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match s.store.delete_cmd_template(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "cmd template not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("delete cmd template: {e}");
             db_error().into_response()
         }
     }
@@ -4011,6 +4348,120 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, tpl_a.id);
         assert_eq!(list[0].name, "A");
+    }
+
+    #[tokio::test]
+    async fn post_cmd_templates_creates_with_kind_cmd() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "echo-cmd",
+            "inputs": {"command": "echo", "args": ["hello"]},
+            "outputs": {"ok": true}
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/cmd-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let created: GeneralTemplateView = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(created.kind, "cmd");
+        assert_eq!(created.name, "echo-cmd");
+        assert_eq!(created.origin_agent_id, agent_id);
+    }
+
+    #[tokio::test]
+    async fn post_general_templates_kind_rest_is_400() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let body = serde_json::json!({
+            "agent_id": agent_id,
+            "kind": "rest",
+            "name": "http-get",
+            "inputs": {"method": "GET", "url": "https://example.com"},
+            "outputs": {}
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/general-templates", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(err.error, "use /api/rest-templates or /api/cmd-templates");
+    }
+
+    #[tokio::test]
+    async fn get_general_templates_excludes_rest_templates() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        let rest_body = serde_json::json!({
+            "agent_id": agent_id,
+            "name": "http-get",
+            "inputs": {"method": "GET", "url": "https://example.com"},
+            "outputs": {}
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/rest-templates", &rest_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let delay_body = serde_json::json!({
+            "agent_id": agent_id,
+            "kind": "delay",
+            "name": "wait-10",
+            "inputs": {"ms": 10},
+            "outputs": {}
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", "/api/general-templates", &delay_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/general-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<GeneralTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert!(list.iter().all(|t| t.kind != "rest"));
+        assert!(list.iter().any(|t| t.kind == "delay" && t.name == "wait-10"));
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/general-templates?kind=rest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let rest_list: Vec<GeneralTemplateView> = serde_json::from_slice(&bytes).unwrap();
+        assert!(rest_list.is_empty());
     }
 
     #[tokio::test]
