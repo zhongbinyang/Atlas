@@ -46,6 +46,10 @@ code,
   display: flex;
   align-items: center;
   gap: 20px;
+  height: auto;
+  min-height: 64px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   border-bottom: 2px solid var(--atlas-lamp);
 }
 
@@ -99,6 +103,16 @@ code,
   color: rgba(244, 247, 250, 0.58);
   font-size: 11px;
   letter-spacing: 0.08em;
+  line-height: 1.2;
+}
+
+.atlas-build-version {
+  display: block;
+  margin-top: 2px;
+  color: rgba(244, 247, 250, 0.42);
+  font-family: var(--atlas-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
   line-height: 1.2;
 }
 

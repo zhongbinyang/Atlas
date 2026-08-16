@@ -41,6 +41,7 @@ const withAgentFilter = (path: string, agentId?: string): string =>
   path + (agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '');
 
 export const schedulerApi = {
+  buildVersion: () => apiRequest<unknown>('/api/version'),
   listAgents: () => apiRequest<Agent[]>('/api/stations'),
   listViTemplates: (agentId?: string) =>
     apiRequest<ViTemplate[]>(withAgentFilter('/api/vi-templates', agentId)),

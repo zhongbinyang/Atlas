@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Layout, Menu } from 'antd';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { schedulerApi } from '../api/schedulerApi';
+import { readBuildVersion } from '../lib/buildVersion';
 
 const { Header, Content } = Layout;
 
@@ -20,6 +23,24 @@ export function AppShell() {
     ? '/runs'
     : items.find((i) => location.pathname.startsWith(i.key))?.key ?? '/machines';
 
+  const [buildVersion, setBuildVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void schedulerApi
+      .buildVersion()
+      .then((data) => {
+        const version = readBuildVersion(data);
+        if (!cancelled) setBuildVersion(version);
+      })
+      .catch(() => {
+        /* hide version line */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <Layout className="atlas-shell">
       <Header className="atlas-header">
@@ -28,6 +49,11 @@ export function AppShell() {
           <span className="atlas-brand-text">
             <span className="atlas-wordmark">ATLAS</span>
             <span className="atlas-tagline">测试机台编排</span>
+            {buildVersion ? (
+              <span className="atlas-build-version" title="编译版本">
+                {buildVersion}
+              </span>
+            ) : null}
           </span>
         </button>
         <Menu
