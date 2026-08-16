@@ -606,9 +606,14 @@ fn db_error() -> (StatusCode, Json<ErrorBody>) {
     )
 }
 
+async fn get_version() -> Json<serde_json::Value> {
+    Json(crate::version::version_json())
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
+        .route("/api/version", get(get_version))
         .route("/api/stations/register", post(register_agent))
         .route("/api/stations", get(list_agents))
         .route("/api/stations/{id}", get(get_agent))

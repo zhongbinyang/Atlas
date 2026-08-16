@@ -343,6 +343,7 @@ sequenceDiagram
 | 方法 | 路径 | 使用方 | 备注 |
 |------|------|--------|------|
 | GET | `/api/health` | **未使用** | |
+| GET | `/api/version` | **中心 WebUI** | 本进程编译版本 `{ version, date, git }` |
 | POST | `/api/stations/register` | **Agent 进程** | 注册/upsert |
 | GET | `/api/stations` | **中心 WebUI** · **Agent 进程** | 列表；Agent 用于 resolve `agent_id` |
 | GET | `/api/stations/{id}` | **未使用** | |
@@ -385,6 +386,10 @@ sequenceDiagram
 ## 1.2 健康检查
 
 **GET** `/api/health` → 文本 `ok` · 使用方：**未使用**
+
+**GET** `/api/version` → `{ "version": "2026-08-16.d4279a7", "date": "2026-08-16", "git": "d4279a7" }` · 使用方：**中心 WebUI**
+
+`version` 恒等于 `date + "." + git`。脏工作区时 `git` / `version` 带 `-dirty`。值为 `cargo build` 时写入的常量，运行时不查 git。
 
 ## 1.3 机台
 
@@ -724,6 +729,7 @@ Query：`agent_id` `overall` `sn` `from` `to` `limit` `offset`
 | 方法 | 路径 | 使用方 | 后端要点 |
 |------|------|--------|----------|
 | GET | `/api/health` | **未使用** | |
+| GET | `/api/version` | **Agent WebUI** | 本进程编译版本 `{ version, date, git }` |
 | GET | `/api/status` | **Agent WebUI** · **中心 Poller** | 本机指标 + Slot + Session |
 | POST | `/api/slot/force-release` | **Agent WebUI** | 清 Session + 释放 Slot |
 | POST | `/api/register-now` | **Agent WebUI** | → 中心 `POST /api/stations/register` |
@@ -774,6 +780,10 @@ Query：`agent_id` `overall` `sn` `from` `to` `limit` `offset`
 ## 2.2 健康检查
 
 **GET** `/api/health` → 文本 `ok` · 使用方：**未使用**
+
+**GET** `/api/version` → `{ "version": "2026-08-16.d4279a7", "date": "2026-08-16", "git": "d4279a7" }` · 使用方：**Agent WebUI**
+
+`version` 恒等于 `date + "." + git`。脏工作区时 `git` / `version` 带 `-dirty`。值为 `cargo build` 时写入的常量，运行时不查 git。
 
 ## 2.3 状态与注册
 
@@ -930,7 +940,7 @@ Body 见第一部分 1.8（PUT 仅 variables）。
 
 ## 2.9.1 Version（读取 Agent 版本号）
 
-**POST** `/api/general/version/run` · 使用方：**Agent WebUI** — 无 Body；返回 `{ "ok": true, "kind": "version", "version": "<CARGO_PKG_VERSION>" }`  
+**POST** `/api/general/version/run` · 使用方：**Agent WebUI** — 无 Body；返回 `{ "ok": true, "kind": "version", "version": "<ATLAS_VERSION>" }`（与 `GET /api/version` 的 `version` 同一编译期常量，例如 `2026-08-16.d4279a7`）  
 **POST** `/api/general/version/register-template` · 使用方：**Agent WebUI** — `{ "name" }`；注册到中心后可加入序列  
 **GET** `/api/general/version/templates` · 使用方：**未使用**
 

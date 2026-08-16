@@ -9,6 +9,7 @@ mod poller;
 mod spec_ini;
 mod store;
 mod test_runs;
+mod version;
 mod web;
 
 use std::net::SocketAddr;
