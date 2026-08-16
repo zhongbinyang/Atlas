@@ -72,7 +72,9 @@ flowchart LR
 |----|------|
 | `stations` | 机台注册与 Poller 刷新的状态/资源 |
 | `vi_templates` | LabVIEW VI 模板（`origin_agent_id` 可空，删机台时保留模板） |
-| `general_templates` | Delay / Version / REST 等通用模板（同上） |
+| `general_templates` | Delay / Version 通用模板（同上；REST/CMD 已拆出） |
+| `rest_templates` | REST 模板（`origin_agent_id` 可空，删机台时保留模板） |
+| `cmd_templates` | CMD 模板（同上） |
 | `vi_run_queue_items` | 每台机当前序列执行队列 |
 | `sequence_templates` / `sequence_template_steps` | 已保存的序列模板（`created_by_agent_id` 可空，删机台时保留模板；删功能模板时去掉对应步骤） |
 | `station_settings` | 每台机手工 variables 与 array_expand_mode |
@@ -209,8 +211,12 @@ sequenceDiagram
   SA->>DB: INSERT general_templates
 
   AW->>AA: POST /api/general/rest/register-template
-  AA->>SA: POST /api/general-templates
-  SA->>DB: INSERT general_templates
+  AA->>SA: POST /api/rest-templates
+  SA->>DB: INSERT rest_templates
+
+  AW->>AA: POST /api/cmd/register
+  AA->>SA: POST /api/cmd-templates
+  SA->>DB: INSERT cmd_templates
 ```
 
 ---
@@ -323,8 +329,8 @@ sequenceDiagram
 | Delay/Version 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/general-templates` → DB |
 | REST 试跑 | Agent WebUI → Agent `general/rest/run` → Slot → 外网 |
 | REST 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/rest-templates` → DB |
-| CMD 试跑 | Agent WebUI → Agent `general/cmd/run` → Slot → 本机 |
-| CMD 注册 | Agent WebUI → Agent `register-template` → 中心 `POST /api/cmd-templates` → DB |
+| CMD 试跑 | Agent WebUI → Agent `/api/cmd/run` → Slot → 本机 |
+| CMD 注册 | Agent WebUI → Agent `/api/cmd/register` → 中心 `POST /api/cmd-templates` → DB |
 | 设置读写 | 中心 WebUI `#/configs` → `GET/PUT /api/stations/{id}/settings` → DB；Agent 进程 GET 展开变量 |
 | 序列队列编辑 | Agent WebUI → Agent `/api/sequence/run-queue` → 中心 `/api/stations/{id}/run-queue` → DB |
 | 序列存模板 | Agent WebUI → Agent `POST /api/sequence-templates` → 中心同名 → DB（自队列快照） |
@@ -547,8 +553,8 @@ Query：`agent_id?` · `kind?`
 
 | 字段 | 说明 |
 |------|------|
-| `template_source` | `labview`（默认）/ `general` / `section` |
-| `vi_template_id` / `general_template_id` | 步骤按来源选用；**段头两者皆空** |
+| `template_source` | `labview`（默认）/ `general` / `rest` / `cmd` / `section` |
+| `vi_template_id` / `general_template_id` / `rest_template_id` / `cmd_template_id` | 普通步骤恰好一个非空；**段头全部为空** |
 | `name` | 段头标题（PUT 写入；GET 回显，空则 `Default`）；步骤为模板名 |
 | `collapsed` | 仅段头：UI 是否折叠段内步骤 |
 | `inputs` | 步骤入参覆盖；段头忽略 |
@@ -823,8 +829,11 @@ Query：`agent_id` `overall` `sn` `from` `to` `limit` `offset`
 | POST | `/api/general/version/register-template` | **Agent WebUI** | → 中心 general-templates |
 | GET | `/api/general/version/templates` | **未使用** | |
 | POST | `/api/general/rest/run` | **Agent WebUI** | expand + Slot + 外网 HTTP |
-| POST | `/api/general/rest/register-template` | **Agent WebUI** | → 中心 general-templates |
-| GET | `/api/general/rest/templates` | **Agent WebUI** | → 中心 `?kind=rest` |
+| POST | `/api/general/rest/register-template` | **Agent WebUI** | → 中心 `/api/rest-templates` |
+| GET | `/api/general/rest/templates` | **Agent WebUI** | → 中心 `/api/rest-templates` |
+| POST | `/api/cmd/run` | **Agent WebUI** | Slot + 本机命令 |
+| POST | `/api/cmd/register` | **Agent WebUI** | → 中心 `/api/cmd-templates` |
+| GET | `/api/cmd/templates` | **Agent WebUI** | → 中心 `/api/cmd-templates` |
 | GET | `/api/general/all-templates` | **Agent WebUI** | → 中心 general-templates |
 | GET | `/api/spec-templates` | **Agent WebUI** | → 中心 Spec 模板列表 |
 | POST | `/api/spec-templates` | **Agent WebUI** | → 中心 POST（上传 `ini_text`） |

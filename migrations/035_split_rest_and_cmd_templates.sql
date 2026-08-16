@@ -128,6 +128,7 @@ SET template_source = 'rest',
 WHERE s.general_template_id IN (SELECT id FROM rest_templates);
 
 DELETE FROM general_templates WHERE kind = 'rest';
+-- Remaining general kinds should be delay/version; unknown kinds fail ADD CHECK on first apply.
 
 ALTER TABLE general_templates DROP CONSTRAINT IF EXISTS general_templates_kind_check;
 ALTER TABLE general_templates

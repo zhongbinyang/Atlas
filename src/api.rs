@@ -3076,6 +3076,16 @@ async fn create_general_template(
         )
             .into_response();
     }
+    let kind = req.kind.trim();
+    if kind != "delay" && kind != "version" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "kind must be delay or version".into(),
+            }),
+        )
+            .into_response();
+    }
     if req.agent_id.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(ErrorBody { error: "agent_id is required".into() })).into_response();
     }
@@ -4440,6 +4450,32 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(err.error, "use /api/rest-templates or /api/cmd-templates");
+    }
+
+    #[tokio::test]
+    async fn post_general_templates_unknown_kind_is_400() {
+        let test = test_app().await;
+        let app = &test.router;
+        let agent_id = register_agent_id(app).await;
+
+        for kind in ["REST", "delayy"] {
+            let body = serde_json::json!({
+                "agent_id": agent_id,
+                "kind": kind,
+                "name": format!("bad-kind-{kind}"),
+                "inputs": {"ms": 10},
+                "outputs": {}
+            });
+            let resp = app
+                .clone()
+                .oneshot(json_request("POST", "/api/general-templates", &body))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let err: ErrorBody = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(err.error, "kind must be delay or version");
+        }
     }
 
     #[tokio::test]
