@@ -12,11 +12,16 @@ import type { Agent, GeneralTemplate, SequenceTemplate, UnitRow, ViTemplate } fr
 
 vi.mock('./api/schedulerApi', () => ({
   schedulerApi: {
+    buildVersion: vi.fn(),
     deleteGeneralTemplate: vi.fn(),
+    deleteRestTemplate: vi.fn(),
+    deleteCmdTemplate: vi.fn(),
     deleteSequenceTemplate: vi.fn(),
     deleteViTemplate: vi.fn(),
     listAgents: vi.fn(),
     listGeneralTemplates: vi.fn(),
+    listRestTemplates: vi.fn(),
+    listCmdTemplates: vi.fn(),
     listSequenceTemplates: vi.fn(),
     listUnits: vi.fn(),
     listViTemplates: vi.fn(),
@@ -89,6 +94,26 @@ const generalTemplates: GeneralTemplate[] = [
     kind: 'delay',
     origin_agent_name: 'Beta',
     inputs: [{ name: 'delay_ms', value: 1000 }],
+  },
+];
+
+const restTemplates: GeneralTemplate[] = [
+  {
+    id: 'rest-1',
+    name: 'HttpGet',
+    kind: 'rest',
+    origin_agent_name: 'Alpha',
+    inputs: [{ name: 'url', value: 'http://x' }],
+  },
+];
+
+const cmdTemplates: GeneralTemplate[] = [
+  {
+    id: 'cmd-1',
+    name: 'EchoCmd',
+    kind: 'cmd',
+    origin_agent_name: 'Beta',
+    inputs: [{ name: 'command', value: 'echo' }],
   },
 ];
 
@@ -202,11 +227,16 @@ describe('Scheduler App routes', () => {
   beforeEach(() => {
     installBrowserStubs();
     vi.useRealTimers();
+    vi.mocked(schedulerApi.buildVersion).mockResolvedValue({ version: 'test' });
     vi.mocked(schedulerApi.listAgents).mockResolvedValue(agents);
     vi.mocked(schedulerApi.listViTemplates).mockResolvedValue(viTemplates);
     vi.mocked(schedulerApi.listGeneralTemplates).mockResolvedValue(generalTemplates);
+    vi.mocked(schedulerApi.listRestTemplates).mockResolvedValue(restTemplates);
+    vi.mocked(schedulerApi.listCmdTemplates).mockResolvedValue(cmdTemplates);
     vi.mocked(schedulerApi.deleteViTemplate).mockResolvedValue(undefined);
     vi.mocked(schedulerApi.deleteGeneralTemplate).mockResolvedValue(undefined);
+    vi.mocked(schedulerApi.deleteRestTemplate).mockResolvedValue(undefined);
+    vi.mocked(schedulerApi.deleteCmdTemplate).mockResolvedValue(undefined);
     vi.mocked(schedulerApi.listSequenceTemplates).mockResolvedValue(sequenceTemplates);
     vi.mocked(schedulerApi.deleteSequenceTemplate).mockResolvedValue(undefined);
     vi.mocked(schedulerApi.listUnits).mockResolvedValue(units);
@@ -353,17 +383,42 @@ describe('Scheduler App routes', () => {
 
     await waitFor(() => {
       expect(document.body.textContent).toContain('已注册功能');
+      expect(document.body.textContent).toContain('四类功能');
       expect(document.body.textContent).toContain('中心VI功能');
       expect(document.body.textContent).toContain('VoltageSweep');
       expect(document.body.textContent).toContain('中心通用功能');
+      expect(document.body.textContent).toContain('中心REST功能');
+      expect(document.body.textContent).toContain('中心命令行功能');
     });
 
     await act(async () => {
       findTab('中心通用功能')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await waitFor(() => {
-      expect(document.body.textContent).toContain('Delay');
-      expect(document.body.textContent).toContain('delay_ms=1000');
+      const active = document.querySelector('.ant-tabs-tabpane-active');
+      expect(active?.textContent).toContain('Delay');
+      expect(active?.textContent).toContain('delay_ms=1000');
+      expect(active?.textContent).not.toContain('HttpGet');
+      expect(active?.textContent).not.toContain('EchoCmd');
+    });
+
+    await act(async () => {
+      findTab('中心REST功能')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      const active = document.querySelector('.ant-tabs-tabpane-active');
+      expect(active?.textContent).toContain('HttpGet');
+      expect(active?.textContent).toContain('REST');
+      expect(active?.textContent).not.toContain('Delay');
+    });
+
+    await act(async () => {
+      findTab('中心命令行功能')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await waitFor(() => {
+      const active = document.querySelector('.ant-tabs-tabpane-active');
+      expect(active?.textContent).toContain('EchoCmd');
+      expect(active?.textContent).toContain('命令行');
     });
 
     await act(async () => {

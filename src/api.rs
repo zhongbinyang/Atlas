@@ -94,6 +94,10 @@ pub struct SequenceTemplateStepView {
     pub template_source: String,
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    #[serde(default)]
+    pub rest_template_id: Option<i64>,
+    #[serde(default)]
+    pub cmd_template_id: Option<i64>,
     pub inputs: serde_json::Value,
     pub enabled: bool,
     pub breakpoint: bool,
@@ -204,6 +208,8 @@ fn sequence_template_step_view(step: SequenceTemplateStep) -> Result<SequenceTem
         template_source: step.template_source,
         vi_template_id: step.vi_template_id,
         general_template_id: step.general_template_id,
+        rest_template_id: step.rest_template_id,
+        cmd_template_id: step.cmd_template_id,
         inputs: parse_json_text(&step.inputs_json, "inputs_json")?,
         enabled: step.enabled,
         breakpoint: false, // breakpoints removed; field kept for wire compat
@@ -454,6 +460,10 @@ pub struct ViRunQueueItemView {
     pub template_source: String,
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    #[serde(default)]
+    pub rest_template_id: Option<i64>,
+    #[serde(default)]
+    pub cmd_template_id: Option<i64>,
     pub position: i64,
     pub name: String,
     pub kind: String,
@@ -494,6 +504,10 @@ pub struct ReplaceViRunQueueItem {
     pub template_source: String,
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    #[serde(default)]
+    pub rest_template_id: Option<i64>,
+    #[serde(default)]
+    pub cmd_template_id: Option<i64>,
     pub inputs: Option<serde_json::Value>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -532,6 +546,8 @@ fn vi_run_queue_item_view(item: ViRunQueueItem) -> Result<ViRunQueueItemView, St
         template_source: item.template_source,
         vi_template_id: item.vi_template_id,
         general_template_id: item.general_template_id,
+        rest_template_id: item.rest_template_id,
+        cmd_template_id: item.cmd_template_id,
         position: item.position,
         name: item.template_name,
         kind: item.kind,
@@ -3522,33 +3538,58 @@ async fn put_vi_run_queue(
         } else {
             item.template_source.trim().to_string()
         };
-        let (vi_template_id, general_template_id, section_name) = match source.as_str() {
-            "section" => (None, None, item.name),
-            "general" => {
-                if item.general_template_id.is_none() {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorBody {
-                            error: format!("items[{i}].general_template_id is required"),
-                        }),
-                    )
-                        .into_response();
+        let (vi_template_id, general_template_id, rest_template_id, cmd_template_id, section_name) =
+            match source.as_str() {
+                "section" => (None, None, None, None, item.name),
+                "general" => {
+                    if item.general_template_id.is_none() {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorBody {
+                                error: format!("items[{i}].general_template_id is required"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    (None, item.general_template_id, None, None, String::new())
                 }
-                (None, item.general_template_id, String::new())
-            }
-            _ => {
-                if item.vi_template_id.is_none() {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorBody {
-                            error: format!("items[{i}].vi_template_id is required"),
-                        }),
-                    )
-                        .into_response();
+                "rest" => {
+                    if item.rest_template_id.is_none() {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorBody {
+                                error: format!("items[{i}].rest_template_id is required"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    (None, None, item.rest_template_id, None, String::new())
                 }
-                (item.vi_template_id, None, String::new())
-            }
-        };
+                "cmd" => {
+                    if item.cmd_template_id.is_none() {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorBody {
+                                error: format!("items[{i}].cmd_template_id is required"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    (None, None, None, item.cmd_template_id, String::new())
+                }
+                _ => {
+                    if item.vi_template_id.is_none() {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorBody {
+                                error: format!("items[{i}].vi_template_id is required"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    (item.vi_template_id, None, None, None, String::new())
+                }
+            };
         let limits_json = match serde_json::to_string(&item.limits) {
             Ok(v) => v,
             Err(err) => {
@@ -3630,6 +3671,8 @@ async fn put_vi_run_queue(
             template_source: source,
             vi_template_id,
             general_template_id,
+            rest_template_id,
+            cmd_template_id,
             inputs_json,
             enabled: item.enabled,
             // Breakpoints removed: accept field but persist false.

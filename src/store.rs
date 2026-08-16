@@ -221,6 +221,8 @@ pub struct SequenceTemplateStep {
     pub template_source: String,
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    pub rest_template_id: Option<i64>,
+    pub cmd_template_id: Option<i64>,
     pub inputs_json: String,
     pub enabled: bool,
     pub fail_policy: String,
@@ -324,9 +326,11 @@ pub struct SpecTemplateSummary {
 
 #[derive(Debug, Clone)]
 pub struct ViRunQueueReplaceItem {
-    pub template_source: String, // "labview" | "general" | "section"
+    pub template_source: String, // "labview" | "general" | "section" | "rest" | "cmd"
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    pub rest_template_id: Option<i64>,
+    pub cmd_template_id: Option<i64>,
     pub inputs_json: Option<String>,
     pub enabled: bool,
     #[allow(dead_code)]
@@ -356,6 +360,8 @@ pub struct ViRunQueueItem {
     pub template_source: String,
     pub vi_template_id: Option<i64>,
     pub general_template_id: Option<i64>,
+    pub rest_template_id: Option<i64>,
+    pub cmd_template_id: Option<i64>,
     pub position: i64,
     pub created_at: String,
     pub template_name: String,
@@ -1481,9 +1487,10 @@ impl Store {
                 r#"
                 INSERT INTO sequence_template_steps
                   (sequence_template_id, position, template_source, vi_template_id, general_template_id,
+                   rest_template_id, cmd_template_id,
                    inputs_json, enabled, fail_policy, limits_json, note, section_name, collapsed,
                    resources_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 "#,
             )
             .bind(tpl.id)
@@ -1491,6 +1498,8 @@ impl Store {
             .bind(&item.template_source)
             .bind(item.vi_template_id)
             .bind(item.general_template_id)
+            .bind(item.rest_template_id)
+            .bind(item.cmd_template_id)
             .bind(&item.inputs_json)
             .bind(item.enabled)
             .bind(&item.fail_policy)
@@ -1548,9 +1557,10 @@ impl Store {
                 r#"
                 INSERT INTO sequence_template_steps
                   (sequence_template_id, position, template_source, vi_template_id, general_template_id,
+                   rest_template_id, cmd_template_id,
                    inputs_json, enabled, fail_policy, limits_json, note, section_name, collapsed,
                    resources_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 "#,
             )
             .bind(tpl.id)
@@ -1558,6 +1568,8 @@ impl Store {
             .bind(&item.template_source)
             .bind(item.vi_template_id)
             .bind(item.general_template_id)
+            .bind(item.rest_template_id)
+            .bind(item.cmd_template_id)
             .bind(&item.inputs_json)
             .bind(item.enabled)
             .bind(&item.fail_policy)
@@ -1615,7 +1627,7 @@ impl Store {
             r#"
             SELECT
               id, sequence_template_id, position, template_source, vi_template_id,
-              general_template_id, inputs_json, enabled, fail_policy,
+              general_template_id, rest_template_id, cmd_template_id, inputs_json, enabled, fail_policy,
               limits_json, note, section_name, collapsed, resources_json
             FROM sequence_template_steps
             WHERE sequence_template_id = $1
@@ -1651,6 +1663,8 @@ impl Store {
                 template_source: step.template_source,
                 vi_template_id: step.vi_template_id,
                 general_template_id: step.general_template_id,
+                rest_template_id: step.rest_template_id,
+                cmd_template_id: step.cmd_template_id,
                 inputs_json: Some(step.inputs_json),
                 enabled: step.enabled,
                 breakpoint: false,
@@ -2381,18 +2395,19 @@ impl Store {
             r#"
             SELECT q.id, q.station_id AS agent_id,
                    q.template_source,
-                   q.vi_template_id, q.general_template_id, q.position, q.created_at,
+                   q.vi_template_id, q.general_template_id, q.rest_template_id, q.cmd_template_id,
+                   q.position, q.created_at,
                    CASE
                      WHEN q.template_source = 'section' THEN COALESCE(NULLIF(q.section_name, ''), 'Default')
-                     ELSE COALESCE(v.name, g.name, '')
+                     ELSE COALESCE(v.name, g.name, r.name, c.name, '')
                    END AS template_name,
                    CASE
                      WHEN q.template_source = 'section' THEN 'section'
-                     ELSE COALESCE(v.kind, g.kind, 'labview')
+                     ELSE COALESCE(v.kind, g.kind, r.kind, c.kind, 'labview')
                    END AS kind,
                    COALESCE(v.vi_path, '') AS vi_path,
-                   COALESCE(q.inputs_json, v.inputs_json, g.inputs_json, '[]') AS inputs_json,
-                   COALESCE(v.outputs_json, g.outputs_json, '[]') AS outputs_json,
+                   COALESCE(q.inputs_json, v.inputs_json, g.inputs_json, r.inputs_json, c.inputs_json, '[]') AS inputs_json,
+                   COALESCE(v.outputs_json, g.outputs_json, r.outputs_json, c.outputs_json, '[]') AS outputs_json,
                    COALESCE(v.show_front_panel, false) AS show_front_panel,
                    v.timeout_secs AS timeout_secs,
                    q.enabled, q.fail_policy, q.limits_json, q.note,
@@ -2401,6 +2416,8 @@ impl Store {
             FROM vi_run_queue_items q
             LEFT JOIN vi_templates v ON v.id = q.vi_template_id
             LEFT JOIN general_templates g ON g.id = q.general_template_id
+            LEFT JOIN rest_templates r ON r.id = q.rest_template_id
+            LEFT JOIN cmd_templates c ON c.id = q.cmd_template_id
             WHERE q.station_id = $1
             ORDER BY q.position ASC
             "#,
@@ -2495,6 +2512,8 @@ impl Store {
                         template_source: QUEUE_SECTION_SOURCE.into(),
                         vi_template_id: None,
                         general_template_id: None,
+                        rest_template_id: None,
+                        cmd_template_id: None,
                         inputs_json: Some("[]".into()),
                         enabled: item.enabled,
                         breakpoint: false,
@@ -2528,6 +2547,73 @@ impl Store {
                     };
                     normalized_items.push(ViRunQueueReplaceItem {
                         template_source: "general".into(),
+                        vi_template_id: None,
+                        rest_template_id: None,
+                        cmd_template_id: None,
+                        inputs_json: Some(
+                            item.inputs_json
+                                .clone()
+                                .unwrap_or_else(|| template.inputs_json.clone()),
+                        ),
+                        section_name: String::new(),
+                        collapsed: false,
+                        ..item.clone()
+                    });
+                }
+                "rest" => {
+                    let Some(template_id) = item.rest_template_id else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "rest".into(),
+                            template_id: 0,
+                        });
+                    };
+                    let got = self
+                        .get_rest_template(template_id)
+                        .await
+                        .map_err(QueueReplaceError::Db)?;
+                    let Some(template) = got else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "rest".into(),
+                            template_id,
+                        });
+                    };
+                    normalized_items.push(ViRunQueueReplaceItem {
+                        template_source: "rest".into(),
+                        vi_template_id: None,
+                        general_template_id: None,
+                        cmd_template_id: None,
+                        inputs_json: Some(
+                            item.inputs_json
+                                .clone()
+                                .unwrap_or_else(|| template.inputs_json.clone()),
+                        ),
+                        section_name: String::new(),
+                        collapsed: false,
+                        ..item.clone()
+                    });
+                }
+                "cmd" => {
+                    let Some(template_id) = item.cmd_template_id else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "cmd".into(),
+                            template_id: 0,
+                        });
+                    };
+                    let got = self
+                        .get_cmd_template(template_id)
+                        .await
+                        .map_err(QueueReplaceError::Db)?;
+                    let Some(template) = got else {
+                        return Err(QueueReplaceError::BadTemplate {
+                            template_source: "cmd".into(),
+                            template_id,
+                        });
+                    };
+                    normalized_items.push(ViRunQueueReplaceItem {
+                        template_source: "cmd".into(),
+                        vi_template_id: None,
+                        general_template_id: None,
+                        rest_template_id: None,
                         inputs_json: Some(
                             item.inputs_json
                                 .clone()
@@ -2557,6 +2643,9 @@ impl Store {
                     };
                     normalized_items.push(ViRunQueueReplaceItem {
                         template_source: "labview".into(),
+                        general_template_id: None,
+                        rest_template_id: None,
+                        cmd_template_id: None,
                         inputs_json: Some(
                             item.inputs_json
                                 .clone()
@@ -2585,16 +2674,19 @@ impl Store {
             sqlx::query(
                 r#"
                 INSERT INTO vi_run_queue_items
-                  (id, station_id, vi_template_id, general_template_id, inputs_json, position, created_at,
+                  (id, station_id, vi_template_id, general_template_id, rest_template_id, cmd_template_id,
+                   inputs_json, position, created_at,
                    enabled, fail_policy, limits_json, note, section_name, collapsed, template_source,
                    resources_json, spec_template_id, spec_section, spec_metrics_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                 "#,
             )
             .bind(&id)
             .bind(agent_id)
             .bind(item.vi_template_id)
             .bind(item.general_template_id)
+            .bind(item.rest_template_id)
+            .bind(item.cmd_template_id)
             .bind(item.inputs_json.as_deref().unwrap_or("[]"))
             .bind(position as i64)
             .bind(&now)
@@ -2699,6 +2791,8 @@ struct ViRunQueueItemRow {
     template_source: String,
     vi_template_id: Option<i64>,
     general_template_id: Option<i64>,
+    rest_template_id: Option<i64>,
+    cmd_template_id: Option<i64>,
     position: i64,
     created_at: String,
     template_name: String,
@@ -2728,6 +2822,8 @@ impl ViRunQueueItemRow {
             template_source: self.template_source,
             vi_template_id: self.vi_template_id,
             general_template_id: self.general_template_id,
+            rest_template_id: self.rest_template_id,
+            cmd_template_id: self.cmd_template_id,
             position: self.position,
             created_at: self.created_at,
             template_name: self.template_name,
@@ -2782,6 +2878,8 @@ struct SequenceTemplateStepRow {
     template_source: String,
     vi_template_id: Option<i64>,
     general_template_id: Option<i64>,
+    rest_template_id: Option<i64>,
+    cmd_template_id: Option<i64>,
     inputs_json: String,
     enabled: bool,
     fail_policy: String,
@@ -2801,6 +2899,8 @@ impl SequenceTemplateStepRow {
             template_source: self.template_source,
             vi_template_id: self.vi_template_id,
             general_template_id: self.general_template_id,
+            rest_template_id: self.rest_template_id,
+            cmd_template_id: self.cmd_template_id,
             inputs_json: self.inputs_json,
             enabled: self.enabled,
             fail_policy: self.fail_policy,
@@ -3497,6 +3597,8 @@ mod tests {
                 template_source: "labview".into(),
                 vi_template_id: Some(vi_template_id),
                 general_template_id: None,
+                rest_template_id: None,
+                cmd_template_id: None,
                 inputs_json: None,
                 enabled: true,
                 breakpoint: false,
@@ -3706,6 +3808,8 @@ mod tests {
             template_source: "labview".into(),
             vi_template_id: Some(tpl.id),
             general_template_id: None,
+            rest_template_id: None,
+            cmd_template_id: None,
             inputs_json: Some(r#"[{"name":"Channel","className":"I32","value":2}]"#.into()),
             enabled: false,
             breakpoint: true, // accepted but ignored / forced false
@@ -3739,6 +3843,8 @@ mod tests {
                 template_source: "section".into(),
                 vi_template_id: None,
                 general_template_id: None,
+                rest_template_id: None,
+                cmd_template_id: None,
                 inputs_json: None,
                 enabled: true,
                 breakpoint: false,
@@ -3756,6 +3862,8 @@ mod tests {
                 template_source: "labview".into(),
                 vi_template_id: Some(tpl.id),
                 general_template_id: None,
+                rest_template_id: None,
+                cmd_template_id: None,
                 inputs_json: None,
                 enabled: true,
                 breakpoint: false,
@@ -3828,6 +3936,8 @@ mod tests {
                 template_source: "section".into(),
                 vi_template_id: None,
                 general_template_id: None,
+                rest_template_id: None,
+                cmd_template_id: None,
                 inputs_json: None,
                 enabled: true,
                 breakpoint: false,
@@ -3845,6 +3955,8 @@ mod tests {
                 template_source: "labview".into(),
                 vi_template_id: Some(tpl.id),
                 general_template_id: None,
+                rest_template_id: None,
+                cmd_template_id: None,
                 inputs_json: None,
                 enabled: true,
                 breakpoint: false,
@@ -3882,6 +3994,8 @@ mod tests {
                     template_source: "section".into(),
                     vi_template_id: None,
                     general_template_id: None,
+                    rest_template_id: None,
+                    cmd_template_id: None,
                     inputs_json: None,
                     enabled: true,
                     breakpoint: false,
@@ -3928,6 +4042,8 @@ mod tests {
             template_source: "labview".into(),
             vi_template_id: Some(vi_tpl.id),
             general_template_id: None,
+            rest_template_id: None,
+            cmd_template_id: None,
             inputs_json: None,
             enabled: true,
             breakpoint: false,
@@ -3952,6 +4068,102 @@ mod tests {
         assert_eq!(listed[0].spec_template_id, Some(spec_tpl.id));
         assert_eq!(listed[0].spec_section, "FMT_HT");
         assert_eq!(listed[0].spec_metrics_json, r#"["TX_AP"]"#);
+    }
+
+    #[tokio::test]
+    async fn vi_run_queue_rest_and_sequence_cmd_roundtrip() {
+        let store = test_store().await;
+        let agent = store.upsert_agent("n", "1.2.3.4", 26631).await.unwrap();
+        let rest = store
+            .insert_rest_template(
+                "PingApi",
+                &agent.id,
+                "rest",
+                &json!([{"name": "url", "value": "http://x"}]),
+                &json!([]),
+            )
+            .await
+            .unwrap();
+        let cmd = store
+            .insert_cmd_template(
+                "EchoCmd",
+                &agent.id,
+                "cmd",
+                &json!([{"name": "command", "value": "echo"}]),
+                &json!([]),
+            )
+            .await
+            .unwrap();
+
+        let rest_listed = store
+            .replace_vi_run_queue(
+                &agent.id,
+                &[ViRunQueueReplaceItem {
+                    template_source: "rest".into(),
+                    vi_template_id: None,
+                    general_template_id: None,
+                    rest_template_id: Some(rest.id),
+                    cmd_template_id: None,
+                    inputs_json: None,
+                    enabled: true,
+                    breakpoint: false,
+                    fail_policy: "stop".into(),
+                    limits_json: "[]".into(),
+                    note: "".into(),
+                    section_name: "".into(),
+                    collapsed: false,
+                    resources_json: "[]".into(),
+                    spec_template_id: None,
+                    spec_section: String::new(),
+                    spec_metrics_json: "[]".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rest_listed.len(), 1);
+        assert_eq!(rest_listed[0].template_source, "rest");
+        assert_eq!(rest_listed[0].rest_template_id, Some(rest.id));
+        assert_eq!(rest_listed[0].template_name, "PingApi");
+        assert!(rest_listed[0].vi_template_id.is_none());
+        assert!(rest_listed[0].general_template_id.is_none());
+        assert!(rest_listed[0].cmd_template_id.is_none());
+
+        let cmd_listed = store
+            .replace_vi_run_queue(
+                &agent.id,
+                &[ViRunQueueReplaceItem {
+                    template_source: "cmd".into(),
+                    vi_template_id: None,
+                    general_template_id: None,
+                    rest_template_id: None,
+                    cmd_template_id: Some(cmd.id),
+                    inputs_json: None,
+                    enabled: true,
+                    breakpoint: false,
+                    fail_policy: "stop".into(),
+                    limits_json: "[]".into(),
+                    note: "".into(),
+                    section_name: "".into(),
+                    collapsed: false,
+                    resources_json: "[]".into(),
+                    spec_template_id: None,
+                    spec_section: String::new(),
+                    spec_metrics_json: "[]".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        let seq = store
+            .create_sequence_template_from_queue(&agent.id, "seq-cmd", "", &cmd_listed)
+            .await
+            .unwrap();
+        let steps = store.get_sequence_template_steps(seq.id).await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].template_source, "cmd");
+        assert_eq!(steps[0].cmd_template_id, Some(cmd.id));
+        assert!(steps[0].rest_template_id.is_none());
+        assert!(steps[0].vi_template_id.is_none());
+        assert!(steps[0].general_template_id.is_none());
     }
 
     #[tokio::test]

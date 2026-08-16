@@ -8,20 +8,33 @@ import { DEFAULT_TABLE_PAGINATION } from '../utils/tableHelpers';
 
 type FunctionTemplate =
   | (ViTemplate & { _source: 'labview' })
-  | (GeneralTemplate & { _source: 'general' });
+  | (GeneralTemplate & { _source: 'general' | 'rest' | 'cmd' });
 
 function sourceLabel(source: FunctionTemplate['_source']): string {
-  return source === 'general' ? '通用' : 'VI';
+  if (source === 'general') return '通用';
+  if (source === 'rest') return 'REST';
+  if (source === 'cmd') return '命令行';
+  return 'VI';
+}
+
+function sourceColor(source: FunctionTemplate['_source']): string {
+  if (source === 'general') return 'blue';
+  if (source === 'rest') return 'purple';
+  if (source === 'cmd') return 'orange';
+  return 'green';
 }
 
 function kindLabel(kind: unknown): string {
   if (kind === 'delay') return '延迟';
   if (kind === 'labview') return 'VI';
+  if (kind === 'rest') return 'REST';
+  if (kind === 'cmd') return '命令行';
+  if (kind === 'version') return '版本';
   return typeof kind === 'string' && kind ? kind : '—';
 }
 
 function configSummary(template: FunctionTemplate): string {
-  if (template._source === 'general') {
+  if (template._source !== 'labview') {
     if (template.kind === 'delay' && Array.isArray(template.inputs)) {
       const delayInput = template.inputs.find(
         (item): item is { name?: unknown; value?: unknown } =>
@@ -75,15 +88,21 @@ export function FunctionsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [viItems, generalItems] = await Promise.all([
+      const [viItems, generalItems, restItems, cmdItems] = await Promise.all([
         schedulerApi
           .listViTemplates(agentId || undefined)
           .then((items) => items.map((item) => ({ ...item, _source: 'labview' as const }))),
         schedulerApi
           .listGeneralTemplates(agentId || undefined)
           .then((items) => items.map((item) => ({ ...item, _source: 'general' as const }))),
+        schedulerApi
+          .listRestTemplates(agentId || undefined)
+          .then((items) => items.map((item) => ({ ...item, _source: 'rest' as const }))),
+        schedulerApi
+          .listCmdTemplates(agentId || undefined)
+          .then((items) => items.map((item) => ({ ...item, _source: 'cmd' as const }))),
       ]);
-      setTemplates([...viItems, ...generalItems]);
+      setTemplates([...viItems, ...generalItems, ...restItems, ...cmdItems]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       message.error('加载功能模板失败：' + detail);
@@ -109,6 +128,10 @@ export function FunctionsPage() {
           try {
             if (template._source === 'general') {
               await schedulerApi.deleteGeneralTemplate(template.id);
+            } else if (template._source === 'rest') {
+              await schedulerApi.deleteRestTemplate(template.id);
+            } else if (template._source === 'cmd') {
+              await schedulerApi.deleteCmdTemplate(template.id);
             } else {
               await schedulerApi.deleteViTemplate(template.id);
             }
@@ -132,7 +155,7 @@ export function FunctionsPage() {
         title: '来源',
         dataIndex: '_source',
         render: (value: FunctionTemplate['_source']) => (
-          <Tag color={value === 'general' ? 'blue' : 'green'}>{sourceLabel(value)}</Tag>
+          <Tag color={sourceColor(value)}>{sourceLabel(value)}</Tag>
         ),
       },
       { title: '名称', dataIndex: 'name', sorter: (a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN'), render: (value) => value || '—' },
@@ -159,12 +182,14 @@ export function FunctionsPage() {
 
   const viTemplates = templates.filter((template) => template._source === 'labview');
   const generalTemplates = templates.filter((template) => template._source === 'general');
+  const restTemplates = templates.filter((template) => template._source === 'rest');
+  const cmdTemplates = templates.filter((template) => template._source === 'cmd');
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex' }}>
       <PageHeader
         title="已注册功能"
-        description="中心已注册的 VI 与通用功能模板。"
+        description="中心已注册的四类功能：VI、通用、REST 与命令行。"
         extra={
           <Button onClick={() => void load()} loading={loading}>
             刷新
@@ -213,6 +238,36 @@ export function FunctionsPage() {
                     dataSource={generalTemplates}
                     loading={loading}
                     locale={{ emptyText: '暂无已注册通用功能' }}
+                    pagination={DEFAULT_TABLE_PAGINATION}
+                    scroll={{ x: true }}
+                  />
+                ),
+              },
+              {
+                key: 'rest',
+                label: '中心REST功能',
+                children: (
+                  <Table
+                    rowKey={(record) => 'rest-' + String(record.id)}
+                    columns={columns}
+                    dataSource={restTemplates}
+                    loading={loading}
+                    locale={{ emptyText: '暂无已注册 REST 功能' }}
+                    pagination={DEFAULT_TABLE_PAGINATION}
+                    scroll={{ x: true }}
+                  />
+                ),
+              },
+              {
+                key: 'cmd',
+                label: '中心命令行功能',
+                children: (
+                  <Table
+                    rowKey={(record) => 'cmd-' + String(record.id)}
+                    columns={columns}
+                    dataSource={cmdTemplates}
+                    loading={loading}
+                    locale={{ emptyText: '暂无已注册命令行功能' }}
                     pagination={DEFAULT_TABLE_PAGINATION}
                     scroll={{ x: true }}
                   />

@@ -47,10 +47,22 @@ export const schedulerApi = {
     apiRequest<ViTemplate[]>(withAgentFilter('/api/vi-templates', agentId)),
   listGeneralTemplates: (agentId?: string) =>
     apiRequest<GeneralTemplate[]>(withAgentFilter('/api/general-templates', agentId)),
+  listRestTemplates: (agentId?: string) =>
+    apiRequest<GeneralTemplate[]>(withAgentFilter('/api/rest-templates', agentId)),
+  listCmdTemplates: (agentId?: string) =>
+    apiRequest<GeneralTemplate[]>(withAgentFilter('/api/cmd-templates', agentId)),
   deleteViTemplate: (id: string | number) =>
     apiRequest<void>(`/api/vi-templates/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   deleteGeneralTemplate: (id: string | number) =>
     apiRequest<void>(`/api/general-templates/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    }),
+  deleteRestTemplate: (id: string | number) =>
+    apiRequest<void>(`/api/rest-templates/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    }),
+  deleteCmdTemplate: (id: string | number) =>
+    apiRequest<void>(`/api/cmd-templates/${encodeURIComponent(String(id))}`, {
       method: 'DELETE',
     }),
   listSequenceTemplates: () => apiRequest<SequenceTemplate[]>('/api/sequence-templates'),
