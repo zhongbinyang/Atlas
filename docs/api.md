@@ -344,6 +344,8 @@ sequenceDiagram
 |------|------|--------|------|
 | GET | `/api/health` | **未使用** | |
 | GET | `/api/version` | **中心 WebUI** | 本进程编译版本 `{ version, date, git }` |
+| GET | `/api/station-releases/latest` | **机台「检查更新」** | 读盘 `latest.json`；无文件 → 404 |
+| GET | `/releases/station/{filename}` | **机台下载** | 仅安全文件名；无文件 → 404 |
 | POST | `/api/stations/register` | **Agent 进程** | 注册/upsert |
 | GET | `/api/stations` | **中心 WebUI** · **Agent 进程** | 列表；Agent 用于 resolve `agent_id` |
 | GET | `/api/stations/{id}` | **未使用** | |
@@ -390,6 +392,28 @@ sequenceDiagram
 **GET** `/api/version` → `{ "version": "2026-08-16.d4279a7", "date": "2026-08-16", "git": "d4279a7" }` · 使用方：**中心 WebUI**
 
 `version` 恒等于 `date + "." + git`。脏工作区时 `git` / `version` 带 `-dirty`。值为 `cargo build` 时写入的常量，运行时不查 git。
+
+## 1.2a 机台发布
+
+**GET** `/api/station-releases/latest` · 使用方：**机台「检查更新」**
+
+读盘 `latest.json`（`ATLAS_STATION_RELEASE_DIR` 或 `<工作目录>/releases/station`）；无文件 → `404` `{ "error": "no station release" }`。无鉴权。每次请求读盘，不缓存。
+
+```json
+{
+  "version": "2026-08-16.d4279a7",
+  "date": "2026-08-16",
+  "git": "d4279a7",
+  "filename": "atlas-station-2026-08-16.d4279a7-setup.exe",
+  "sha256": "<hex>"
+}
+```
+
+`version` 恒等于 `date + "." + git`。
+
+**GET** `/releases/station/{filename}` · 使用方：**机台下载**
+
+仅安全文件名（无路径分隔符）；无文件 → `404`。
 
 ## 1.3 机台
 

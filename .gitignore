@@ -11,6 +11,8 @@
 
 docs/CFG/
 
+/releases/station/*.exe
+
 node_modules/
 frontend/dist/
 frontend/node_modules/

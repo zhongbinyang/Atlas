@@ -7,6 +7,7 @@ mod error;
 mod labview_cmd;
 mod poller;
 mod spec_ini;
+mod station_releases;
 mod store;
 mod test_runs;
 mod version;

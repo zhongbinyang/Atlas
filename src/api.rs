@@ -610,10 +610,61 @@ async fn get_version() -> Json<serde_json::Value> {
     Json(crate::version::version_json())
 }
 
+async fn station_release_latest() -> impl IntoResponse {
+    match crate::station_releases::read_latest(&crate::station_releases::release_dir()) {
+        Ok(m) => (StatusCode::OK, Json(m)).into_response(),
+        Err(err) if err == "no station release" => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "no station release".into(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody { error: err }),
+        )
+            .into_response(),
+    }
+}
+
+async fn station_release_file(Path(filename): Path<String>) -> impl IntoResponse {
+    if !crate::station_releases::is_safe_release_filename(&filename) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "invalid filename".into(),
+            }),
+        )
+            .into_response();
+    }
+    let path = crate::station_releases::release_dir().join(&filename);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/octet-stream",
+            )],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: "file not found".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/version", get(get_version))
+        .route("/api/station-releases/latest", get(station_release_latest))
+        .route("/releases/station/{filename}", get(station_release_file))
         .route("/api/stations/register", post(register_agent))
         .route("/api/stations", get(list_agents))
         .route("/api/stations/{id}", get(get_agent))
